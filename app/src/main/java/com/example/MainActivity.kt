@@ -79,12 +79,14 @@ import com.example.ui.theme.TacticiansForgeTheme
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.PlayerViewModel
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 enum class AppTab(
@@ -134,9 +136,14 @@ fun AppRoot(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val auth = remember { Firebase.auth }
+    val auth = remember(context) {
+        runCatching {
+            if (FirebaseApp.getApps(context).isNotEmpty()) Firebase.auth else null
+        }.getOrNull()
+    }
     val localStore = remember(context) { LocalPreferencesStore(context.applicationContext) }
-    val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
+    val currentUser by (auth?.authStateFlow() ?: flowOf(null))
+        .collectAsStateWithLifecycle(initialValue = auth?.currentUser)
     val isGuestMode by localStore.isGuestModeFlow.collectAsStateWithLifecycle(initialValue = null)
     val prefs by localStore.preferencesFlow.collectAsStateWithLifecycle(initialValue = null)
     var attemptedAutoSignIn by rememberSaveable { mutableStateOf(false) }

@@ -62,6 +62,19 @@ import kotlinx.coroutines.withContext
 object GoogleAuthHelper {
     private const val TAG = "GoogleAuthHelper"
 
+    @Suppress("DiscouragedApi")
+    private fun resolveDefaultWebClientId(context: Context): String? {
+        val resId = context.resources.getIdentifier(
+            "default_web_client_id",
+            "string",
+            context.packageName
+        )
+        if (resId == 0) return null
+        return runCatching { context.getString(resId) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+    }
+
     fun attemptAutoSignIn(
         context: Context,
         credentialManager: CredentialManager,
@@ -69,13 +82,17 @@ object GoogleAuthHelper {
         onAuthSuccess: () -> Unit,
         onUnauthenticated: () -> Unit
     ) {
-        if (Firebase.auth.currentUser != null) {
+        val firebaseAuth = runCatching { Firebase.auth }.getOrNull()
+        if (firebaseAuth == null) {
+            onUnauthenticated()
+            return
+        }
+        if (firebaseAuth.currentUser != null) {
             onAuthSuccess()
             return
         }
-        val clientId = try {
-            context.getString(R.string.default_web_client_id)
-        } catch (_: Exception) {
+        val clientId = resolveDefaultWebClientId(context)
+        if (clientId == null) {
             onUnauthenticated()
             return
         }
@@ -93,7 +110,7 @@ object GoogleAuthHelper {
                 val cred = credentialManager.getCredential(context, request).credential
                 if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                     val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
-                    Firebase.auth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
+                    firebaseAuth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
                     onAuthSuccess()
                 } else {
                     onUnauthenticated()
@@ -112,9 +129,13 @@ object GoogleAuthHelper {
         onAuthError: (String) -> Unit,
         onAuthCancelled: () -> Unit = {}
     ) {
-        val clientId = try {
-            context.getString(R.string.default_web_client_id)
-        } catch (_: Exception) {
+        val firebaseAuth = runCatching { Firebase.auth }.getOrNull()
+        if (firebaseAuth == null) {
+            onAuthError("Firebase is not configured in this APK build. Use Explore as Guest for offline & local features.")
+            return
+        }
+        val clientId = resolveDefaultWebClientId(context)
+        if (clientId == null) {
             onAuthError("Google Sign-In configuration missing: default_web_client_id not found.")
             return
         }
@@ -133,7 +154,7 @@ object GoogleAuthHelper {
                 }
                 if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                     val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
-                    Firebase.auth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
+                    firebaseAuth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
                     onAuthSuccess()
                 } else {
                     onAuthError("Unexpected credential type returned.")
@@ -160,7 +181,7 @@ object GoogleAuthHelper {
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to clear credential state: ${e.message}")
                 } finally {
-                    Firebase.auth.signOut()
+                    runCatching { Firebase.auth.signOut() }
                     onSignOutComplete()
                 }
             }

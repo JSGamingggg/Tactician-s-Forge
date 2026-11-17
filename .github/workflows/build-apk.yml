@@ -89,15 +89,17 @@ jobs:
       - name: Build Debug APK
         run: gradle :app:assembleDebug --no-daemon
 
-      - name: Upload Debug APK Artifact
+      - name: Run Unit Tests
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Upload Debug APK Artifact (if quota available)
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: tacticians-forge-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+          retention-days: 1
           if-no-files-found: error
-
-      - name: Run Unit Tests
-        run: gradle :app:testDebugUnitTest --no-daemon
 
       - name: Build Signed Release APK (when keystore secrets configured)
         id: release_build
@@ -116,18 +118,44 @@ jobs:
             echo "built=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload Release APK Artifact
+      - name: Upload Release APK Artifact (if quota available)
         if: steps.release_build.outputs.built == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: tacticians-forge-release-apk
           path: app/build/outputs/apk/release/*.apk
+          retention-days: 1
           if-no-files-found: ignore
+
+      - name: Update Rolling latest-apk Tag
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest-apk
+          git push origin refs/tags/latest-apk --force || true
+
+      - name: Publish Latest APK to GitHub Releases
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: Latest Debug APK
+          prerelease: true
+          overwrite_files: true
+          fail_on_unmatched_files: false
+          body: "Automated APK build for Tactician's Forge. Download the .apk asset below directly."
+          files: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
 
       - name: Publish APK to GitHub Release on Tag
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          overwrite_files: true
+          fail_on_unmatched_files: false
           files: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk

@@ -25,7 +25,8 @@ enum class TierRank(val label: String, val sortOrder: Int) {
     S("S", 0),
     A("A", 1),
     B("B", 2),
-    C("C", 3);
+    C("C", 3),
+    X("X", 4);
 
     companion object {
         fun fromRaw(raw: String?): TierRank {
@@ -35,6 +36,7 @@ enum class TierRank(val label: String, val sortOrder: Int) {
                 cleaned.startsWith("A") -> A
                 cleaned.startsWith("B") -> B
                 cleaned.startsWith("C") || cleaned.startsWith("D") -> C
+                cleaned.startsWith("X") -> X
                 else -> B
             }
         }

@@ -25,6 +25,7 @@ import com.example.data.repository.OfflineMetaBundle
 import com.example.notifications.MetaUpdateNotifier
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -55,8 +56,9 @@ class MainViewModel(
 ) : ViewModel() {
 
     private var lastAutoSyncAttemptMillis = 0L
+    private var activeSyncJob: Job? = null
 
-    private val initialBundle = metaRepository.loadOfflineBundle()
+    private val initialBundle = metaRepository.peekOfflineBundle()
 
     private val _selectedEnvironment = MutableStateFlow(TftEnvironment.LIVE)
     val selectedEnvironment: StateFlow<TftEnvironment> = _selectedEnvironment.asStateFlow()
@@ -69,8 +71,15 @@ class MainViewModel(
     private val _liveVersionInfo = MutableStateFlow<LiveVersionInfo?>(initialBundle.liveVersionInfo)
     val liveVersionInfo: StateFlow<LiveVersionInfo?> = _liveVersionInfo.asStateFlow()
 
-    private val _offlineCacheStatus = MutableStateFlow(initialBundle.toCacheStatus())
-    val offlineCacheStatus: StateFlow<OfflineCacheStatus> = _offlineCacheStatus.asStateFlow()
+    private val _isOfflineFallback = MutableStateFlow(false)
+    val offlineCacheStatus: StateFlow<OfflineCacheStatus> =
+        combine(_selectedEnvironment, _metaBundle, _isOfflineFallback) { env, bundle, offlineFallback ->
+            bundle.toCacheStatus(isOfflineFallback = offlineFallback, environment = env)
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = initialBundle.toCacheStatus(environment = TftEnvironment.LIVE)
+        )
 
     private val _isRefreshingVersions = MutableStateFlow(false)
     val isRefreshingVersions: StateFlow<Boolean> = _isRefreshingVersions.asStateFlow()
@@ -187,6 +196,11 @@ class MainViewModel(
     )
 
     init {
+        viewModelScope.launch {
+            val loaded = metaRepository.loadOfflineBundleAsync()
+            _metaBundle.value = loaded
+            _liveVersionInfo.value = loaded.liveVersionInfo
+        }
         observeBackgroundCacheUpdates()
         if (autoSyncOnInit) {
             refreshPatchVersions(
@@ -228,10 +242,10 @@ class MainViewModel(
         viewModelScope.launch {
             MetaCacheUpdates.lastCacheWriteMillis.collect { ts ->
                 if (ts > 0L) {
-                    val fresh = metaRepository.loadOfflineBundle()
+                    val fresh = metaRepository.loadOfflineBundleAsync()
                     _metaBundle.value = fresh
                     _liveVersionInfo.value = fresh.liveVersionInfo
-                    _offlineCacheStatus.value = fresh.toCacheStatus(isOfflineFallback = false)
+                    _isOfflineFallback.value = false
                 }
             }
         }
@@ -255,39 +269,47 @@ class MainViewModel(
         onlyNotifyOnChanges: Boolean = false,
         triggerPushAlerts: Boolean = false
     ) {
-        viewModelScope.launch {
-            lastAutoSyncAttemptMillis = System.currentTimeMillis()
-            _isRefreshingVersions.value = true
-            val sync = metaRepository.refreshAndPersistMeta()
-            val freshBundle = metaRepository.loadOfflineBundle()
-            _metaBundle.value = freshBundle
-            _liveVersionInfo.value = sync.versionInfo
-            _offlineCacheStatus.value = sync.cacheStatus
-            _isRefreshingVersions.value = false
+        if (activeSyncJob?.isActive == true) return
+        activeSyncJob = viewModelScope.launch {
+            try {
+                lastAutoSyncAttemptMillis = System.currentTimeMillis()
+                _isRefreshingVersions.value = true
+                val sync = metaRepository.refreshAndPersistMeta()
+                val freshBundle = metaRepository.loadOfflineBundleAsync()
+                _metaBundle.value = freshBundle
+                _liveVersionInfo.value = sync.versionInfo
+                _isOfflineFallback.value = sync.cacheStatus.isOfflineFallback
 
-            if (triggerPushAlerts && appContext != null) {
-                MetaUpdateNotifier.dispatchNotifications(
-                    context = appContext,
-                    syncResult = sync,
-                    bundle = freshBundle
-                )
-            }
-
-            if (notifyIfUpdated) {
-                val updates = buildList {
-                    if (sync.newLivePatchDetected) add("LIVE ${sync.versionInfo.livePatchVersion}")
-                    if (sync.newPbePatchDetected) add("PBE ${sync.versionInfo.pbePatchVersion}")
-                    if (sync.newlyAddedComps.isNotEmpty()) add("${sync.newlyAddedComps.size} new comp(s)")
+                if (triggerPushAlerts && appContext != null) {
+                    MetaUpdateNotifier.dispatchNotifications(
+                        context = appContext,
+                        syncResult = sync,
+                        bundle = freshBundle
+                    )
                 }
-                if (updates.isNotEmpty()) {
-                    _snackbarMessage.value = "Updated from tftips.app & tftactics.gg: ${updates.joinToString(", ")}"
-                } else if (!onlyNotifyOnChanges) {
-                    _snackbarMessage.value = if (sync.syncedFromNetwork) {
-                        "Synced LIVE & PBE patches (tftips.app) and comps (tftactics.gg)."
-                    } else {
-                        "Offline mode — using persistent device cache."
+
+                if (notifyIfUpdated) {
+                    val updates = buildList {
+                        if (sync.newLivePatchDetected) add("LIVE ${sync.versionInfo.livePatchVersion}")
+                        if (sync.newPbePatchDetected) add("PBE ${sync.versionInfo.pbePatchVersion}")
+                        if (sync.newlyAddedComps.isNotEmpty()) {
+                            add("${sync.newlyAddedComps.size} new comp(s)")
+                        } else if (sync.compsUpdatedDetected) {
+                            add("Comps updated")
+                        }
+                    }
+                    if (updates.isNotEmpty()) {
+                        _snackbarMessage.value = "Updated LIVE & PBE meta: ${updates.joinToString(", ")}"
+                    } else if (!onlyNotifyOnChanges) {
+                        _snackbarMessage.value = if (sync.syncedFromNetwork) {
+                            "Synced patches (tftips.app), LIVE (tftacademy.com), and PBE (tftactics.gg)."
+                        } else {
+                            "Offline mode — using persistent device cache."
+                        }
                     }
                 }
+            } finally {
+                _isRefreshingVersions.value = false
             }
         }
     }
@@ -520,7 +542,7 @@ class MainViewModel(
     private companion object {
         const val TAG = "MainViewModel"
         const val STOP_TIMEOUT_MILLIS = 5000L
-        const val ACTIVE_SYNC_INTERVAL_MS = 5 * 60_000L
-        const val RESUME_DEBOUNCE_MS = 20_000L
+        const val ACTIVE_SYNC_INTERVAL_MS = 60_000L
+        const val RESUME_DEBOUNCE_MS = 5_000L
     }
 }

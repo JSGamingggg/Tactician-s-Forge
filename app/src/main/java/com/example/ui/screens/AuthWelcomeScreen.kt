@@ -9,17 +9,14 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -77,8 +74,10 @@ fun AuthWelcomeScreen(
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
     var isSigningIn by remember { mutableStateOf(false) }
+    var inlineAuthError by remember { mutableStateOf<String?>(null) }
 
     val triggerSignIn = {
+        inlineAuthError = null
         isSigningIn = true
         GoogleAuthHelper.onGoogleSignInClicked(
             context = context,
@@ -86,10 +85,12 @@ fun AuthWelcomeScreen(
             scope = scope,
             onAuthSuccess = {
                 isSigningIn = false
+                inlineAuthError = null
                 onAuthSuccess()
             },
             onAuthError = { msg ->
                 isSigningIn = false
+                inlineAuthError = msg
                 onAuthError(msg)
             },
             onAuthCancelled = { isSigningIn = false }
@@ -99,8 +100,7 @@ fun AuthWelcomeScreen(
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .windowInsetsPadding(WindowInsets.safeDrawing),
+            .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
         val isLandscapeSplit = maxWidth >= 600.dp && maxHeight < 560.dp
@@ -135,6 +135,9 @@ fun AuthWelcomeScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically)
                 ) {
                     AuthFeaturesCard()
+                    inlineAuthError?.let { err ->
+                        AuthInlineErrorBanner(message = err)
+                    }
                     AuthActionsColumn(
                         isSigningIn = isSigningIn,
                         onExploreAsGuest = onExploreAsGuest,
@@ -154,6 +157,9 @@ fun AuthWelcomeScreen(
             ) {
                 AuthHeroBanner(bannerHeight = 176.dp)
                 AuthFeaturesCard()
+                inlineAuthError?.let { err ->
+                    AuthInlineErrorBanner(message = err)
+                }
                 AuthActionsColumn(
                     isSigningIn = isSigningIn,
                     onExploreAsGuest = onExploreAsGuest,
@@ -164,6 +170,25 @@ fun AuthWelcomeScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun AuthInlineErrorBanner(message: String) {
+    androidx.compose.material3.Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("auth_error_banner")
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+        )
     }
 }
 
@@ -234,7 +259,7 @@ private fun AuthFeaturesCard() {
                 icon = Icons.Default.AutoAwesome,
                 tint = MaterialTheme.colorScheme.primary,
                 title = "LIVE & PBE Meta Snapshots",
-                subtitle = "Set-matched comps from tftactics.gg, 4×7 hex boards, BIS items, and patch alerts from tftips.app/en/patches."
+                subtitle = "LIVE comps from tftacademy.com, PBE comps from tftactics.gg, 4×7 hex boards, BIS items, and patch alerts from tftips.app."
             )
             FeatureRow(
                 icon = Icons.Default.MilitaryTech,

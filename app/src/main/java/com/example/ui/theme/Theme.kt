@@ -72,6 +72,7 @@ data class HextechExtendedColors(
     val tierA: Color = TierAColor,
     val tierB: Color = TierBColor,
     val tierC: Color = TierCColor,
+    val tierX: Color = TierXColor,
     val buff: Color = BuffEmerald,
     val nerf: Color = NerfCrimson,
     val adjust: Color = AdjustAmber,
@@ -104,11 +105,12 @@ fun TacticiansForgeTheme(
     val extendedColors = if (useDark) {
         HextechExtendedColors(
             isDark = true,
-            goldBorder = BrushedGold.copy(alpha = 0.42f),
+            goldBorder = BrushedGold.copy(alpha = 0.56f),
             tierS = TierSColor,
             tierA = TierAColor,
             tierB = TierBColor,
             tierC = TierCColor,
+            tierX = TierXColor,
             buff = BuffEmerald,
             nerf = NerfCrimson,
             adjust = AdjustAmber,
@@ -118,16 +120,17 @@ fun TacticiansForgeTheme(
     } else {
         HextechExtendedColors(
             isDark = false,
-            goldBorder = EngravedGold.copy(alpha = 0.35f),
-            tierS = Color(0xFFB88014),
-            tierA = Color(0xFF5D46C6),
+            goldBorder = EngravedGold.copy(alpha = 0.45f),
+            tierS = Color(0xFFC9870A),
+            tierA = Color(0xFF6B4FE0),
             tierB = DeepArcaneTeal,
-            tierC = InkMuted,
-            buff = Color(0xFF1E874B),
-            nerf = Color(0xFFC0392B),
-            adjust = Color(0xFFC27803),
-            liveBadge = Color(0xFF15844C),
-            pbeBadge = Color(0xFF6A48C7)
+            tierC = Color(0xFF2563EB),
+            tierX = Color(0xFFE11D48),
+            buff = Color(0xFF16A34A),
+            nerf = Color(0xFFDC2626),
+            adjust = Color(0xFFD97706),
+            liveBadge = Color(0xFF16A34A),
+            pbeBadge = Color(0xFF7C3AED)
         )
     }
 

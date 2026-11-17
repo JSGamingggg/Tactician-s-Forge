@@ -126,7 +126,7 @@ object MetaUpdateNotifier {
                 TftNotificationHelper.postNewCompsBatchNotification(
                     context = context,
                     title = "${prioritized.size} New TFT Comps Synced",
-                    shortBody = "${lead.title} (${lead.tier.label}-Tier) & ${prioritized.size - 1} more from tftactics.gg",
+                    shortBody = "${lead.title} (${lead.tier.label}-Tier) & ${prioritized.size - 1} more from tftacademy.com",
                     expandedBody = summaryLines,
                     environment = lead.environment
                 )

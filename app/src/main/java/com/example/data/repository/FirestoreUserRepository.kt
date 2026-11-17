@@ -144,7 +144,18 @@ class FirestoreUserRepository(
             val docRef = db.collection("users").document(uid).collection("favorites").document(docId)
             docPath = docRef.path
             val existing = docRef.get().await()
-            val hexStrings = comp.hexPlacements.take(10).map { it.encode() }
+            val prioritizedPlacements = comp.hexPlacements
+                .sortedWith(
+                    compareByDescending<com.example.data.model.HexUnitPlacement> { it.isCarry }
+                        .thenByDescending { it.items.size }
+                        .thenByDescending { it.cost }
+                )
+                .take(10)
+            val prioritizedUnits = (prioritizedPlacements.map { it.unitName } + comp.coreUnits)
+                .distinct()
+                .take(10)
+                .map { it.take(160) }
+            val hexStrings = prioritizedPlacements.map { it.encode() }
             if (existing.exists()) {
                 val updateMap = mutableMapOf<String, Any>(
                     "environment" to comp.environment.name,
@@ -152,7 +163,7 @@ class FirestoreUserRepository(
                     "tier" to comp.tier.name,
                     "playstyle" to comp.playstyle.trim().ifBlank { "Flex" }.take(40),
                     "carryName" to comp.carryName.trim().ifBlank { "Carry" }.take(50),
-                    "coreUnits" to comp.coreUnits.take(10).map { it.take(160) },
+                    "coreUnits" to prioritizedUnits,
                     "hexPositions" to hexStrings,
                     "pinnedToOverlay" to pinnedToOverlay,
                     "updatedAt" to FieldValue.serverTimestamp()
@@ -170,7 +181,7 @@ class FirestoreUserRepository(
                     tier = comp.tier.name,
                     playstyle = comp.playstyle,
                     carryName = comp.carryName,
-                    coreUnits = comp.coreUnits,
+                    coreUnits = prioritizedUnits,
                     hexPositions = hexStrings,
                     pinnedToOverlay = pinnedToOverlay,
                     notes = comp.notes.takeIf { it.isNotBlank() }

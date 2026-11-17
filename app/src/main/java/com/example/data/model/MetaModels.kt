@@ -55,7 +55,7 @@ data class MetaComp(
     val levelingGuide: String,
     val notes: String,
     val setName: String = environment.setName,
-    val sourceUrl: String = "https://tftactics.gg/tierlist/team-comps/"
+    val sourceUrl: String = "https://tftacademy.com/tierlist/comps"
 )
 
 data class ChampionTierEntry(
@@ -71,7 +71,9 @@ data class ChampionTierEntry(
     val bestItems: List<String>,
     val synergyComps: List<String>,
     val patchDelta: DeltaType? = null,
-    val patchNote: String = ""
+    val patchNote: String = "",
+    val abilityName: String = "",
+    val abilityDescription: String = ""
 )
 
 data class BalanceChangeEntry(
@@ -153,6 +155,7 @@ data class MetaSyncResult(
     val newLivePatchDetected: Boolean = false,
     val newPbePatchDetected: Boolean = false,
     val newlyAddedComps: List<MetaComp> = emptyList(),
+    val compsUpdatedDetected: Boolean = false,
     val syncedFromNetwork: Boolean = false
 )
 

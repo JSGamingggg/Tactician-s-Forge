@@ -1,5 +1,8 @@
 package com.example.overlay
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.app.Service
@@ -13,18 +16,25 @@ import android.os.IBinder
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.VelocityTracker
+import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -42,10 +52,12 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
@@ -53,6 +65,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
@@ -73,10 +86,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalConfiguration
@@ -120,6 +135,8 @@ import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftItemIcon
 import com.example.ui.components.TftTraitChip
+import com.example.ui.components.TierBadge
+import com.example.ui.screens.groupCompsByTier
 import com.example.ui.theme.ArcaneCyan
 import com.example.ui.theme.BrightGold
 import com.example.ui.theme.BrushedGold
@@ -129,7 +146,13 @@ import com.example.ui.theme.PbePurple
 import com.example.ui.theme.SlateElevated
 import com.example.ui.theme.SlateOutline
 import com.example.ui.theme.TacticiansForgeTheme
+import com.example.ui.theme.TierAColor
+import com.example.ui.theme.TierBColor
+import com.example.ui.theme.TierCColor
+import com.example.ui.theme.TierSColor
+import com.example.ui.theme.TierXColor
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -144,6 +167,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -255,11 +279,14 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     private val displayState = mutableStateOf(OverlayDisplayState.BUBBLE)
     private val dockEdgeState = mutableStateOf(OverlayDockEdge.LEFT)
+    private val isDraggingState = mutableStateOf(false)
     private val configurationVersion = mutableIntStateOf(0)
     private var savedBubbleAnchorY = 220
     private val allCompsState = mutableStateOf<List<MetaComp>>(emptyList())
     private val favoriteDocsState = mutableStateOf<List<FavoriteCompDoc>>(emptyList())
     private var favoritesObserverJob: Job? = null
+    private var activeOverlaySyncJob: Job? = null
+    private var windowSnapAnimator: ValueAnimator? = null
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
     override val viewModelStore: ViewModelStore get() = store
@@ -299,9 +326,11 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     }
 
     private fun reloadCompsFromCache() {
-        val bundle = metaRepository.loadOfflineBundle()
-        allCompsState.value = (bundle.liveComps + bundle.pbeComps)
-            .sortedWith(compareBy<MetaComp> { it.environment.ordinal }.thenBy { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        serviceScope.launch {
+            val bundle = metaRepository.loadOfflineBundleAsync()
+            allCompsState.value = (bundle.liveComps + bundle.pbeComps)
+                .sortedWith(compareBy<MetaComp> { it.environment.ordinal }.thenBy { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        }
     }
 
     private fun startOverlayAutoSyncLoop() {
@@ -314,15 +343,17 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     }
 
     private fun syncOverlayMetaFromNetwork() {
-        serviceScope.launch {
+        if (activeOverlaySyncJob?.isActive == true) return
+        activeOverlaySyncJob = serviceScope.launch {
             val sync = metaRepository.refreshAndPersistMeta()
-            val bundle = metaRepository.loadOfflineBundle()
+            val bundle = metaRepository.loadOfflineBundleAsync()
+            allCompsState.value = (bundle.liveComps + bundle.pbeComps)
+                .sortedWith(compareBy<MetaComp> { it.environment.ordinal }.thenBy { it.tier.sortOrder }.thenBy { it.avgPlacement })
             MetaUpdateNotifier.dispatchNotifications(
                 context = applicationContext,
                 syncResult = sync,
                 bundle = bundle
             )
-            reloadCompsFromCache()
         }
     }
 
@@ -335,7 +366,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
         favoritesObserverJob?.cancel()
         favoritesObserverJob = serviceScope.launch {
-            val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
+            val uid = runCatching {
+                if (FirebaseApp.getApps(this@OverlayService).isNotEmpty()) Firebase.auth.currentUser?.uid else null
+            }.getOrNull()
             if (uid.isNullOrBlank()) {
                 prefsStore.localFavoritesFlow.collectLatest { docs ->
                     favoriteDocsState.value = docs
@@ -375,7 +408,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         val currentFavs = favoriteDocsState.value
         val isFav = currentFavs.any { it.compId == comp.id || it.id == comp.id }
         serviceScope.launch {
-            val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
+            val uid = runCatching {
+                if (FirebaseApp.getApps(this@OverlayService).isNotEmpty()) Firebase.auth.currentUser?.uid else null
+            }.getOrNull()
             if (uid.isNullOrBlank()) {
                 if (isFav) {
                     prefsStore.removeLocalFavorite(comp.id)
@@ -488,7 +523,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             }
         }
         overlayView?.let { view ->
-            runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+            }
         }
     }
 
@@ -530,7 +567,42 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         }
 
         overlayView?.let { view ->
-            runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+            }
+        }
+    }
+
+    private fun animateOverlayXTo(
+        view: ComposeView,
+        fromX: Int,
+        toX: Int,
+        onComplete: () -> Unit = {}
+    ) {
+        windowSnapAnimator?.cancel()
+        if (fromX == toX || !view.isAttachedToWindow) {
+            onComplete()
+            return
+        }
+        windowSnapAnimator = ValueAnimator.ofInt(fromX, toX).apply {
+            duration = 210L
+            interpolator = DecelerateInterpolator(1.6f)
+            addUpdateListener { anim ->
+                overlayLayoutParams.x = anim.animatedValue as Int
+                if (view.isAttachedToWindow) {
+                    runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(animation: Animator) {
+                    cancelled = true
+                }
+                override fun onAnimationEnd(animation: Animator) {
+                    if (!cancelled) onComplete()
+                }
+            })
+            start()
         }
     }
 
@@ -567,8 +639,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             var initialTouchX = 0f
             var initialTouchY = 0f
             var moved = false
-            val edgeSnapThresholdPx = dpToPx(24)
-            val uncollapseDragThresholdPx = dpToPx(32)
+            var velocityTracker: VelocityTracker? = null
+            val touchSlopPx = ViewConfiguration.get(this@OverlayService).scaledTouchSlop.coerceAtLeast(8)
+            val edgeSnapThresholdPx = dpToPx(28)
+            val uncollapseDragThresholdPx = dpToPx(30)
 
             setOnTouchListener { view, event ->
                 val activeState = displayState.value
@@ -581,6 +655,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        windowSnapAnimator?.cancel()
+                        velocityTracker?.recycle()
+                        velocityTracker = VelocityTracker.obtain().apply { addMovement(event) }
                         val isEndGravity = (overlayLayoutParams.gravity and Gravity.END) == Gravity.END
                         startLeftPx = if (isEndGravity) {
                             (screenW - viewW - overlayLayoutParams.x).coerceAtLeast(0)
@@ -591,13 +668,16 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         initialTouchX = event.rawX
                         initialTouchY = event.rawY
                         moved = false
+                        isDraggingState.value = false
                         false
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        velocityTracker?.addMovement(event)
                         val dx = (event.rawX - initialTouchX).toInt()
                         val dy = (event.rawY - initialTouchY).toInt()
-                        if (abs(dx) > 10 || abs(dy) > 10) {
+                        if (abs(dx) > touchSlopPx || abs(dy) > touchSlopPx) {
                             moved = true
+                            isDraggingState.value = true
                             val clampedY = (initialY + dy).coerceIn(minY, maxY)
                             savedBubbleAnchorY = clampedY
 
@@ -619,24 +699,52 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                                 overlayLayoutParams.x = (startLeftPx + dx).coerceIn(0, (screenW - viewW).coerceAtLeast(0))
                                 overlayLayoutParams.y = clampedY
                             }
-                            runCatching { windowManager.updateViewLayout(this, overlayLayoutParams) }
+                            if (this.isAttachedToWindow) {
+                                runCatching { windowManager.updateViewLayout(this, overlayLayoutParams) }
+                            }
                         }
                         moved
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        isDraggingState.value = false
+                        velocityTracker?.addMovement(event)
+                        velocityTracker?.computeCurrentVelocity(1000)
+                        val vx = velocityTracker?.xVelocity ?: 0f
+                        velocityTracker?.recycle()
+                        velocityTracker = null
+
                         if (moved && displayState.value == OverlayDisplayState.BUBBLE) {
+                            val currentLeft = overlayLayoutParams.x
                             val decision = computeEdgeSnapDecision(
-                                leftEdgePx = overlayLayoutParams.x,
+                                leftEdgePx = currentLeft,
                                 viewWidthPx = viewW,
                                 screenWidthPx = screenW,
                                 snapThresholdPx = edgeSnapThresholdPx
                             )
-                            dockEdgeState.value = decision.dockEdge
-                            if (decision.shouldCollapseToEdge) {
-                                transitionDisplayState(
-                                    targetState = OverlayDisplayState.EDGE_COLLAPSED,
-                                    dockEdge = decision.dockEdge
-                                )
+                            val flungLeft = vx < -900f
+                            val flungRight = vx > 900f
+                            val resolvedDock = when {
+                                flungLeft -> OverlayDockEdge.LEFT
+                                flungRight -> OverlayDockEdge.RIGHT
+                                else -> decision.dockEdge
+                            }
+                            dockEdgeState.value = resolvedDock
+                            if (decision.shouldCollapseToEdge || flungLeft || flungRight) {
+                                val targetLeft = if (resolvedDock == OverlayDockEdge.LEFT) 0 else (screenW - viewW).coerceAtLeast(0)
+                                animateOverlayXTo(this, fromX = currentLeft, toX = targetLeft) {
+                                    transitionDisplayState(
+                                        targetState = OverlayDisplayState.EDGE_COLLAPSED,
+                                        dockEdge = resolvedDock
+                                    )
+                                }
+                            } else {
+                                // Smooth magnetic nudge away from top corners without sudden jumps
+                                val safeMarginLeft = dpToPx(12)
+                                val safeMarginRight = (screenW - viewW - dpToPx(12)).coerceAtLeast(0)
+                                val clampedTarget = currentLeft.coerceIn(safeMarginLeft, safeMarginRight.coerceAtLeast(safeMarginLeft))
+                                if (clampedTarget != currentLeft) {
+                                    animateOverlayXTo(this, fromX = currentLeft, toX = clampedTarget)
+                                }
                             }
                         }
                         moved
@@ -650,17 +758,20 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                     OverlayRootContent(
                         displayState = displayState.value,
                         dockEdge = dockEdgeState.value,
+                        isDragging = isDraggingState.value,
                         configVersion = configurationVersion.intValue,
                         allComps = allCompsState.value,
                         favoriteDocs = favoriteDocsState.value,
                         onExpandDrawer = {
-                            reloadCompsFromCache()
+                            windowSnapAnimator?.cancel()
                             transitionDisplayState(OverlayDisplayState.EXPANDED)
                         },
                         onMinimizeToBubble = {
+                            windowSnapAnimator?.cancel()
                             transitionDisplayState(OverlayDisplayState.BUBBLE)
                         },
                         onCollapseToEdge = {
+                            windowSnapAnimator?.cancel()
                             transitionDisplayState(OverlayDisplayState.EDGE_COLLAPSED)
                         },
                         onRefresh = {
@@ -681,9 +792,15 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     override fun onDestroy() {
         super.onDestroy()
+        windowSnapAnimator?.cancel()
         serviceScope.cancel()
         OverlayController.setRunning(false)
-        overlayView?.let { runCatching { windowManager.removeView(it) } }
+        overlayView?.let { view ->
+            runCatching { view.disposeComposition() }
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.removeView(view) }
+            }
+        }
         overlayView = null
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
@@ -693,7 +810,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     companion object {
         private const val NOTIFICATION_ID = 7701
-        private const val ACTIVE_OVERLAY_SYNC_INTERVAL_MS = 5 * 60_000L
+        private const val ACTIVE_OVERLAY_SYNC_INTERVAL_MS = 60_000L
         const val ACTION_STOP_OVERLAY = "com.example.overlay.ACTION_STOP"
     }
 }
@@ -708,6 +825,7 @@ private enum class OverlayBrowseMode {
 private fun OverlayRootContent(
     displayState: OverlayDisplayState,
     dockEdge: OverlayDockEdge,
+    isDragging: Boolean,
     configVersion: Int,
     allComps: List<MetaComp>,
     favoriteDocs: List<FavoriteCompDoc>,
@@ -741,11 +859,17 @@ private fun OverlayRootContent(
         }
         byId.values.toList()
     }
+    val dragScale by animateFloatAsState(
+        targetValue = if (isDragging) 1.09f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+        label = "overlayDragScale"
+    )
 
     AnimatedContent(
         targetState = displayState,
         transitionSpec = {
-            fadeIn(tween(170)) togetherWith fadeOut(tween(120))
+            (fadeIn(tween(180)) + scaleIn(initialScale = 0.94f, animationSpec = tween(180))) togetherWith
+                (fadeOut(tween(120)) + scaleOut(targetScale = 0.94f, animationSpec = tween(120)))
         },
         label = "overlayDisplayStateTransition"
     ) { state ->
@@ -754,9 +878,9 @@ private fun OverlayRootContent(
                 val badgeCount = if (favoriteDocs.isNotEmpty()) favoriteDocs.size else mergedAllComps.size
                 val isLeft = dockEdge == OverlayDockEdge.LEFT
                 val tabShape = if (isLeft) {
-                    RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 14.dp, bottomEnd = 14.dp)
+                    RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 16.dp, bottomEnd = 16.dp)
                 } else {
-                    RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp, topEnd = 0.dp, bottomEnd = 0.dp)
+                    RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp, topEnd = 0.dp, bottomEnd = 0.dp)
                 }
                 val pullIcon = if (isLeft) {
                     Icons.AutoMirrored.Filled.KeyboardArrowRight
@@ -764,11 +888,15 @@ private fun OverlayRootContent(
                     Icons.AutoMirrored.Filled.KeyboardArrowLeft
                 }
 
-                // 48dp accessible hit box while visible Hextech tab stays slim (28dp) flush against screen edge
+                // 48dp accessible hit box while visible Hextech tab stays slim flush against screen edge
                 Box(
                     modifier = Modifier
                         .width(48.dp)
-                        .height(72.dp)
+                        .height(74.dp)
+                        .graphicsLayer {
+                            scaleX = dragScale
+                            scaleY = dragScale
+                        }
                         .clip(tabShape)
                         .clickable(onClick = onExpandDrawer)
                         .testTag("overlay_edge_tab"),
@@ -776,12 +904,15 @@ private fun OverlayRootContent(
                 ) {
                     Surface(
                         shape = tabShape,
-                        color = ObsidianVoid.copy(alpha = 0.84f),
-                        border = BorderStroke(1.4.dp, BrushedGold.copy(alpha = 0.85f)),
+                        color = ObsidianVoid.copy(alpha = 0.90f),
+                        border = BorderStroke(
+                            width = 1.5.dp,
+                            brush = Brush.verticalGradient(listOf(BrightGold, ArcaneCyan))
+                        ),
                         shadowElevation = 8.dp,
                         modifier = Modifier
-                            .width(28.dp)
-                            .height(66.dp)
+                            .width(30.dp)
+                            .height(68.dp)
                     ) {
                         Column(
                             modifier = Modifier.padding(vertical = 6.dp),
@@ -798,12 +929,15 @@ private fun OverlayRootContent(
                                 modifier = Modifier
                                     .width(3.dp)
                                     .height(14.dp)
-                                    .background(BrushedGold.copy(alpha = 0.65f), RoundedCornerShape(2.dp))
+                                    .background(
+                                        Brush.verticalGradient(listOf(BrightGold, ArcaneCyan)),
+                                        RoundedCornerShape(2.dp)
+                                    )
                             )
                             if (badgeCount > 0) {
                                 Box(
                                     modifier = Modifier
-                                        .size(16.dp)
+                                        .size(17.dp)
                                         .background(ArcaneCyan, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -836,14 +970,23 @@ private fun OverlayRootContent(
                 }
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.graphicsLayer {
+                        scaleX = dragScale
+                        scaleY = dragScale
+                    }
                 ) {
                     Surface(
                         onClick = onExpandDrawer,
                         shape = CircleShape,
-                        color = ObsidianVoid.copy(alpha = 0.94f),
-                        border = BorderStroke(2.dp, BrushedGold),
-                        shadowElevation = 10.dp,
+                        color = ObsidianVoid.copy(alpha = 0.96f),
+                        border = BorderStroke(
+                            width = if (isDragging) 2.5.dp else 2.dp,
+                            brush = Brush.linearGradient(
+                                if (isDragging) listOf(ArcaneCyan, BrightGold) else listOf(BrightGold, ArcaneCyan)
+                            )
+                        ),
+                        shadowElevation = if (isDragging) 16.dp else 10.dp,
                         modifier = Modifier
                             .size(58.dp)
                             .testTag("overlay_bubble_button")
@@ -879,8 +1022,8 @@ private fun OverlayRootContent(
                     Surface(
                         onClick = onCollapseToEdge,
                         shape = RoundedCornerShape(10.dp),
-                        color = ObsidianVoid.copy(alpha = 0.88f),
-                        border = BorderStroke(1.dp, BrushedGold.copy(alpha = 0.7f)),
+                        color = ObsidianVoid.copy(alpha = 0.90f),
+                        border = BorderStroke(1.dp, BrushedGold.copy(alpha = 0.78f)),
                         shadowElevation = 6.dp,
                         modifier = Modifier
                             .height(24.dp)
@@ -901,7 +1044,7 @@ private fun OverlayRootContent(
                                 text = "Dock",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFFE6ECF5)
+                                color = Color(0xFFF3F7FF)
                             )
                         }
                     }
@@ -942,12 +1085,22 @@ private fun OverlayRootContent(
                         matchesEnv && matchesTier
                     }
                 }
+                val displayedByTier = remember(displayed) {
+                    groupCompsByTier(displayed)
+                }
+                // All tier sub-headers in the Live Match Drawer start closed until opened
+                var expandedOverlayTiers by remember(browseMode, envFilter) {
+                    mutableStateOf(emptySet<TierRank>())
+                }
 
                 Surface(
                     shape = RoundedCornerShape(18.dp),
-                    color = ObsidianVoid.copy(alpha = 0.95f),
-                    border = BorderStroke(1.5.dp, BrushedGold.copy(alpha = 0.7f)),
-                    shadowElevation = 14.dp,
+                    color = ObsidianVoid.copy(alpha = 0.96f),
+                    border = BorderStroke(
+                        width = 1.6.dp,
+                        brush = Brush.linearGradient(listOf(BrightGold, ArcaneCyan))
+                    ),
+                    shadowElevation = 16.dp,
                     modifier = Modifier
                         .width(drawerDims.widthDp)
                         .heightIn(max = drawerDims.maxHeightDp)
@@ -1037,18 +1190,47 @@ private fun OverlayRootContent(
                             )
                         }
 
-                        // LIVE | PBE | S-Tier quick filter (defaults to LIVE; no ALL tab)
+                        // LIVE | PBE | All/Tier quick filter pills + Open/Close all control
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .horizontalScroll(rememberScrollState())
                                 .padding(vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             OverlayEnvChip("LIVE", envFilter == TftEnvironment.LIVE, Icons.Default.Bolt) { envFilter = TftEnvironment.LIVE }
                             OverlayEnvChip("PBE", envFilter == TftEnvironment.PBE, Icons.Default.Science) { envFilter = TftEnvironment.PBE }
-                            OverlayEnvChip("S-Tier", tierFilter == TierRank.S, Icons.Default.WorkspacePremium) {
-                                tierFilter = if (tierFilter == TierRank.S) null else TierRank.S
+                            TierRank.entries.forEach { t ->
+                                val tColor = when (t) {
+                                    TierRank.S -> TierSColor
+                                    TierRank.A -> TierAColor
+                                    TierRank.B -> TierBColor
+                                    TierRank.C -> TierCColor
+                                    TierRank.X -> TierXColor
+                                }
+                                OverlayEnvChip(
+                                    label = "${t.label}-Tier",
+                                    selected = tierFilter == t,
+                                    accentColor = tColor,
+                                    icon = if (t == TierRank.S) Icons.Default.WorkspacePremium else null
+                                ) {
+                                    tierFilter = if (tierFilter == t) null else t
+                                }
+                            }
+                            if (displayedByTier.isNotEmpty()) {
+                                val anyOpen = displayedByTier.any { expandedOverlayTiers.contains(it.first) }
+                                OverlayEnvChip(
+                                    label = if (anyOpen) "Close All" else "Open All",
+                                    selected = anyOpen,
+                                    accentColor = ArcaneCyan
+                                ) {
+                                    expandedOverlayTiers = if (anyOpen) {
+                                        emptySet()
+                                    } else {
+                                        displayedByTier.map { it.first }.toSet()
+                                    }
+                                }
                             }
                         }
 
@@ -1060,7 +1242,7 @@ private fun OverlayRootContent(
                             AnimatedContent(
                                 targetState = Triple(browseMode, envFilter, tierFilter),
                                 transitionSpec = {
-                                    fadeIn(tween(180)) togetherWith fadeOut(tween(130))
+                                    fadeIn(tween(150)) togetherWith fadeOut(tween(110))
                                 },
                                 label = "overlayCompsFilterTransition"
                             ) { (activeMode, activeEnv, _) ->
@@ -1082,24 +1264,60 @@ private fun OverlayRootContent(
                                         )
                                     }
                                 } else {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .verticalScroll(rememberScrollState()),
+                                    val listState = rememberLazyListState()
+                                    LazyColumn(
+                                        state = listState,
+                                        modifier = Modifier.fillMaxWidth(),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        displayed.forEach { comp ->
-                                            val showHex = selectedHexCompId == comp.id
-                                            val isFav = favoriteIds.contains(comp.id)
-                                            OverlayCompCard(
-                                                comp = comp,
-                                                isFavorite = isFav,
-                                                expanded = showHex,
-                                                onCardClick = {
-                                                    selectedHexCompId = if (showHex) null else comp.id
-                                                },
-                                                onToggleFavorite = { onToggleFavorite(comp) }
-                                            )
+                                        displayedByTier.forEach { (tier, tierComps) ->
+                                            val isTierOpen = expandedOverlayTiers.contains(tier)
+                                            item(
+                                                key = "overlay_tier_header_${activeMode}_${activeEnv}_${tier.name}",
+                                                contentType = "overlay_tier_header"
+                                            ) {
+                                                OverlayTierSubHeader(
+                                                    tier = tier,
+                                                    comps = tierComps,
+                                                    expanded = isTierOpen,
+                                                    onClick = {
+                                                        expandedOverlayTiers = if (isTierOpen) {
+                                                            expandedOverlayTiers - tier
+                                                        } else {
+                                                            expandedOverlayTiers + tier
+                                                        }
+                                                    },
+                                                    modifier = Modifier.animateItem(
+                                                        fadeInSpec = tween(180),
+                                                        fadeOutSpec = tween(120),
+                                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                                    )
+                                                )
+                                            }
+                                            if (isTierOpen) {
+                                                items(
+                                                    items = tierComps,
+                                                    key = { "${tier.name}_${it.id}" },
+                                                    contentType = { "overlay_comp" }
+                                                ) { comp ->
+                                                    val showHex = selectedHexCompId == comp.id
+                                                    val isFav = favoriteIds.contains(comp.id)
+                                                    OverlayCompCard(
+                                                        comp = comp,
+                                                        isFavorite = isFav,
+                                                        expanded = showHex,
+                                                        onCardClick = {
+                                                            selectedHexCompId = if (showHex) null else comp.id
+                                                        },
+                                                        onToggleFavorite = { onToggleFavorite(comp) },
+                                                        modifier = Modifier.animateItem(
+                                                            fadeInSpec = tween(180),
+                                                            fadeOutSpec = tween(130),
+                                                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                                        )
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1123,12 +1341,123 @@ private fun OverlayRootContent(
                                 color = BrightGold
                             )
                             Text(
-                                text = "Auto-sync 5m • Live + PBE",
+                                text = "Auto-sync 1m • Live + PBE",
                                 fontSize = 9.sp,
                                 color = Color(0xFF93A1B8)
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OverlayTierSubHeader(
+    tier: TierRank,
+    comps: List<MetaComp>,
+    expanded: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tierColor = when (tier) {
+        TierRank.S -> TierSColor
+        TierRank.A -> TierAColor
+        TierRank.B -> TierBColor
+        TierRank.C -> TierCColor
+        TierRank.X -> TierXColor
+    }
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "overlayTierChevron_${tier.name}"
+    )
+    val previewCarries = remember(comps) {
+        comps.map { it.carryName }.filter { it.isNotBlank() }.distinct().take(3)
+    }
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        color = if (expanded) SlateElevated else DeepSlate,
+        border = BorderStroke(
+            width = if (expanded) 1.3.dp else 1.dp,
+            color = if (expanded) tierColor else tierColor.copy(alpha = 0.42f)
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("overlay_tier_header_${tier.label}")
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            tierColor.copy(alpha = if (expanded) 0.16f else 0.08f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height(22.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(tierColor)
+                    )
+                    TierBadge(tier = tier)
+                    Text(
+                        text = "${comps.size} ${if (comps.size == 1) "Comp" else "Comps"}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (expanded) Color.White else Color(0xFFE3EBFA)
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (!expanded && previewCarries.isNotEmpty()) {
+                        val stackW = (20 + (previewCarries.size - 1) * 12).dp
+                        Box(
+                            modifier = Modifier
+                                .width(stackW)
+                                .height(20.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            previewCarries.forEachIndexed { idx, carry ->
+                                TftChampionAvatar(
+                                    name = carry,
+                                    cost = 4,
+                                    isCarry = false,
+                                    size = 18.dp,
+                                    modifier = Modifier.offset(x = (idx * 12).dp)
+                                )
+                            }
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "Collapse ${tier.label}-Tier" else "Expand ${tier.label}-Tier",
+                        tint = if (expanded) tierColor else Color(0xFF9FB0CC),
+                        modifier = Modifier
+                            .size(18.dp)
+                            .rotate(rotation)
+                    )
                 }
             }
         }
@@ -1142,7 +1471,8 @@ private fun OverlayCompCard(
     isFavorite: Boolean,
     expanded: Boolean,
     onCardClick: () -> Unit,
-    onToggleFavorite: () -> Unit
+    onToggleFavorite: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val unitCosts = remember(comp.hexPlacements) {
         comp.hexPlacements.associate { it.unitName to it.cost }
@@ -1152,9 +1482,9 @@ private fun OverlayCompCard(
         color = DeepSlate,
         border = BorderStroke(
             width = if (isFavorite) 1.3.dp else 1.dp,
-            color = if (isFavorite) BrushedGold.copy(alpha = 0.8f) else SlateOutline
+            color = if (isFavorite) BrushedGold.copy(alpha = 0.85f) else SlateOutline
         ),
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .animateContentSize(spring(stiffness = Spring.StiffnessMediumLow))
             .clickable(onClick = onCardClick)
@@ -1206,7 +1536,7 @@ private fun OverlayCompCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Carry: ${comp.carryName} • ${comp.playstyle} • Avg ${String.format("%.2f", comp.avgPlacement)}",
+                    text = "Carry: ${comp.carryName} • ${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = BrightGold,
                     maxLines = 1,
@@ -1236,7 +1566,7 @@ private fun OverlayCompCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     comp.traits.take(4).forEach { trait ->
-                        TftTraitChip(traitLabel = trait)
+                        TftTraitChip(traitLabel = trait, environment = comp.environment)
                     }
                 }
             }
@@ -1246,7 +1576,7 @@ private fun OverlayCompCard(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                comp.coreUnits.take(8).forEach { unit ->
+                comp.coreUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1262,7 +1592,8 @@ private fun OverlayCompCard(
                             name = unit,
                             cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
                             isCarry = isCarryUnit,
-                            size = 16.dp
+                            size = 16.dp,
+                            environment = comp.environment
                         )
                         Text(
                             text = unit,
@@ -1302,7 +1633,8 @@ private fun OverlayCompCard(
                                     cost = unit.cost,
                                     isCarry = false,
                                     stars = unit.stars,
-                                    size = 18.dp
+                                    size = 18.dp,
+                                    environment = comp.environment
                                 )
                                 Text(
                                     text = "${unit.unitName}:",
@@ -1319,7 +1651,7 @@ private fun OverlayCompCard(
                 }
                 if (comp.hexPlacements.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    MiniOverlayHexGrid(comp.hexPlacements)
+                    MiniOverlayHexGrid(comp.hexPlacements, environment = comp.environment)
                 }
                 if (comp.augmentPriorities.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
@@ -1357,13 +1689,14 @@ private fun OverlayEnvChip(
     label: String,
     selected: Boolean,
     icon: ImageVector? = null,
+    accentColor: Color = BrightGold,
     onClick: () -> Unit
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(8.dp),
-        color = if (selected) BrushedGold.copy(alpha = 0.22f) else SlateElevated,
-        border = BorderStroke(1.dp, if (selected) BrightGold else SlateOutline)
+        shape = RoundedCornerShape(9.dp),
+        color = if (selected) accentColor.copy(alpha = 0.24f) else SlateElevated,
+        border = BorderStroke(1.dp, if (selected) accentColor else SlateOutline)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -1374,7 +1707,7 @@ private fun OverlayEnvChip(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = if (selected) BrightGold else Color(0xFF93A1B8),
+                    tint = if (selected) accentColor else Color(0xFFA6B6D4),
                     modifier = Modifier.size(12.dp)
                 )
             }
@@ -1382,7 +1715,7 @@ private fun OverlayEnvChip(
                 text = label,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = if (selected) BrightGold else Color(0xFF93A1B8),
+                color = if (selected) accentColor else Color(0xFFA6B6D4),
                 maxLines = 1
             )
         }
@@ -1390,7 +1723,10 @@ private fun OverlayEnvChip(
 }
 
 @Composable
-private fun MiniOverlayHexGrid(placements: List<HexUnitPlacement>) {
+private fun MiniOverlayHexGrid(
+    placements: List<HexUnitPlacement>,
+    environment: TftEnvironment? = null
+) {
     val density = LocalDensity.current
     Column(
         modifier = Modifier
@@ -1476,7 +1812,8 @@ private fun MiniOverlayHexGrid(placements: List<HexUnitPlacement>) {
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = (boxDp - 4.dp).coerceIn(13.dp, 20.dp)
+                        size = (boxDp - 4.dp).coerceIn(13.dp, 20.dp),
+                        environment = environment
                     )
                 }
             }

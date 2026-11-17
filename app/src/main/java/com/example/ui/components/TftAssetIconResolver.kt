@@ -4,18 +4,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.example.data.model.TftEnvironment
 import org.json.JSONObject
 
 /**
- * Resolves exact Riot Data Dragon icon URLs for TFT champions, items, and augments,
- * dynamically enriched whenever Data Dragon tft-champion.json, tft-item.json, and tft-augments.json sync.
+ * Resolves exact Riot Data Dragon (16.22.1+) and TFTAcademy asset URLs, display names,
+ * Set 18 champion traits, champion costs, and trait descriptions for all TFT champions,
+ * items, augments, and traits.
  */
 object TftAssetIconResolver {
-    var ddragonVersion: String by mutableStateOf("15.22.1")
+    const val DEFAULT_DDRAGON_VERSION = "16.22.1"
+
+    var ddragonVersion: String by mutableStateOf(DEFAULT_DDRAGON_VERSION)
         private set
 
     /**
-     * Incremented every time Data Dragon catalog maps refresh so icon composables recompose cleanly
+     * Incremented every time catalog maps refresh so icon composables recompose cleanly
      * even if the version string itself stayed constant.
      */
     var catalogRevision: Int by mutableIntStateOf(0)
@@ -24,33 +28,231 @@ object TftAssetIconResolver {
     private var dynamicChampionImages: Map<String, String> by mutableStateOf(emptyMap())
     private var dynamicItemImages: Map<String, String> by mutableStateOf(emptyMap())
     private var dynamicAugmentImages: Map<String, String> by mutableStateOf(emptyMap())
+    private var dynamicTraitImages: Map<String, String> by mutableStateOf(emptyMap())
 
-    fun updateDdragonCatalog(
+    private var preloadedChampionImages: Map<String, String> = emptyMap()
+    private var preloadedItemImages: Map<String, String> = emptyMap()
+    private var preloadedAugmentImages: Map<String, String> = emptyMap()
+    private var preloadedTraitImages: Map<String, String> = emptyMap()
+
+    private var apiDisplayNameMap: Map<String, String> = emptyMap()
+    private var championTraitsCatalog: Map<String, List<String>> = emptyMap()
+    private var championCostsCatalog: Map<String, Int> = emptyMap()
+    private var traitDescriptionCatalog: Map<String, String> = emptyMap()
+
+    private var pbeChampionImages: Map<String, String> = emptyMap()
+    private var pbeTraitImages: Map<String, String> = emptyMap()
+    private var pbeChampionCosts: Map<String, Int> = emptyMap()
+    private var pbeChampionTraits: Map<String, List<String>> = emptyMap()
+
+    @Volatile
+    private var preloadedCatalogLoaded: Boolean = false
+
+    @Volatile
+    private var pbeCatalogLoaded: Boolean = false
+
+    data class ParsedDdragonCatalog(
+        val version: String?,
+        val championImages: Map<String, String>?,
+        val itemImages: Map<String, String>?,
+        val augmentImages: Map<String, String>?,
+        val traitImages: Map<String, String>? = null
+    )
+
+    data class ParsedPreloadedSetCatalog(
+        val version: String?,
+        val championImages: Map<String, String>,
+        val itemImages: Map<String, String>,
+        val augmentImages: Map<String, String>,
+        val traitImages: Map<String, String>,
+        val apiDisplayNames: Map<String, String>,
+        val championTraits: Map<String, List<String>>,
+        val championCosts: Map<String, Int>,
+        val traitDescriptions: Map<String, String>
+    )
+
+    fun isPreloadedCatalogApplied(): Boolean = preloadedCatalogLoaded
+
+    fun isPbeCatalogApplied(): Boolean = pbeCatalogLoaded
+
+    fun updatePbeSetCatalog(
+        championIcons: Map<String, String>,
+        championCosts: Map<String, Int>,
+        championTraits: Map<String, List<String>>,
+        traitIcons: Map<String, String>
+    ) {
+        if (championIcons.isEmpty() && traitIcons.isEmpty()) return
+        val normChamps = HashMap<String, String>(championIcons.size * 2)
+        championIcons.forEach { (k, v) ->
+            if (v.isNotBlank()) normChamps[normalizeLookupKey(k)] = v
+        }
+        val normTraits = HashMap<String, String>(traitIcons.size * 2)
+        traitIcons.forEach { (k, v) ->
+            if (v.isNotBlank()) normTraits[normalizeLookupKey(k)] = v
+        }
+        val normCosts = HashMap<String, Int>(championCosts.size * 2)
+        championCosts.forEach { (k, v) ->
+            if (v in 1..9) normCosts[normalizeLookupKey(k)] = v
+        }
+        val normChampTraits = HashMap<String, List<String>>(championTraits.size * 2)
+        championTraits.forEach { (k, v) ->
+            if (v.isNotEmpty()) normChampTraits[normalizeLookupKey(k)] = v
+        }
+        pbeChampionImages = normChamps
+        pbeTraitImages = normTraits
+        pbeChampionCosts = normCosts
+        pbeChampionTraits = normChampTraits
+        pbeCatalogLoaded = true
+        catalogRevision += 1
+    }
+
+    fun parsePreloadedSetCatalogInBackground(rawJson: String): ParsedPreloadedSetCatalog? {
+        return runCatching {
+            val root = JSONObject(rawJson)
+            val version = root.optString("ddragonVersion").takeIf { it.isNotBlank() }
+
+            fun readStringMap(obj: JSONObject?): Map<String, String> {
+                if (obj == null) return emptyMap()
+                val out = HashMap<String, String>(obj.length() * 2)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = obj.optString(k)
+                    if (v.isNotBlank()) {
+                        out[normalizeLookupKey(k)] = v
+                    }
+                }
+                return out
+            }
+
+            val traitsMap = HashMap<String, List<String>>()
+            root.optJSONObject("championTraits")?.let { obj ->
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val arr = obj.optJSONArray(k) ?: continue
+                    val list = (0 until arr.length()).mapNotNull { i ->
+                        arr.optString(i).takeIf { it.isNotBlank() }
+                    }
+                    if (list.isNotEmpty()) {
+                        traitsMap[normalizeLookupKey(k)] = list
+                    }
+                }
+            }
+
+            val costsMap = HashMap<String, Int>()
+            root.optJSONObject("championCosts")?.let { obj ->
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val cost = obj.optInt(k, 0)
+                    if (cost in 1..5) {
+                        costsMap[normalizeLookupKey(k)] = cost
+                    }
+                }
+            }
+
+            val traitDescMap = HashMap<String, String>()
+            root.optJSONArray("traits")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val name = obj.optString("name")
+                    val api = obj.optString("apiName")
+                    val desc = obj.optString("description")
+                    if (desc.isNotBlank()) {
+                        if (name.isNotBlank()) traitDescMap[normalizeLookupKey(name)] = desc
+                        if (api.isNotBlank()) traitDescMap[normalizeLookupKey(api)] = desc
+                    }
+                }
+            }
+
+            ParsedPreloadedSetCatalog(
+                version = version,
+                championImages = readStringMap(root.optJSONObject("championIcons")),
+                itemImages = readStringMap(root.optJSONObject("itemIcons")),
+                augmentImages = readStringMap(root.optJSONObject("augmentIcons")),
+                traitImages = readStringMap(root.optJSONObject("traitIcons")),
+                apiDisplayNames = readStringMap(root.optJSONObject("apiIdToName")),
+                championTraits = traitsMap,
+                championCosts = costsMap,
+                traitDescriptions = traitDescMap
+            )
+        }.getOrNull()
+    }
+
+    fun applyPreloadedSetCatalog(parsed: ParsedPreloadedSetCatalog) {
+        if (!parsed.version.isNullOrBlank() && dynamicChampionImages.isEmpty()) {
+            ddragonVersion = parsed.version
+        }
+        preloadedChampionImages = parsed.championImages
+        preloadedItemImages = parsed.itemImages
+        preloadedAugmentImages = parsed.augmentImages
+        preloadedTraitImages = parsed.traitImages
+        apiDisplayNameMap = parsed.apiDisplayNames
+        championTraitsCatalog = parsed.championTraits
+        championCostsCatalog = parsed.championCosts
+        traitDescriptionCatalog = parsed.traitDescriptions
+        preloadedCatalogLoaded = true
+        catalogRevision += 1
+    }
+
+    fun parseDdragonCatalogInBackground(
         version: String?,
         championJson: String? = null,
         itemJson: String? = null,
-        augmentJson: String? = null
-    ) {
+        augmentJson: String? = null,
+        traitJson: String? = null
+    ): ParsedDdragonCatalog {
+        val champs = championJson?.takeIf { it.isNotBlank() }
+            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-champion").takeIf { m -> m.isNotEmpty() } }
+        val items = itemJson?.takeIf { it.isNotBlank() }
+            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-item").takeIf { m -> m.isNotEmpty() } }
+        val augments = augmentJson?.takeIf { it.isNotBlank() }
+            ?.let {
+                parseDdragonAssetJson(
+                    jsonText = it,
+                    defaultGroup = "tft-augment",
+                    skipMissingPlaceholderImages = true
+                ).takeIf { m -> m.isNotEmpty() }
+            }
+        val traits = traitJson?.takeIf { it.isNotBlank() }
+            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-trait").takeIf { m -> m.isNotEmpty() } }
+        return ParsedDdragonCatalog(
+            version = version?.takeIf { it.isNotBlank() },
+            championImages = champs,
+            itemImages = items,
+            augmentImages = augments,
+            traitImages = traits
+        )
+    }
+
+    fun applyParsedDdragonCatalog(parsed: ParsedDdragonCatalog) {
         var changed = false
-        if (!version.isNullOrBlank() && version != ddragonVersion) {
-            ddragonVersion = version
+        if (!parsed.version.isNullOrBlank() && parsed.version != ddragonVersion) {
+            ddragonVersion = parsed.version
             changed = true
         }
-        if (!championJson.isNullOrBlank()) {
-            parseDdragonAssetJson(championJson, defaultGroup = "tft-champion").takeIf { it.isNotEmpty() }?.let {
+        parsed.championImages?.let {
+            if (it != dynamicChampionImages) {
                 dynamicChampionImages = it
                 changed = true
             }
         }
-        if (!itemJson.isNullOrBlank()) {
-            parseDdragonAssetJson(itemJson, defaultGroup = "tft-item").takeIf { it.isNotEmpty() }?.let {
+        parsed.itemImages?.let {
+            if (it != dynamicItemImages) {
                 dynamicItemImages = it
                 changed = true
             }
         }
-        if (!augmentJson.isNullOrBlank()) {
-            parseDdragonAssetJson(augmentJson, defaultGroup = "tft-augment").takeIf { it.isNotEmpty() }?.let {
+        parsed.augmentImages?.let {
+            if (it != dynamicAugmentImages) {
                 dynamicAugmentImages = it
+                changed = true
+            }
+        }
+        parsed.traitImages?.let {
+            if (it != dynamicTraitImages) {
+                dynamicTraitImages = it
                 changed = true
             }
         }
@@ -59,7 +261,87 @@ object TftAssetIconResolver {
         }
     }
 
-    fun resolveChampionIconUrl(nameOrId: String): String? {
+    fun updateDdragonCatalog(
+        version: String?,
+        championJson: String? = null,
+        itemJson: String? = null,
+        augmentJson: String? = null,
+        traitJson: String? = null
+    ) {
+        applyParsedDdragonCatalog(
+            parseDdragonCatalogInBackground(
+                version = version,
+                championJson = championJson,
+                itemJson = itemJson,
+                augmentJson = augmentJson,
+                traitJson = traitJson
+            )
+        )
+    }
+
+    fun resolveDisplayName(rawId: String): String? {
+        val raw = rawId.trim()
+        if (raw.isEmpty()) return null
+        val norm = normalizeLookupKey(raw)
+        apiDisplayNameMap[norm]?.let { return it }
+        BUILTIN_DISPLAY_NAME_OVERRIDES[norm]?.let { return it }
+        return null
+    }
+
+    fun getChampionTraits(nameOrId: String, environment: TftEnvironment? = null): List<String> {
+        val norm = normalizeLookupKey(nameOrId)
+        val cleanNorm = normalizeLookupKey(formatRiotAssetLabel(nameOrId))
+        if (environment == TftEnvironment.PBE) {
+            (pbeChampionTraits[norm] ?: pbeChampionTraits[cleanNorm])?.let { return it }
+        }
+        return championTraitsCatalog[norm]
+            ?: championTraitsCatalog[cleanNorm]
+            ?: pbeChampionTraits[norm]
+            ?: pbeChampionTraits[cleanNorm]
+            ?: emptyList()
+    }
+
+    fun getChampionCost(nameOrId: String, environment: TftEnvironment? = null): Int? {
+        val norm = normalizeLookupKey(nameOrId)
+        val cleanNorm = normalizeLookupKey(formatRiotAssetLabel(nameOrId))
+        if (environment == TftEnvironment.PBE) {
+            (pbeChampionCosts[norm] ?: pbeChampionCosts[cleanNorm])?.let { return it }
+        }
+        return championCostsCatalog[norm]
+            ?: championCostsCatalog[cleanNorm]
+            ?: pbeChampionCosts[norm]
+            ?: pbeChampionCosts[cleanNorm]
+    }
+
+    fun resolveTraitDescription(traitNameOrId: String): String? {
+        val clean = traitNameOrId.replace(Regex("^\\d+\\s+"), "").trim()
+        val norm = normalizeLookupKey(clean)
+        return traitDescriptionCatalog[norm] ?: traitDescriptionCatalog[normalizeLookupKey(traitNameOrId)]
+    }
+
+    fun resolveTraitIconUrl(traitNameOrId: String, environment: TftEnvironment? = null): String? {
+        val clean = traitNameOrId.replace(Regex("^\\d+\\s+"), "").trim()
+        if (clean.isEmpty()) return null
+        val norm = normalizeLookupKey(clean)
+        val rawNorm = normalizeLookupKey(traitNameOrId)
+        if (environment == TftEnvironment.PBE) {
+            val pbeUrl = pbeTraitImages[norm] ?: pbeTraitImages[rawNorm]
+            if (!pbeUrl.isNullOrBlank()) return pbeUrl
+        }
+        val dynamicPath = dynamicTraitImages[norm]
+            ?: dynamicTraitImages[rawNorm]
+            ?: dynamicTraitImages["da18$norm"]
+        if (!dynamicPath.isNullOrBlank()) {
+            return toDdragonImgUrl(dynamicPath)
+        }
+        val preloaded = preloadedTraitImages[norm] ?: preloadedTraitImages[rawNorm]
+        if (!preloaded.isNullOrBlank()) {
+            return preloaded
+        }
+        return pbeTraitImages[norm] ?: pbeTraitImages[rawNorm]
+    }
+
+    fun resolveChampionIconUrl(nameOrId: String, environment: TftEnvironment? = null): String? {
         val raw = nameOrId.trim()
         if (raw.isEmpty()) return null
 
@@ -67,18 +349,38 @@ object TftAssetIconResolver {
         val cleanName = formatRiotAssetLabel(raw)
         val cleanNorm = normalizeLookupKey(cleanName)
 
+        // 0. For PBE comps/champions, prefer verified TFTactics Set 19 portraits first
+        if (environment == TftEnvironment.PBE) {
+            val pbeUrl = pbeChampionImages[norm] ?: pbeChampionImages[cleanNorm]
+            if (!pbeUrl.isNullOrBlank()) {
+                return pbeUrl
+            }
+        }
+
         // 1. Check dynamically fetched Riot tft-champion.json map
         val dynamicPath = dynamicChampionImages[norm] ?: dynamicChampionImages[cleanNorm]
         if (!dynamicPath.isNullOrBlank()) {
             return toDdragonImgUrl(dynamicPath)
         }
 
-        // 2. Skip invalid League CDN URL guesses for TFT-exclusive creatures/NPCs until live tft-champion.json maps them
+        // 2. Check preloaded Set 18 exact DDragon/TFTAcademy champion icon catalog
+        val preloaded = preloadedChampionImages[norm] ?: preloadedChampionImages[cleanNorm]
+        if (!preloaded.isNullOrBlank()) {
+            return preloaded
+        }
+
+        // 3. Fall back to PBE Set 19 catalog if caller did not pass environment (e.g. Set 19-exclusive units)
+        val pbeFallback = pbeChampionImages[norm] ?: pbeChampionImages[cleanNorm]
+        if (!pbeFallback.isNullOrBlank()) {
+            return pbeFallback
+        }
+
+        // 4. Skip invalid League CDN URL guesses for TFT-exclusive creatures/NPCs
         if (NON_LOL_CHAMPION_KEYS.contains(cleanNorm) || NON_LOL_CHAMPION_KEYS.contains(norm)) {
             return null
         }
 
-        // 3. Fall back to standard League Data Dragon champion portrait URL
+        // 5. Fall back to standard League Data Dragon champion portrait URL
         val key = SPECIAL_CHAMPION_KEYS[cleanNorm]
             ?: SPECIAL_CHAMPION_KEYS[norm]
             ?: toChampionKey(cleanName)
@@ -100,13 +402,19 @@ object TftAssetIconResolver {
             return toDdragonImgUrl(dynamicPath)
         }
 
-        // 2. Check exact Data Dragon TFT item filename map
+        // 2. Check preloaded Set 18 exact DDragon/TFTAcademy item icon catalog
+        val preloaded = preloadedItemImages[norm] ?: preloadedItemImages[cleanNorm]
+        if (!preloaded.isNullOrBlank()) {
+            return preloaded
+        }
+
+        // 3. Check exact Data Dragon TFT item filename map
         val staticFile = ITEM_FILENAME_MAP[cleanNorm] ?: ITEM_FILENAME_MAP[norm]
         if (!staticFile.isNullOrBlank()) {
             return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/$staticFile"
         }
 
-        // 3. Fallback if raw API ID is already like TFT_Item_Something
+        // 4. Fallback if raw API ID is already like TFT_Item_Something
         if (raw.startsWith("TFT", ignoreCase = true)) {
             val suffix = raw.substringAfterLast("_").replace(Regex("[^A-Za-z0-9]"), "")
             if (suffix.isNotBlank()) {
@@ -135,7 +443,7 @@ object TftAssetIconResolver {
                 .replace(Regex("\\s+(III|II|I)\\s*$", RegexOption.IGNORE_CASE), "")
         )
 
-        // 1. Check dynamically fetched Riot tft-augments.json map
+        // 1. Check dynamically fetched Riot tft-augments.json map (real non-missing icons)
         val dynamicPath = dynamicAugmentImages[norm]
             ?: dynamicAugmentImages[cleanNorm]
             ?: dynamicAugmentImages[strippedTierNorm]
@@ -143,7 +451,15 @@ object TftAssetIconResolver {
             return toDdragonImgUrl(dynamicPath)
         }
 
-        // 2. Check evergreen / well-known Data Dragon augment filenames
+        // 2. Check preloaded Set 18 exact DDragon/TFTAcademy 200-OK augment icon catalog
+        val preloaded = preloadedAugmentImages[norm]
+            ?: preloadedAugmentImages[cleanNorm]
+            ?: preloadedAugmentImages[strippedTierNorm]
+        if (!preloaded.isNullOrBlank()) {
+            return preloaded
+        }
+
+        // 3. Check evergreen / well-known Data Dragon augment filenames
         val staticFile = AUGMENT_FILENAME_MAP[norm]
             ?: AUGMENT_FILENAME_MAP[cleanNorm]
             ?: AUGMENT_FILENAME_MAP[strippedTierNorm]
@@ -161,28 +477,39 @@ object TftAssetIconResolver {
         parseDdragonAssetJson(jsonText, defaultGroup = "tft-item")
 
     internal fun parseDdragonAugmentJson(jsonText: String): Map<String, String> =
-        parseDdragonAssetJson(jsonText, defaultGroup = "tft-augment")
+        parseDdragonAssetJson(jsonText, defaultGroup = "tft-augment", skipMissingPlaceholderImages = true)
 
-    private fun parseDdragonAssetJson(jsonText: String, defaultGroup: String): Map<String, String> {
+    private fun parseDdragonAssetJson(
+        jsonText: String,
+        defaultGroup: String,
+        skipMissingPlaceholderImages: Boolean = false
+    ): Map<String, String> {
         val map = mutableMapOf<String, String>()
         runCatching {
             val root = JSONObject(jsonText)
             val data = root.optJSONObject("data") ?: return@runCatching
             val keys = data.keys()
             while (keys.hasNext()) {
-                val id = keys.next()
-                val obj = data.optJSONObject(id) ?: continue
+                val mapKey = keys.next()
+                val obj = data.optJSONObject(mapKey) ?: continue
+                val apiId = obj.optString("id")
                 val name = obj.optString("name")
                 val imageObj = obj.optJSONObject("image")
                 val fullImg = imageObj?.optString("full").orEmpty()
                 if (fullImg.isNotBlank()) {
+                    if (skipMissingPlaceholderImages && fullImg.startsWith("Missing-", ignoreCase = true)) {
+                        continue
+                    }
                     val group = imageObj?.optString("group").orEmpty().ifBlank { defaultGroup }
                     val storedPath = if (fullImg.startsWith("http") || fullImg.contains("/")) {
                         fullImg
                     } else {
                         "$group/$fullImg"
                     }
-                    map[normalizeLookupKey(id)] = storedPath
+                    map[normalizeLookupKey(mapKey)] = storedPath
+                    if (apiId.isNotBlank()) {
+                        map[normalizeLookupKey(apiId)] = storedPath
+                    }
                     if (name.isNotBlank()) {
                         map[normalizeLookupKey(name)] = storedPath
                     }
@@ -211,15 +538,45 @@ object TftAssetIconResolver {
             }
     }
 
+    private val BUILTIN_DISPLAY_NAME_OVERRIDES: Map<String, String> = mapOf(
+        "da18sentry" to "Pebbles",
+        "da18emblemslayer" to "Ravager Emblem",
+        "da18florafatalisaugment" to "Consuming Flora",
+        "da18rivalsaugment" to "Unrivaled",
+        "da18riftbeasttraitaugment" to "Omega Riftbeast",
+        "da18gnarsmall" to "Gnar",
+        "da18luxelderwood" to "Lux (Elderwood)",
+        "dabrambleback18" to "Brambleback",
+        "dacinderling18" to "Cinderling",
+        "dascuttlecrab18" to "Scuttlecrab",
+        "dakarma18" to "Karma",
+        "dalulu18" to "Lulu",
+        "dazoe18" to "Zoe",
+        "dagromp18ap" to "Gromp",
+        "damurkwolf18" to "Murkwolf",
+        "da18elderdragon" to "Elder Dragon",
+        "dabaronnashor18" to "Baron Nashor",
+        "daelderwood18lifeblossom" to "Lifeblossom",
+        "daelderwood18stonebarktree" to "Stonebark Tree",
+        "daelderwood18protector" to "Deepwood Protector",
+        "danestingdolls" to "Nesting Dolls"
+    )
+
     private val NON_LOL_CHAMPION_KEYS: Set<String> = setOf(
         "gromp",
         "brambleback",
         "elderdragon",
         "krug",
         "pebbles",
+        "sentry",
         "murkwolf",
+        "cinderling",
+        "scuttlecrab",
         "baronnashor",
         "alune",
+        "lifeblossom",
+        "stonebarktree",
+        "deepwoodprotector",
         "smeech",
         "silco",
         "kobuko",
@@ -320,7 +677,8 @@ object TftAssetIconResolver {
         "negatroncloak" to "TFT_Item_NegatronCloak.png",
         "giantsbelt" to "TFT_Item_GiantsBelt.png",
         "sparringgloves" to "TFT_Item_SparringGloves.png",
-        "spatula" to "TFT_Item_Spatula.png"
+        "spatula" to "TFT_Item_Spatula.png",
+        "fryingpan" to "DA_Component_FryingPan.png"
     )
 
     private val AUGMENT_FILENAME_MAP: Map<String, String> = mapOf(

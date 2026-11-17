@@ -75,6 +75,11 @@ interface DDragonApi {
     suspend fun getTftAugmentsJson(
         @Path("version") version: String
     ): Response<okhttp3.ResponseBody>
+
+    @GET("cdn/{version}/data/en_US/tft-trait.json")
+    suspend fun getTftTraitsJson(
+        @Path("version") version: String
+    ): Response<okhttp3.ResponseBody>
 }
 
 object RiotApiClientFactory {

@@ -6,11 +6,13 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,9 +21,11 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,17 +33,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
@@ -61,10 +67,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -94,6 +102,19 @@ import com.example.ui.components.TierBadge
 import com.example.ui.components.environmentSlideTransitionSpec
 import com.example.ui.theme.LocalHextechColors
 import com.example.ui.viewmodel.UiState
+import java.util.Locale
+
+internal fun groupCompsByTier(comps: List<MetaComp>): List<Pair<TierRank, List<MetaComp>>> {
+    if (comps.isEmpty()) return emptyList()
+    return TierRank.entries
+        .sortedBy { it.sortOrder }
+        .mapNotNull { tier ->
+            val tierComps = comps
+                .filter { it.tier == tier }
+                .sortedWith(compareBy<MetaComp> { it.avgPlacement }.thenBy { it.title })
+            if (tierComps.isEmpty()) null else tier to tierComps
+        }
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -121,6 +142,8 @@ fun MetaSnapshotsScreen(
     var showFavoritesOnly by remember { mutableStateOf(false) }
     var inspectedComp by remember { mutableStateOf<MetaComp?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
+    // All tier sub-headers start closed until explicitly opened by the user
+    var expandedTierNames by rememberSaveable { mutableStateOf(emptyList<String>()) }
 
     val favorites = (favoritesState as? UiState.Success)?.data.orEmpty()
     val favoriteIds = remember(favorites) { favorites.map { it.compId.ifBlank { it.id } }.toSet() }
@@ -141,6 +164,9 @@ fun MetaSnapshotsScreen(
             val matchesFilter = when (selectedFilter) {
                 "S" -> comp.tier == TierRank.S
                 "A" -> comp.tier == TierRank.A
+                "B" -> comp.tier == TierRank.B
+                "C" -> comp.tier == TierRank.C
+                "X" -> comp.tier == TierRank.X
                 "REROLL" -> comp.playstyle.contains("Reroll", ignoreCase = true)
                 "FAST8" -> comp.playstyle.contains("Fast", ignoreCase = true)
                 "TRENDING" -> comp.isTrending
@@ -148,6 +174,10 @@ fun MetaSnapshotsScreen(
             }
             matchesSearch && matchesFilter
         }
+    }
+
+    val compsByTier = remember(displayedComps) {
+        groupCompsByTier(displayedComps)
     }
 
     LazyColumn(
@@ -241,11 +271,18 @@ fun MetaSnapshotsScreen(
                                 color = Color.White,
                                 modifier = Modifier.weight(1f)
                             )
+                            val isPbeEnv = activeEnv == TftEnvironment.PBE
+                            val sourcePageUrl = if (isPbeEnv) {
+                                "https://tftactics.gg/tierlist/team-comps/"
+                            } else {
+                                "https://tftacademy.com/tierlist/comps"
+                            }
+                            val sourceDomainLabel = if (isPbeEnv) "tftactics.gg" else "tftacademy.com"
                             Surface(
                                 onClick = {
                                     runCatching {
                                         context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse("https://tftactics.gg/tierlist/team-comps/"))
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(sourcePageUrl))
                                         )
                                     }
                                 },
@@ -259,13 +296,13 @@ fun MetaSnapshotsScreen(
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Text(
-                                        text = "tftactics.gg",
+                                        text = sourceDomainLabel,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.secondary
                                     )
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                        contentDescription = "Open tftactics.gg team comps",
+                                        contentDescription = "Open $sourceDomainLabel team comps",
                                         tint = MaterialTheme.colorScheme.secondary,
                                         modifier = Modifier.size(12.dp)
                                     )
@@ -433,6 +470,9 @@ fun MetaSnapshotsScreen(
                         "TRENDING" to "Trending",
                         "S" to "S-Tier",
                         "A" to "A-Tier",
+                        "B" to "B-Tier",
+                        "C" to "C-Tier",
+                        "X" to "X-Tier",
                         "FAST8" to "Fast 8/9",
                         "REROLL" to "Reroll"
                     )
@@ -447,15 +487,36 @@ fun MetaSnapshotsScreen(
             }
         }
 
-        if (displayedComps.isEmpty()) {
-            item(key = "empty_comps_${environment.name}") {
+        if (compsByTier.isEmpty()) {
+            item(key = "empty_comps_${environment.name}", contentType = "empty_state") {
+                val awaitingInitialSync = !showFavoritesOnly && comps.isEmpty()
+                val isPbeEnv = environment == TftEnvironment.PBE
+                val sourceSiteLabel = if (isPbeEnv) "TFTactics" else "TFTAcademy"
+                val sourceSiteUrlText = if (isPbeEnv) "tftactics.gg/tierlist/team-comps/" else "tftacademy.com/tierlist/comps"
                 HextechEmptyState(
                     icon = Icons.Default.AutoAwesome,
-                    title = if (showFavoritesOnly) "No Saved Favorites in ${environment.label}" else "No Matching Compositions",
-                    subtitle = if (showFavoritesOnly) {
-                        "Star a ${environment.label} composition or tap Custom to craft your own board."
+                    title = when {
+                        showFavoritesOnly -> "No Saved Favorites in ${environment.label}"
+                        awaitingInitialSync && isRefreshing -> "Syncing Comps from $sourceSiteLabel..."
+                        awaitingInitialSync -> "$sourceSiteLabel Comps Not Cached Yet"
+                        else -> "No Matching Compositions"
+                    },
+                    subtitle = when {
+                        showFavoritesOnly -> "Star a ${environment.label} composition or tap Custom to craft your own board."
+                        awaitingInitialSync -> "Compositions load from $sourceSiteUrlText. Tap Sync to pull the latest tier list."
+                        else -> "Try clearing your search or switching between LIVE and PBE snapshots."
+                    },
+                    action = if (awaitingInitialSync && !isRefreshing) {
+                        {
+                            Button(
+                                onClick = onRefreshSync,
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text("Sync $sourceSiteLabel Comps")
+                            }
+                        }
                     } else {
-                        "Try clearing your search or switching between LIVE and PBE snapshots."
+                        null
                     },
                     modifier = Modifier.animateItem(
                         fadeInSpec = tween(220),
@@ -465,25 +526,141 @@ fun MetaSnapshotsScreen(
                 )
             }
         } else {
-            items(displayedComps, key = { it.id }) { comp ->
-                val isFav = favoriteIds.contains(comp.id)
-                val isPinned = pinnedIds.contains(comp.id)
-                MetaCompCard(
-                    comp = comp,
-                    isFavorite = isFav,
-                    isPinned = isPinned,
-                    onCardClick = { inspectedComp = comp },
-                    onToggleFavorite = { onToggleFavorite(comp) },
-                    onTogglePin = {
-                        if (!isFav) onToggleFavorite(comp)
-                        else onTogglePin(comp.id, !isPinned)
-                    },
-                    modifier = Modifier.animateItem(
-                        fadeInSpec = tween(220),
-                        fadeOutSpec = tween(160),
-                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            item(key = "tier_summary_controls_${environment.name}", contentType = "tier_controls") {
+                val anyTierOpen = compsByTier.any { (tier, _) -> expandedTierNames.contains(tier.name) }
+                val hextech = LocalHextechColors.current
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "${displayedComps.size} Comps • ${compsByTier.size} Tiers • Tap Tier to open",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            onClick = {
+                                expandedTierNames = if (anyTierOpen) {
+                                    emptyList()
+                                } else {
+                                    compsByTier.map { it.first.name }
+                                }
+                            },
+                            modifier = Modifier.testTag("toggle_all_tiers_button")
+                        ) {
+                            Text(
+                                text = if (anyTierOpen) "Close all" else "Open all",
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // Vibrant clickable Tier summary pills for instant single-tap open/close
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(compsByTier, key = { "pill_${it.first.name}" }) { (tier, tierComps) ->
+                            val isOpen = expandedTierNames.contains(tier.name)
+                            val tierColor = when (tier) {
+                                TierRank.S -> hextech.tierS
+                                TierRank.A -> hextech.tierA
+                                TierRank.B -> hextech.tierB
+                                TierRank.C -> hextech.tierC
+                                TierRank.X -> hextech.tierX
+                            }
+                            Surface(
+                                onClick = {
+                                    expandedTierNames = if (isOpen) {
+                                        expandedTierNames - tier.name
+                                    } else {
+                                        expandedTierNames + tier.name
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isOpen) tierColor.copy(alpha = 0.24f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                                border = BorderStroke(
+                                    width = if (isOpen) 1.4.dp else 1.dp,
+                                    color = if (isOpen) tierColor else tierColor.copy(alpha = 0.45f)
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(tierColor)
+                                    )
+                                    Text(
+                                        text = "${tier.label} (${tierComps.size})",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (isOpen) tierColor else MaterialTheme.colorScheme.onSurface,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            compsByTier.forEach { (tier, tierComps) ->
+                val isTierExpanded = expandedTierNames.contains(tier.name)
+                item(
+                    key = "tier_header_${environment.name}_${tier.name}",
+                    contentType = "tier_header"
+                ) {
+                    TierSubHeaderCard(
+                        tier = tier,
+                        comps = tierComps,
+                        expanded = isTierExpanded,
+                        environment = environment,
+                        onToggle = {
+                            expandedTierNames = if (isTierExpanded) {
+                                expandedTierNames - tier.name
+                            } else {
+                                expandedTierNames + tier.name
+                            }
+                        },
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = tween(200),
+                            fadeOutSpec = tween(150),
+                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                        )
                     )
-                )
+                }
+
+                if (isTierExpanded) {
+                    items(
+                        items = tierComps,
+                        key = { "${tier.name}_${it.id}" },
+                        contentType = { "comp_card" }
+                    ) { comp ->
+                        val isFav = favoriteIds.contains(comp.id)
+                        val isPinned = pinnedIds.contains(comp.id)
+                        MetaCompCard(
+                            comp = comp,
+                            isFavorite = isFav,
+                            isPinned = isPinned,
+                            onCardClick = { inspectedComp = comp },
+                            onToggleFavorite = { onToggleFavorite(comp) },
+                            onTogglePin = {
+                                if (!isFav) onToggleFavorite(comp)
+                                else onTogglePin(comp.id, !isPinned)
+                            },
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = tween(220),
+                                fadeOutSpec = tween(160),
+                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                            )
+                        )
+                    }
+                }
             }
         }
 
@@ -536,10 +713,10 @@ private fun MetaCompCard(
     modifier: Modifier = Modifier
 ) {
     val hextech = LocalHextechColors.current
-    val placementCostByUnit = remember(comp.hexPlacements) {
+    val placementCostByUnit = remember(comp.id, comp.hexPlacements) {
         comp.hexPlacements.associate { it.unitName to it.cost }
     }
-    val carryItems = remember(comp.hexPlacements) {
+    val carryItems = remember(comp.id, comp.hexPlacements) {
         comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
     }
 
@@ -609,7 +786,7 @@ private fun MetaCompCard(
                 if (comp.isTrending) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            Icons.Default.TrendingUp,
+                            Icons.AutoMirrored.Filled.TrendingUp,
                             contentDescription = "Trending composition",
                             tint = hextech.buff,
                             modifier = Modifier.size(14.dp)
@@ -631,24 +808,37 @@ private fun MetaCompCard(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     comp.traits.forEach { trait ->
-                        TftTraitChip(traitLabel = trait)
+                        TftTraitChip(traitLabel = trait, environment = comp.environment)
                     }
                 }
             }
 
             Spacer(Modifier.height(10.dp))
 
-            // Metrics strip
+            // Vibrant color-coded metrics strip
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                            )
+                        ),
+                        RoundedCornerShape(10.dp)
+                    )
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                StatCell("AVG PLACE", String.format("%.2f", comp.avgPlacement))
-                StatCell("TOP 4", "${comp.top4Rate}%")
-                StatCell("WIN RATE", "${comp.winRate}%")
+                StatCell(
+                    label = "AVG PLACE",
+                    value = String.format(Locale.US, "%.2f", comp.avgPlacement),
+                    valueColor = if (comp.avgPlacement <= 3.9) hextech.buff else MaterialTheme.colorScheme.primary
+                )
+                StatCell("TOP 4", "${comp.top4Rate}%", valueColor = MaterialTheme.colorScheme.secondary)
+                StatCell("WIN RATE", "${comp.winRate}%", valueColor = MaterialTheme.colorScheme.tertiary)
                 StatCell("PATCH", comp.patchTag)
             }
 
@@ -681,7 +871,8 @@ private fun MetaCompCard(
                                 name = unit,
                                 cost = cost,
                                 isCarry = isCarry,
-                                size = 20.dp
+                                size = 20.dp,
+                                environment = comp.environment
                             )
                             Text(
                                 text = unit,
@@ -713,7 +904,11 @@ private fun MetaCompCard(
 }
 
 @Composable
-private fun StatCell(label: String, value: String) {
+private fun StatCell(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface
+) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = label,
@@ -723,7 +918,7 @@ private fun StatCell(label: String, value: String) {
         Text(
             text = value,
             style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = valueColor,
             fontWeight = FontWeight.Bold
         )
     }
@@ -783,7 +978,7 @@ private fun CompDetailSheetContent(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 comp.traits.forEach { trait ->
-                    TftTraitChip(traitLabel = trait)
+                    TftTraitChip(traitLabel = trait, environment = comp.environment)
                 }
             }
         }
@@ -825,7 +1020,7 @@ private fun CompDetailSheetContent(
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
             )
-            TftHexBoard(placements = comp.hexPlacements)
+            TftHexBoard(placements = comp.hexPlacements, environment = comp.environment)
         }
 
         val carryItems = comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
@@ -964,4 +1159,165 @@ private fun CreateCustomCompDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+@Composable
+private fun TierSubHeaderCard(
+    tier: TierRank,
+    comps: List<MetaComp>,
+    expanded: Boolean,
+    environment: TftEnvironment,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hextech = LocalHextechColors.current
+    val tierColor = when (tier) {
+        TierRank.S -> hextech.tierS
+        TierRank.A -> hextech.tierA
+        TierRank.B -> hextech.tierB
+        TierRank.C -> hextech.tierC
+        TierRank.X -> hextech.tierX
+    }
+    val tierSubtitle = when (tier) {
+        TierRank.S -> "Meta Leaders"
+        TierRank.A -> "Strong Contenders"
+        TierRank.B -> "Situational Picks"
+        TierRank.C -> "Niche & Flex Comps"
+        TierRank.X -> "Experimental & Craft"
+    }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "tierChevronRotation_${tier.name}"
+    )
+    val previewCarries = remember(comps) {
+        comps.map { it.carryName }.filter { it.isNotBlank() }.distinct().take(4)
+    }
+    val previewTitles = remember(comps) {
+        comps.take(3).joinToString(" • ") { it.title }
+    }
+
+    Surface(
+        onClick = onToggle,
+        shape = RoundedCornerShape(16.dp),
+        color = if (expanded) {
+            MaterialTheme.colorScheme.surfaceVariant
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = BorderStroke(
+            width = if (expanded) 1.5.dp else 1.1.dp,
+            color = if (expanded) tierColor else tierColor.copy(alpha = 0.45f)
+        ),
+        tonalElevation = if (expanded) 5.dp else 2.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 62.dp)
+            .testTag("tier_section_header_${environment.name}_${tier.label}")
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            tierColor.copy(alpha = if (expanded) 0.16f else 0.08f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(4.dp)
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(tierColor)
+                    )
+                    TierBadge(tier = tier)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "${tier.label}-Tier",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = tierColor.copy(alpha = 0.20f)
+                            ) {
+                                Text(
+                                    text = "${comps.size} ${if (comps.size == 1) "Comp" else "Comps"}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = tierColor,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = if (expanded || previewTitles.isBlank()) {
+                                "$tierSubtitle • Tap to collapse"
+                            } else {
+                                previewTitles
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (!expanded && previewCarries.isNotEmpty()) {
+                        val stackWidth = (26 + (previewCarries.size - 1) * 15).dp
+                        Box(
+                            modifier = Modifier
+                                .width(stackWidth)
+                                .height(26.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            previewCarries.forEachIndexed { idx, carry ->
+                                TftChampionAvatar(
+                                    name = carry,
+                                    cost = 4,
+                                    isCarry = false,
+                                    size = 24.dp,
+                                    modifier = Modifier.offset(x = (idx * 15).dp)
+                                )
+                            }
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "Collapse ${tier.label}-Tier compositions" else "Expand ${tier.label}-Tier compositions",
+                        tint = if (expanded) tierColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(22.dp)
+                            .rotate(chevronRotation)
+                    )
+                }
+            }
+        }
+    }
 }

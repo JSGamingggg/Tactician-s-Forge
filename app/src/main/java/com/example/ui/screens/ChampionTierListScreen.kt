@@ -68,8 +68,11 @@ import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftTraitChip
+import com.example.ui.components.TftAssetIconResolver
 import com.example.ui.components.TierBadge
 import com.example.ui.components.environmentSlideTransitionSpec
+import androidx.compose.ui.text.style.TextOverflow
+import java.util.Locale
 
 private enum class TierCatalogTab(val label: String) {
     CHAMPIONS("Champions"),
@@ -217,7 +220,16 @@ fun ChampionTierListScreen(
                         },
                         modifier = Modifier.testTag("tier_tab_${tab.name.lowercase()}")
                     ) {
-                        Text(tab.label, maxLines = 1)
+                        val count = when (tab) {
+                            TierCatalogTab.CHAMPIONS -> champions.size
+                            TierCatalogTab.ITEMS -> items.size
+                            TierCatalogTab.AUGMENTS -> augments.size
+                        }
+                        Text(
+                            text = if (count > 0) "${tab.label} ($count)" else tab.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -309,7 +321,7 @@ fun ChampionTierListScreen(
                         )
                     }
                 } else {
-                    items(filteredChampions, key = { it.id }) { champ ->
+                    items(filteredChampions, key = { it.id }, contentType = { "champion_tier" }) { champ ->
                         val isExpanded = expandedId == champ.id
                         ChampionTierCard(
                             champ = champ,
@@ -339,7 +351,7 @@ fun ChampionTierListScreen(
                         )
                     }
                 } else {
-                    items(filteredItems, key = { it.id }) { itemEntry ->
+                    items(filteredItems, key = { it.id }, contentType = { "item_tier" }) { itemEntry ->
                         ItemTierCard(
                             item = itemEntry,
                             modifier = Modifier.animateItem(
@@ -366,7 +378,7 @@ fun ChampionTierListScreen(
                         )
                     }
                 } else {
-                    items(filteredAugments, key = { it.id }) { augment ->
+                    items(filteredAugments, key = { it.id }, contentType = { "augment_tier" }) { augment ->
                         AugmentTierCard(
                             augment = augment,
                             modifier = Modifier.animateItem(
@@ -457,6 +469,17 @@ private fun ChampionTierCard(
                 }
             }
 
+            if (champ.abilityName.isNotBlank() && !expanded) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Ability: ${champ.abilityName} — ${champ.abilityDescription}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
             Spacer(Modifier.height(10.dp))
 
             Row(
@@ -464,7 +487,7 @@ private fun ChampionTierCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Avg Place: ${String.format("%.2f", champ.avgPlacement)}",
+                    text = "Avg Place: ${String.format(Locale.US, "%.2f", champ.avgPlacement)}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -480,6 +503,34 @@ private fun ChampionTierCard(
                     modifier = Modifier.padding(top = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    if (champ.abilityName.isNotBlank() || champ.abilityDescription.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (champ.abilityName.isNotBlank()) {
+                                    Text(
+                                        text = "Ability: ${champ.abilityName}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                if (champ.abilityDescription.isNotBlank()) {
+                                    Text(
+                                        text = champ.abilityDescription,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     if (champ.patchNote.isNotBlank()) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
@@ -578,7 +629,7 @@ private fun ItemTierCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Avg Place: ${String.format("%.2f", item.avgPlacement)}",
+                    text = "Avg Place: ${String.format(Locale.US, "%.2f", item.avgPlacement)}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -618,7 +669,11 @@ private fun ItemTierCard(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                TftChampionAvatar(name = holder, cost = 4, size = 18.dp)
+                                TftChampionAvatar(
+                                    name = holder,
+                                    cost = TftAssetIconResolver.getChampionCost(holder) ?: 4,
+                                    size = 18.dp
+                                )
                                 Text(
                                     text = holder,
                                     style = MaterialTheme.typography.labelSmall,
@@ -679,7 +734,7 @@ private fun AugmentTierCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Avg Place: ${String.format("%.2f", augment.avgPlacement)}",
+                    text = "Avg Place: ${String.format(Locale.US, "%.2f", augment.avgPlacement)}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )

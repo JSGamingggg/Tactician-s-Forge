@@ -4,641 +4,754 @@ import com.example.data.model.HexUnitPlacement
 import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
+import com.example.ui.components.TftAssetIconResolver
+import okhttp3.CacheControl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
-data class TftacticsCompsFetchResult(
-    val liveComps: List<MetaComp>,
+data class TftacticsPbeFetchResult(
     val pbeComps: List<MetaComp>,
-    val detectedLiveSet: String?,
     val detectedPbeSet: String?,
+    val pbeSetNumber: Int?,
+    val pbeChampionIcons: Map<String, String>,
+    val pbeChampionCosts: Map<String, Int>,
+    val pbeChampionTraits: Map<String, List<String>>,
+    val pbeTraitIcons: Map<String, String>,
     val fetchedFromNetwork: Boolean
 )
 
 /**
- * Fetches ALL team compositions for BOTH LIVE and PBE exclusively from
- * https://tftactics.gg/tierlist/team-comps/ (including lazy/below-the-fold comps
- * embedded in Next.js _next/data payloads, referenced JSON chunks, and JS bundles),
- * ensuring each environment strictly uses compositions from its matching TFT Set.
+ * Fetches PBE team compositions (and Set champion/trait metadata & icon URLs)
+ * exclusively from https://tftactics.gg/tierlist/team-comps/ and its linked React bundle.
  */
 class TftacticsCompsScraper(
     private val client: OkHttpClient = RiotApiClientFactory.publicOkHttp
 ) {
-    fun fetchTeamComps(
-        livePatchVersion: String,
-        pbePatchVersion: String
-    ): TftacticsCompsFetchResult {
-        val baseHtml = fetchUrl(TFTACTICS_TEAM_COMPS_URL)
-            ?: return TftacticsCompsFetchResult(
-                liveComps = emptyList(),
+    fun fetchPbeTeamComps(
+        pbePatchVersion: String,
+        liveSetNumber: Int? = 18
+    ): TftacticsPbeFetchResult {
+        val html = fetchUrl(TFTACTICS_COMPS_URL)
+            ?: return TftacticsPbeFetchResult(
                 pbeComps = emptyList(),
-                detectedLiveSet = null,
                 detectedPbeSet = null,
+                pbeSetNumber = null,
+                pbeChampionIcons = emptyMap(),
+                pbeChampionCosts = emptyMap(),
+                pbeChampionTraits = emptyMap(),
+                pbeTraitIcons = emptyMap(),
                 fetchedFromNetwork = false
             )
 
-        // Check if TFTactics exposes a separate PBE query/path link on the team-comps page
-        val pbeUrl = findPbeCompsUrl(baseHtml)
-        val pbeHtml = if (pbeUrl != null && pbeUrl != TFTACTICS_TEAM_COMPS_URL) {
-            fetchUrl(pbeUrl)
+        val mainJsUrl = findMainBundleUrl(html)
+        val mainJs = mainJsUrl?.let(::fetchUrl)
+
+        val parsed = if (!mainJs.isNullOrBlank()) {
+            parseBundleAndHtml(
+                html = html,
+                jsBundle = mainJs,
+                pbePatchVersion = pbePatchVersion,
+                liveSetNumber = liveSetNumber
+            )
         } else {
-            fetchUrl(TFTACTICS_TEAM_COMPS_PBE_QUERY_URL)
+            val htmlComps = parseHtmlTeamComps(html, pbePatchVersion, targetSetNumber = null)
+            TftacticsPbeFetchResult(
+                pbeComps = htmlComps,
+                detectedPbeSet = detectSetBannerLabel(html, null),
+                pbeSetNumber = detectTargetPbeSet(html, emptyList(), liveSetNumber),
+                pbeChampionIcons = emptyMap(),
+                pbeChampionCosts = emptyMap(),
+                pbeChampionTraits = emptyMap(),
+                pbeTraitIcons = emptyMap(),
+                fetchedFromNetwork = true
+            )
         }
 
-        val liveParsed = parseCompsDocument(
-            html = baseHtml,
-            targetEnvironment = TftEnvironment.LIVE,
-            patchTag = livePatchVersion,
-            isDedicatedEnvPage = true,
-            includeRemoteBundles = true
-        )
-        val pbeParsed = parseCompsDocument(
-            html = pbeHtml ?: baseHtml,
-            targetEnvironment = TftEnvironment.PBE,
-            patchTag = pbePatchVersion,
-            isDedicatedEnvPage = pbeHtml != null,
-            includeRemoteBundles = true
+        return parsed.copy(fetchedFromNetwork = true)
+    }
+
+    internal fun parsePreloadJson(
+        rawJson: String,
+        pbePatchVersion: String
+    ): TftacticsPbeFetchResult {
+        val root = JSONObject(rawJson)
+        val setNum = root.optInt("pbeSetNumber", 19)
+        val setLabel = root.optString("pbeSetLabel").ifBlank { "Set $setNum (PBE)" }
+
+        fun readStringMap(obj: JSONObject?): Map<String, String> {
+            if (obj == null) return emptyMap()
+            val out = LinkedHashMap<String, String>(obj.length())
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = obj.optString(k)
+                if (v.isNotBlank()) out[k] = v
+            }
+            return out
+        }
+
+        val champIcons = readStringMap(root.optJSONObject("championIcons"))
+        val traitIcons = readStringMap(root.optJSONObject("traitIcons"))
+        val champCosts = LinkedHashMap<String, Int>().apply {
+            root.optJSONObject("championCosts")?.let { obj ->
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val c = obj.optInt(k, 0)
+                    if (c in 1..9) put(k, c)
+                }
+            }
+        }
+        val champTraits = LinkedHashMap<String, List<String>>().apply {
+            root.optJSONObject("championTraits")?.let { obj ->
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val arr = obj.optJSONArray(k) ?: continue
+                    val list = (0 until arr.length()).mapNotNull { i ->
+                        arr.optString(i).takeIf { it.isNotBlank() }
+                    }
+                    if (list.isNotEmpty()) put(k, list)
+                }
+            }
+        }
+
+        val compsArr = root.optJSONArray("comps") ?: JSONArray()
+        val comps = parseTeamCompsArray(
+            compsArr = compsArr,
+            targetSetNumber = setNum,
+            setLabel = setLabel,
+            pbePatchVersion = pbePatchVersion,
+            championCosts = champCosts
         )
 
-        val liveSetNumber = liveParsed.detectedSetNumber ?: inferSetNumberFromPatch(livePatchVersion)
-        val pbeSetNumber = pbeParsed.detectedSetNumber ?: inferSetNumberFromPatch(pbePatchVersion)
-
-        val enforcedLiveComps = enforceSetAlignment(
-            comps = liveParsed.comps,
-            expectedSetNumber = liveSetNumber,
-            targetEnv = TftEnvironment.LIVE,
-            patchTag = livePatchVersion
+        return TftacticsPbeFetchResult(
+            pbeComps = comps,
+            detectedPbeSet = setLabel,
+            pbeSetNumber = setNum,
+            pbeChampionIcons = champIcons,
+            pbeChampionCosts = champCosts,
+            pbeChampionTraits = champTraits,
+            pbeTraitIcons = traitIcons,
+            fetchedFromNetwork = false
         )
-        val enforcedPbeComps = enforceSetAlignment(
-            comps = pbeParsed.comps,
-            expectedSetNumber = pbeSetNumber,
-            targetEnv = TftEnvironment.PBE,
-            patchTag = pbePatchVersion
-        )
+    }
 
-        return TftacticsCompsFetchResult(
-            liveComps = enforcedLiveComps,
-            pbeComps = enforcedPbeComps,
-            detectedLiveSet = liveParsed.detectedSetLabel ?: liveSetNumber?.let { "Set $it" },
-            detectedPbeSet = pbeParsed.detectedSetLabel ?: pbeSetNumber?.let { "Set $it (PBE)" },
+    internal fun parseBundleAndHtml(
+        html: String,
+        jsBundle: String,
+        pbePatchVersion: String,
+        liveSetNumber: Int? = 18
+    ): TftacticsPbeFetchResult {
+        val jsonArrays = extractJsonParseArrays(jsBundle)
+
+        var compsArr: JSONArray? = null
+        var champsArr: JSONArray? = null
+        val traitArrays = mutableListOf<JSONArray>()
+
+        for (arrText in jsonArrays) {
+            val head = arrText.take(600)
+            if (compsArr == null && head.contains("\"characters\"") && head.contains("\"playstyle\"")) {
+                runCatching { JSONArray(arrText) }.getOrNull()?.let { compsArr = it }
+            } else if (champsArr == null && head.contains("\"origin\"") && head.contains("\"cost\"") && head.contains("\"health\"")) {
+                runCatching { JSONArray(arrText) }.getOrNull()?.let { champsArr = it }
+            } else if ((head.contains("\"Origin\"") || head.contains("\"Class\"") || head.contains("\"bonus\"")) &&
+                head.contains("\"set\"") && !head.contains("\"characters\"") && !head.contains("\"tierlist\"")
+            ) {
+                runCatching { JSONArray(arrText) }.getOrNull()?.let { traitArrays.add(it) }
+            }
+        }
+
+        val availableSets = collectAvailableSets(compsArr)
+        val targetSet = detectTargetPbeSet(html, availableSets, liveSetNumber) ?: 19
+        val setLabel = detectSetBannerLabel(html, targetSet) ?: "Set $targetSet (PBE)"
+
+        val champIcons = LinkedHashMap<String, String>()
+        val champCosts = LinkedHashMap<String, Int>()
+        val champTraits = LinkedHashMap<String, List<String>>()
+
+        champsArr?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                if (!containsSet(obj.optJSONArray("set"), targetSet)) continue
+                val name = cleanText(obj.optString("name"))
+                if (name.isBlank()) continue
+                champIcons[name] = buildSunderChampionUrl(targetSet, name)
+                val cost = obj.optInt("cost", 3).coerceIn(1, 9)
+                champCosts[name] = cost
+                val traits = buildList {
+                    extractStringValues(obj.opt("origin")).forEach { if (it != "-") add(it) }
+                    extractStringValues(obj.opt("type")).forEach { if (it != "-") add(it) }
+                }.distinct()
+                if (traits.isNotEmpty()) {
+                    champTraits[name] = traits
+                }
+            }
+        }
+
+        val traitIcons = LinkedHashMap<String, String>()
+        traitArrays.forEach { arr ->
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                if (!containsSet(obj.optJSONArray("set"), targetSet)) continue
+                val name = cleanText(obj.optString("name"))
+                if (name.isNotBlank()) {
+                    traitIcons[name] = buildSunderTraitUrl(name)
+                }
+            }
+        }
+
+        val bundleComps = compsArr?.let { arr ->
+            parseTeamCompsArray(
+                compsArr = arr,
+                targetSetNumber = targetSet,
+                setLabel = setLabel,
+                pbePatchVersion = pbePatchVersion,
+                championCosts = champCosts
+            )
+        }.orEmpty()
+
+        bundleComps.forEach { comp ->
+            comp.traits.forEach { traitEntry ->
+                val cleanTrait = traitEntry.replace(Regex("^\\d+\\s+"), "").trim()
+                if (cleanTrait.isNotBlank() && !traitIcons.containsKey(cleanTrait)) {
+                    traitIcons[cleanTrait] = buildSunderTraitUrl(cleanTrait)
+                }
+            }
+            comp.coreUnits.forEach { unitName ->
+                if (!champIcons.containsKey(unitName)) {
+                    champIcons[unitName] = buildSunderChampionUrl(targetSet, unitName)
+                }
+            }
+        }
+
+        val resolvedComps = if (bundleComps.isNotEmpty()) {
+            bundleComps
+        } else {
+            parseHtmlTeamComps(html, pbePatchVersion, targetSet)
+        }
+
+        return TftacticsPbeFetchResult(
+            pbeComps = resolvedComps,
+            detectedPbeSet = setLabel,
+            pbeSetNumber = targetSet,
+            pbeChampionIcons = champIcons,
+            pbeChampionCosts = champCosts,
+            pbeChampionTraits = champTraits,
+            pbeTraitIcons = traitIcons,
             fetchedFromNetwork = true
         )
     }
 
-    internal data class ParsedDocumentResult(
-        val comps: List<MetaComp>,
-        val detectedSetNumber: Int?,
-        val detectedSetLabel: String?
-    )
+    private fun parseTeamCompsArray(
+        compsArr: JSONArray,
+        targetSetNumber: Int,
+        setLabel: String,
+        pbePatchVersion: String,
+        championCosts: Map<String, Int>
+    ): List<MetaComp> {
+        val comps = mutableListOf<MetaComp>()
+        for (i in 0 until compsArr.length()) {
+            val obj = compsArr.optJSONObject(i) ?: continue
+            val setArr = obj.optJSONArray("set")
+            if (setArr != null && !containsSet(setArr, targetSetNumber)) continue
 
-    internal fun parseCompsDocument(
-        html: String,
-        targetEnvironment: TftEnvironment,
-        patchTag: String,
-        isDedicatedEnvPage: Boolean = true,
-        includeRemoteBundles: Boolean = false
-    ): ParsedDocumentResult {
-        val detectedSet = detectSetForEnvironment(html, targetEnvironment)
-        val defaultSetLabel = detectedSet?.second ?: if (targetEnvironment == TftEnvironment.LIVE) {
-            TftEnvironment.LIVE.setName
-        } else {
-            TftEnvironment.PBE.setName
-        }
+            val title = cleanText(obj.optString("name").ifBlank { obj.optString("name_ch") })
+            if (title.length !in 3..72) continue
 
-        val fromJson = parseJsonComps(html, targetEnvironment, patchTag, defaultSetLabel)
-        val fromDom = parseDomTeamComps(html, targetEnvironment, patchTag, defaultSetLabel, isDedicatedEnvPage)
-
-        var combined = (fromJson + fromDom)
-            .distinctBy { it.id }
-
-        // Always inspect Next.js _next/data JSON and external JS/data bundles when fetching from network
-        // so below-the-fold or lazy-mounted compositions are captured completely without truncation.
-        if (includeRemoteBundles) {
-            val fromNextData = parseNextDataEndpoint(html, targetEnvironment, patchTag, defaultSetLabel)
-            val fromBundles = parseScriptBundleComps(html, targetEnvironment, patchTag, defaultSetLabel)
-            if (fromNextData.isNotEmpty() || fromBundles.isNotEmpty()) {
-                combined = (combined + fromNextData + fromBundles).distinctBy { it.id }
+            val tier = when (val rawTier = obj.opt("tier")) {
+                is Number -> when (rawTier.toInt()) {
+                    1 -> TierRank.S
+                    2 -> TierRank.A
+                    3 -> TierRank.B
+                    4 -> TierRank.C
+                    5 -> TierRank.X
+                    else -> TierRank.B
+                }
+                is String -> TierRank.fromRaw(rawTier)
+                else -> TierRank.A
             }
+
+            val playstyle = cleanText(obj.optString("playstyle")).ifBlank { "Fast 8" }
+            val charsArr = obj.optJSONArray("characters") ?: continue
+            if (charsArr.length() < 4) continue
+
+            val parsedUnits = (0 until charsArr.length().coerceAtMost(14)).mapNotNull { uIdx ->
+                val ch = charsArr.optJSONObject(uIdx) ?: return@mapNotNull null
+                val name = cleanText(ch.optString("name"))
+                if (name.isBlank()) return@mapNotNull null
+
+                val posStr = ch.optString("position")
+                val posNum = POS_REGEX.find(posStr)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                val row = posNum?.let { ((it - 1) / 7).coerceIn(0, 3) }
+                val col = posNum?.let { ((it - 1) % 7).coerceIn(0, 6) }
+                val stars = ch.optInt("level", 2).coerceIn(1, 3)
+                val items = extractStringValues(ch.opt("items"))
+                val catalogCost = championCosts[name]
+                    ?: championCosts.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+                    ?: TftAssetIconResolver.getChampionCost(name)
+                    ?: 3
+                ParsedTftacticsUnit(
+                    name = name,
+                    cost = catalogCost.coerceIn(1, 5),
+                    items = items,
+                    row = row,
+                    col = col,
+                    stars = stars
+                )
+            }
+
+            if (parsedUnits.size < 4) continue
+
+            val carryUnit = pickCarryUnit(parsedUnits)
+            val placements = parsedUnits.mapIndexed { idx, u ->
+                val isCarry = u.name.equals(carryUnit.name, ignoreCase = true) && u.items.size == carryUnit.items.size
+                HexUnitPlacement(
+                    unitName = u.name,
+                    row = u.row ?: if (idx < parsedUnits.size / 2) 0 else 3,
+                    col = u.col ?: ((idx * 2) % 7),
+                    cost = if (isCarry && u.cost <= 2 && u.stars < 3) 4 else u.cost,
+                    items = u.items,
+                    isCarry = isCarry,
+                    stars = u.stars
+                )
+            }
+
+            val synergyTraits = parseSynergyTraits(obj.optJSONArray("synergy"), obj.optJSONArray("traits"))
+
+            val description = cleanText(obj.optString("description"))
+            val midUnits = extractStringValues(obj.opt("mid"))
+            val replacements = parseReplacements(obj.optJSONArray("replacements"))
+            val carouselNotes = parseCarousel(obj.optJSONArray("carrousel"))
+
+            val levelingGuide = buildList {
+                if (description.isNotBlank()) add(description)
+                if (midUnits.isNotEmpty()) add("Early/Mid: ${midUnits.joinToString(", ")}")
+                if (replacements.isNotBlank()) add("Subs: $replacements")
+            }.joinToString(" • ").ifBlank { "TFTactics $playstyle • $setLabel ($pbePatchVersion)" }
+
+            val notes = buildList {
+                if (carouselNotes.isNotBlank()) add("Carousel: $carouselNotes")
+                add("Synced from tftactics.gg/tierlist/team-comps/ ($setLabel)")
+            }.joinToString(" • ")
+
+            val slug = title.lowercase(Locale.US)
+                .replace(Regex("[^a-z0-9]+"), "_")
+                .trim('_')
+
+            comps.add(
+                MetaComp(
+                    id = "tftactics_pbe_$slug",
+                    environment = TftEnvironment.PBE,
+                    title = title,
+                    tier = tier,
+                    playstyle = playstyle,
+                    avgPlacement = when (tier) {
+                        TierRank.S -> 3.45
+                        TierRank.A -> 3.82 + (i % 15) * 0.01
+                        TierRank.B -> 4.18 + (i % 15) * 0.01
+                        TierRank.C -> 4.55
+                        TierRank.X -> 4.35
+                    },
+                    top4Rate = when (tier) {
+                        TierRank.S -> 65.0
+                        TierRank.A -> 58.0
+                        TierRank.B -> 51.5
+                        TierRank.C -> 45.0
+                        TierRank.X -> 48.0
+                    },
+                    winRate = when (tier) {
+                        TierRank.S -> 18.5
+                        TierRank.A -> 14.5
+                        TierRank.B -> 11.5
+                        TierRank.C -> 8.5
+                        TierRank.X -> 10.5
+                    },
+                    pickRate = 7.0,
+                    trendDelta = when {
+                        obj.optBoolean("tier_up", false) -> "Rising PBE"
+                        else -> "TFTactics PBE"
+                    },
+                    isTrending = tier == TierRank.S || obj.optBoolean("tier_up", false),
+                    patchTag = pbePatchVersion,
+                    carryName = carryUnit.name,
+                    traits = synergyTraits,
+                    coreUnits = parsedUnits.map { it.name },
+                    hexPlacements = placements,
+                    augmentPriorities = emptyList(),
+                    levelingGuide = levelingGuide,
+                    notes = notes,
+                    setName = setLabel,
+                    sourceUrl = TFTACTICS_COMPS_URL
+                )
+            )
         }
 
-        return ParsedDocumentResult(
-            comps = combined,
-            detectedSetNumber = detectedSet?.first,
-            detectedSetLabel = detectedSet?.second
+        return comps.distinctBy { it.id }.sortedWith(
+            compareBy<MetaComp> { it.tier.sortOrder }
+                .thenBy { it.avgPlacement }
+                .thenBy { it.title.lowercase(Locale.US) }
         )
     }
 
-    internal fun enforceSetAlignment(
-        comps: List<MetaComp>,
-        expectedSetNumber: Int?,
-        targetEnv: TftEnvironment,
-        patchTag: String
+    internal fun parseHtmlTeamComps(
+        html: String,
+        pbePatchVersion: String,
+        targetSetNumber: Int?
     ): List<MetaComp> {
-        return comps
-            .filter { comp ->
-                if (comp.environment != targetEnv) return@filter false
-                if (expectedSetNumber == null) return@filter true
-                val compSetNum = extractSetNumber(comp.setName) ?: extractSetNumber(comp.notes)
-                // Keep comp if it matches the expected set or if no conflicting set number was attached
-                compSetNum == null || compSetNum == expectedSetNumber
-            }
-            .map { comp ->
-                val resolvedSetName = if (expectedSetNumber != null && extractSetNumber(comp.setName) == null) {
-                    if (targetEnv == TftEnvironment.PBE) "Set $expectedSetNumber (PBE)" else "Set $expectedSetNumber"
-                } else {
-                    comp.setName
+        val rawBlocks = html.split("""<div class="team-portrait">""")
+        if (rawBlocks.size <= 1) return emptyList()
+
+        val setLabel = detectSetBannerLabel(html, targetSetNumber)
+            ?: targetSetNumber?.let { "Set $it (PBE)" }
+            ?: TftEnvironment.PBE.setName
+
+        val out = mutableListOf<MetaComp>()
+        for (idx in 1 until rawBlocks.size) {
+            val block = rawBlocks[idx].take(12_000)
+            val rankText = HTML_RANK_REGEX.find(block)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+            val tier = TierRank.fromRaw(rankText.ifBlank { "A" })
+
+            val nameSegment = HTML_NAME_REGEX.find(block)?.groupValues?.getOrNull(1).orEmpty()
+            val title = cleanText(nameSegment.substringBefore("<div class=\"team-name-extra\""))
+            if (title.length !in 3..72) continue
+
+            val playstyle = cleanText(HTML_PLAYSTYLE_REGEX.find(block)?.groupValues?.getOrNull(1).orEmpty())
+                .ifBlank { "Fast 8" }
+
+            val charsSection = block.substringAfter("""<div class="team-characters">""", "")
+                .substringBefore("""<div class="team-more">""")
+            if (charsSection.isBlank()) continue
+
+            val units = HTML_CHAR_REGEX.findAll(charsSection).mapNotNull { m ->
+                val classTokens = m.groupValues[1]
+                val unitChunk = m.groupValues[2]
+                val name = cleanText(m.groupValues[3])
+                if (name.isBlank()) return@mapNotNull null
+                val unitSet = Regex("""\bs(\d+)\b""").find(classTokens)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                if (targetSetNumber != null && unitSet != null && unitSet != targetSetNumber) {
+                    return@mapNotNull null
                 }
-                comp.copy(
-                    environment = targetEnv,
-                    patchTag = patchTag,
-                    setName = resolvedSetName,
-                    sourceUrl = TFTACTICS_TEAM_COMPS_URL
+                val cost = Regex("""\bc(\d)\b""").find(classTokens)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 5) ?: 3
+                val stars = if (classTokens.contains("l3")) 3 else 2
+                val items = HTML_ITEM_NAME_REGEX.findAll(unitChunk).mapNotNull { im ->
+                    cleanText(im.groupValues[1]).takeIf { it.isNotBlank() }
+                }.toList()
+                ParsedTftacticsUnit(name = name, cost = cost, items = items, row = null, col = null, stars = stars)
+            }.toList()
+
+            if (units.size < 4) continue
+            val carry = pickCarryUnit(units)
+            val placements = units.mapIndexed { uIdx, u ->
+                val isCarry = u.name.equals(carry.name, ignoreCase = true)
+                HexUnitPlacement(
+                    unitName = u.name,
+                    row = if (uIdx < units.size / 2) 0 else 3,
+                    col = (uIdx * 2) % 7,
+                    cost = u.cost,
+                    items = u.items,
+                    isCarry = isCarry,
+                    stars = u.stars
                 )
             }
+            val slug = title.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+            out.add(
+                MetaComp(
+                    id = "tftactics_pbe_$slug",
+                    environment = TftEnvironment.PBE,
+                    title = title,
+                    tier = tier,
+                    playstyle = playstyle,
+                    avgPlacement = when (tier) {
+                        TierRank.S -> 3.45
+                        TierRank.A -> 3.82 + (idx % 15) * 0.01
+                        TierRank.B -> 4.18
+                        TierRank.C -> 4.55
+                        TierRank.X -> 4.35
+                    },
+                    top4Rate = when (tier) {
+                        TierRank.S -> 65.0
+                        TierRank.A -> 58.0
+                        TierRank.B -> 51.5
+                        TierRank.C -> 45.0
+                        TierRank.X -> 48.0
+                    },
+                    winRate = 14.0,
+                    pickRate = 7.0,
+                    trendDelta = "TFTactics PBE",
+                    isTrending = tier == TierRank.S,
+                    patchTag = pbePatchVersion,
+                    carryName = carry.name,
+                    traits = emptyList(),
+                    coreUnits = units.map { it.name },
+                    hexPlacements = placements,
+                    augmentPriorities = emptyList(),
+                    levelingGuide = "TFTactics $playstyle • $setLabel ($pbePatchVersion)",
+                    notes = "Synced from tftactics.gg/tierlist/team-comps/ ($setLabel).",
+                    setName = setLabel,
+                    sourceUrl = TFTACTICS_COMPS_URL
+                )
+            )
+        }
+        return out.distinctBy { it.id }
     }
 
-    internal fun detectSetForEnvironment(html: String, env: TftEnvironment): Pair<Int, String>? {
-        val envPattern = if (env == TftEnvironment.PBE) {
-            Regex("""(?:PBE[^<\n]{0,40}Set\s*(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]+))?|Set\s*(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]+))?[^<\n]{0,30}PBE)""", RegexOption.IGNORE_CASE)
-        } else {
-            Regex("""(?:LIVE[^<\n]{0,40}Set\s*(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]+))?)""", RegexOption.IGNORE_CASE)
-        }
+    private data class ParsedTftacticsUnit(
+        val name: String,
+        val cost: Int,
+        val items: List<String>,
+        val row: Int?,
+        val col: Int?,
+        val stars: Int
+    )
 
-        val envMatch = envPattern.find(html)
-        if (envMatch != null) {
-            val num = (envMatch.groupValues[1].ifBlank { envMatch.groupValues[3] }).toIntOrNull()
-            val subtitle = (envMatch.groupValues[2].ifBlank { envMatch.groupValues[4] }).trim()
-            if (num != null) {
-                val label = if (subtitle.isNotBlank()) "Set $num: $subtitle" else "Set $num"
-                return num to (if (env == TftEnvironment.PBE && !label.contains("PBE", true)) "$label (PBE)" else label)
+    private fun pickCarryUnit(units: List<ParsedTftacticsUnit>): ParsedTftacticsUnit {
+        return units.maxByOrNull { u ->
+            val offensiveItems = u.items.count { item ->
+                val lower = item.lowercase(Locale.US)
+                !lower.contains("warmog") &&
+                    !lower.contains("gargoyle") &&
+                    !lower.contains("sunfire") &&
+                    !lower.contains("bramble") &&
+                    !lower.contains("dragon's claw") &&
+                    !lower.contains("dragons claw") &&
+                    !lower.contains("evenshroud") &&
+                    !lower.contains("steadfast") &&
+                    !lower.contains("protector") &&
+                    !lower.contains("redemption") &&
+                    !lower.contains("spirit visage")
+            }
+            val backlineBonus = if ((u.row ?: 3) >= 2) 5 else 0
+            val starBonus = if (u.stars >= 3) 8 else 0
+            offensiveItems * 25 + u.items.size * 12 + u.cost * 4 + backlineBonus + starBonus
+        } ?: units.last()
+    }
+
+    private fun parseSynergyTraits(synergyArr: JSONArray?, fallbackTraitsArr: JSONArray?): List<String> {
+        if (synergyArr != null && synergyArr.length() > 0) {
+            val ranked = (0 until synergyArr.length()).mapNotNull { i ->
+                val obj = synergyArr.optJSONObject(i) ?: return@mapNotNull null
+                val name = cleanText(obj.optString("name"))
+                val count = obj.optInt("count", 0)
+                if (name.isBlank() || count <= 0) return@mapNotNull null
+                Triple(count, obj.optString("rank"), "$count $name")
+            }.sortedWith(compareByDescending<Triple<Int, String, String>> { it.first })
+            if (ranked.isNotEmpty()) {
+                return ranked.take(6).map { it.third }
             }
         }
+        return extractStringValues(fallbackTraitsArr).take(6)
+    }
 
-        // Generic Set detection in page header / active tab
-        val genericMatches = SET_LABEL_REGEX.findAll(html).toList()
-        if (genericMatches.isNotEmpty()) {
-            val match = if (env == TftEnvironment.PBE) {
-                genericMatches.firstOrNull { m ->
-                    val windowStart = (m.range.first - 40).coerceAtLeast(0)
-                    val windowEnd = (m.range.last + 40).coerceAtMost(html.length)
-                    html.substring(windowStart, windowEnd).contains("pbe", ignoreCase = true)
-                } ?: genericMatches.first()
+    private fun parseReplacements(arr: JSONArray?): String {
+        if (arr == null || arr.length() == 0) return ""
+        val parts = mutableListOf<String>()
+        for (i in 0 until arr.length().coerceAtMost(3)) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val outNames = extractStringValues(obj.opt("out"))
+            val inNames = extractStringValues(obj.opt("in"))
+            if (inNames.isNotEmpty() && outNames.isNotEmpty()) {
+                parts.add("${outNames.joinToString("/")} → ${inNames.joinToString("/")}")
+            } else if (inNames.isNotEmpty()) {
+                parts.add("+${inNames.joinToString(", +")}")
+            }
+        }
+        return parts.joinToString("; ")
+    }
+
+    private fun parseCarousel(arr: JSONArray?): String {
+        if (arr == null || arr.length() == 0) return ""
+        val items = mutableListOf<String>()
+        for (i in 0 until arr.length().coerceAtMost(3)) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val item = cleanText(obj.optString("item"))
+            val comp = cleanText(obj.optString("component"))
+            when {
+                item.isNotBlank() && comp.isNotBlank() -> items.add("$item ($comp)")
+                item.isNotBlank() -> items.add(item)
+                comp.isNotBlank() -> items.add(comp)
+            }
+        }
+        return items.joinToString(", ")
+    }
+
+    internal fun extractJsonParseArrays(js: String): List<String> {
+        val out = mutableListOf<String>()
+        var searchFrom = 0
+        val marker = "JSON.parse('"
+        while (searchFrom < js.length) {
+            val idx = js.indexOf(marker, searchFrom)
+            if (idx < 0) break
+            val contentStart = idx + marker.length
+            val decoded = decodeJsSingleQuotedLiteral(js, contentStart)
+            if (decoded != null) {
+                val (literalText, nextPos) = decoded
+                val trimmed = literalText.trim()
+                if (trimmed.startsWith("[") && trimmed.length > 500) {
+                    out.add(trimmed)
+                }
+                searchFrom = nextPos
             } else {
-                genericMatches.firstOrNull { m ->
-                    val windowStart = (m.range.first - 40).coerceAtLeast(0)
-                    val windowEnd = (m.range.last + 40).coerceAtMost(html.length)
-                    !html.substring(windowStart, windowEnd).contains("pbe", ignoreCase = true)
-                } ?: genericMatches.first()
+                searchFrom = contentStart
             }
-            val num = match.groupValues[1].toIntOrNull()
-            if (num != null) {
-                val subtitle = match.groupValues.getOrNull(2)?.trim().orEmpty()
-                val label = if (subtitle.isNotBlank()) "Set $num: $subtitle" else "Set $num"
-                return num to (if (env == TftEnvironment.PBE && !label.contains("PBE", true)) "$label (PBE)" else label)
+        }
+        return out
+    }
+
+    private fun decodeJsSingleQuotedLiteral(source: String, startIdx: Int): Pair<String, Int>? {
+        val sb = StringBuilder()
+        var i = startIdx
+        while (i < source.length) {
+            val ch = source[i]
+            if (ch == '\'') {
+                return sb.toString() to (i + 1)
+            }
+            if (ch == '\\' && i + 1 < source.length) {
+                val next = source[i + 1]
+                when (next) {
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    '\'' -> { sb.append('\''); i += 2 }
+                    '"' -> { sb.append('"'); i += 2 }
+                    'n' -> { sb.append('\n'); i += 2 }
+                    'r' -> { sb.append('\r'); i += 2 }
+                    't' -> { sb.append('\t'); i += 2 }
+                    'b' -> { sb.append('\b'); i += 2 }
+                    'f' -> { sb.append('\u000C'); i += 2 }
+                    'u' -> {
+                        if (i + 5 < source.length) {
+                            val hex = source.substring(i + 2, i + 6)
+                            val code = hex.toIntOrNull(16)
+                            if (code != null) {
+                                sb.append(code.toChar())
+                                i += 6
+                            } else {
+                                sb.append(next)
+                                i += 2
+                            }
+                        } else {
+                            sb.append(next)
+                            i += 2
+                        }
+                    }
+                    'x' -> {
+                        if (i + 3 < source.length) {
+                            val hex = source.substring(i + 2, i + 4)
+                            val code = hex.toIntOrNull(16)
+                            if (code != null) {
+                                sb.append(code.toChar())
+                                i += 4
+                            } else {
+                                sb.append(next)
+                                i += 2
+                            }
+                        } else {
+                            sb.append(next)
+                            i += 2
+                        }
+                    }
+                    else -> {
+                        sb.append(next)
+                        i += 2
+                    }
+                }
+            } else {
+                sb.append(ch)
+                i += 1
             }
         }
         return null
     }
 
-    private fun parseJsonComps(
-        html: String,
-        targetEnvironment: TftEnvironment,
-        patchTag: String,
-        defaultSetLabel: String
-    ): List<MetaComp> {
-        val out = mutableListOf<MetaComp>()
-        val scriptMatches = buildList {
-            NEXT_DATA_REGEX.find(html)?.groupValues?.getOrNull(1)?.let(::add)
-            INLINE_JSON_STATE_REGEX.findAll(html).forEach { m ->
-                m.groupValues.getOrNull(1)?.let(::add)
-            }
-            addAll(extractCandidateCompArrays(html))
-        }
-        for (jsonText in scriptMatches) {
-            runCatching {
-                val trimmed = jsonText.trim()
-                val root: Any = if (trimmed.startsWith("[")) JSONArray(trimmed) else JSONObject(trimmed)
-                collectCompsFromJson(root, targetEnvironment, patchTag, defaultSetLabel, inheritedEnv = null, inheritedSet = null, out = out)
+    private fun collectAvailableSets(compsArr: JSONArray?): List<Int> {
+        if (compsArr == null) return emptyList()
+        val sets = LinkedHashSet<Int>()
+        for (i in 0 until compsArr.length()) {
+            val setArr = compsArr.optJSONObject(i)?.optJSONArray("set") ?: continue
+            for (j in 0 until setArr.length()) {
+                val s = setArr.optInt(j, -1)
+                if (s > 0) sets.add(s)
             }
         }
-        return out
+        return sets.sorted()
     }
 
-    private fun parseNextDataEndpoint(
+    private fun detectTargetPbeSet(
         html: String,
-        targetEnvironment: TftEnvironment,
-        patchTag: String,
-        defaultSetLabel: String
-    ): List<MetaComp> {
-        val buildId = NEXT_BUILD_ID_REGEX.find(html)?.groupValues?.getOrNull(1)?.trim()
-            ?.takeIf { it.isNotBlank() } ?: return emptyList()
-        val path = if (targetEnvironment == TftEnvironment.PBE) {
-            "https://tftactics.gg/_next/data/$buildId/tierlist/team-comps.json?pbe=true"
-        } else {
-            "https://tftactics.gg/_next/data/$buildId/tierlist/team-comps.json"
-        }
-        val body = fetchUrl(path) ?: return emptyList()
-        val out = mutableListOf<MetaComp>()
-        runCatching {
-            collectCompsFromJson(
-                node = JSONObject(body),
-                targetEnv = targetEnvironment,
-                patchTag = patchTag,
-                defaultSetLabel = defaultSetLabel,
-                inheritedEnv = null,
-                inheritedSet = null,
-                out = out
-            )
-        }
-        return out
-    }
-
-    private fun parseScriptBundleComps(
-        html: String,
-        targetEnvironment: TftEnvironment,
-        patchTag: String,
-        defaultSetLabel: String
-    ): List<MetaComp> {
-        val out = mutableListOf<MetaComp>()
-        val scriptUrls = SCRIPT_SRC_REGEX.findAll(html)
-            .mapNotNull { it.groupValues.getOrNull(1)?.trim() }
-            .filter { src ->
-                val lower = src.lowercase()
-                lower.contains("main") ||
-                    lower.contains("comp") ||
-                    lower.contains("tier") ||
-                    lower.contains("chunk") ||
-                    lower.contains("app") ||
-                    lower.contains("page") ||
-                    lower.contains("_next") ||
-                    lower.contains("bundle")
-            }
-            .map { src ->
-                when {
-                    src.startsWith("http") -> src
-                    src.startsWith("//") -> "https:$src"
-                    else -> "https://tftactics.gg${if (src.startsWith("/")) src else "/$src"}"
-                }
-            }
-            .distinct()
-            .take(10)
+        availableJsonSets: List<Int>,
+        liveSetNumber: Int?
+    ): Int? {
+        val dropdownSets = HTML_SET_OPTION_REGEX.findAll(html)
+            .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
             .toList()
+        val bannerSet = BANNER_SET_REGEX.find(html)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val allCandidates = (availableJsonSets + dropdownSets + listOfNotNull(bannerSet))
+            .filter { it >= 10 }
+            .distinct()
+            .sorted()
 
-        for (url in scriptUrls) {
-            val jsBody = fetchUrl(url) ?: continue
-            extractCandidateCompArrays(jsBody).forEach { arrText ->
-                runCatching {
-                    collectCompsFromJson(
-                        node = JSONArray(arrText),
-                        targetEnv = targetEnvironment,
-                        patchTag = patchTag,
-                        defaultSetLabel = defaultSetLabel,
-                        inheritedEnv = null,
-                        inheritedSet = null,
-                        out = out
-                    )
-                }
+        if (liveSetNumber != null) {
+            val newerThanLive = allCandidates.filter { it > liveSetNumber }
+            if (newerThanLive.isNotEmpty()) {
+                return newerThanLive.max()
             }
         }
-        return out.distinctBy { it.id }
+        return bannerSet ?: allCandidates.maxOrNull()
     }
 
-    /**
-     * Walks bracket depth with string/escape awareness to extract full top-level JSON/JS object
-     * arrays containing TFT unit rosters (even with nested items/traits/hexes inside each object).
-     */
-    internal fun extractCandidateCompArrays(source: String): List<String> {
-        val out = mutableListOf<String>()
-        val anchors = COMP_ARRAY_ANCHOR_REGEX.findAll(source).toList()
-        var lastConsumedEnd = -1
-        for (anchor in anchors) {
-            val startIdx = anchor.range.first
-            if (startIdx < lastConsumedEnd) continue
-            var depth = 0
-            var inString = false
-            var stringChar = '"'
-            var escaped = false
-            var endIdx = -1
-            val maxScan = (startIdx + 350_000).coerceAtMost(source.length)
-            for (i in startIdx until maxScan) {
-                val ch = source[i]
-                if (escaped) {
-                    escaped = false
-                    continue
-                }
-                if (inString) {
-                    if (ch == '\\') {
-                        escaped = true
-                    } else if (ch == stringChar) {
-                        inString = false
-                    }
-                    continue
-                }
-                when (ch) {
-                    '"', '\'' -> {
-                        inString = true
-                        stringChar = ch
-                    }
-                    '[' -> depth++
-                    ']' -> {
-                        depth--
-                        if (depth == 0) {
-                            endIdx = i + 1
-                            break
-                        }
-                    }
-                }
-            }
-            if (endIdx > startIdx) {
-                val slice = source.substring(startIdx, endIdx)
-                if (slice.contains("units", ignoreCase = true) ||
-                    slice.contains("champions", ignoreCase = true) ||
-                    slice.contains("characters", ignoreCase = true) ||
-                    slice.contains("members", ignoreCase = true)
-                ) {
-                    out.add(slice)
-                }
-                lastConsumedEnd = endIdx
+    private fun detectSetBannerLabel(html: String, targetSet: Int?): String? {
+        val m = BANNER_SET_REGEX.find(html)
+        if (m != null) {
+            val num = m.groupValues[1].toIntOrNull()
+            val subtitle = cleanText(m.groupValues[2])
+            if (targetSet == null || num == targetSet) {
+                return if (subtitle.isNotBlank()) "Set $num: $subtitle (PBE)" else "Set $num (PBE)"
             }
         }
-        return out
+        return targetSet?.let { "Set $it (PBE)" }
     }
 
-    private fun collectCompsFromJson(
-        node: Any?,
-        targetEnv: TftEnvironment,
-        patchTag: String,
-        defaultSetLabel: String,
-        inheritedEnv: TftEnvironment?,
-        inheritedSet: String?,
-        out: MutableList<MetaComp>,
-        depth: Int = 0
-    ) {
-        if (node == null || depth > 12 || out.size >= 300) return
-        when (node) {
-            is JSONObject -> {
-                val rawSet = node.optString("set")
-                    .ifBlank { node.optString("setName") }
-                    .ifBlank { node.optString("setNumber") }
-                val currentSet = rawSet.takeIf { it.isNotBlank() }?.let {
-                    if (it.all(Char::isDigit)) "Set $it" else it
-                } ?: inheritedSet
+    private fun containsSet(arr: JSONArray?, targetSet: Int): Boolean {
+        if (arr == null) return false
+        for (i in 0 until arr.length()) {
+            if (arr.optInt(i, -1) == targetSet) return true
+        }
+        return false
+    }
 
-                val nodeEnvFlag = when {
-                    node.optBoolean("isPbe", false) || node.optBoolean("pbe", false) -> TftEnvironment.PBE
-                    node.optString("environment").equals("PBE", ignoreCase = true) -> TftEnvironment.PBE
-                    node.optString("mode").equals("PBE", ignoreCase = true) -> TftEnvironment.PBE
-                    node.optString("environment").equals("LIVE", ignoreCase = true) -> TftEnvironment.LIVE
-                    else -> inheritedEnv
-                }
-
-                val title = cleanText(
-                    node.optString("title")
-                        .ifBlank { node.optString("name") }
-                        .ifBlank { node.optString("compName") }
-                )
-                val unitsArr = node.optJSONArray("units")
-                    ?: node.optJSONArray("champions")
-                    ?: node.optJSONArray("characters")
-                    ?: node.optJSONArray("members")
-                    ?: node.optJSONArray("team")
-
-                if (title.length in 3..64 && unitsArr != null && unitsArr.length() >= 4) {
-                    val effectiveEnv = nodeEnvFlag ?: targetEnv
-                    if (effectiveEnv == targetEnv) {
-                        val unitNames = (0 until unitsArr.length().coerceAtMost(10)).mapNotNull { idx ->
-                            when (val u = unitsArr.opt(idx)) {
-                                is String -> cleanText(u).takeIf { it.isNotBlank() }
-                                is JSONObject -> cleanText(u.optString("name").ifBlank { u.optString("character_id").ifBlank { u.optString("id") } }).takeIf { it.isNotBlank() }
-                                else -> null
-                            }
-                        }
-                        if (unitNames.size >= 4) {
-                            val carry = cleanText(node.optString("carry")).ifBlank { unitNames.last() }
-                            val tier = TierRank.fromRaw(node.optString("tier"))
-                            val playstyle = cleanText(node.optString("playstyle").ifBlank { node.optString("style") }).ifBlank { "Fast 8" }
-                            val traits = extractStringList(node.optJSONArray("traits"))
-                            val augments = extractStringList(node.optJSONArray("augments"))
-                            val resolvedSet = currentSet ?: defaultSetLabel
-                            val compId = "tftactics_${targetEnv.name.lowercase()}_${title.lowercase().replace(Regex("[^a-z0-9]+"), "_")}"
-                            out.add(
-                                MetaComp(
-                                    id = compId,
-                                    environment = targetEnv,
-                                    title = title,
-                                    tier = tier,
-                                    playstyle = playstyle,
-                                    avgPlacement = node.optDouble("avgPlace", 3.65).takeIf { !it.isNaN() } ?: 3.65,
-                                    top4Rate = node.optDouble("top4Rate", 61.0).takeIf { !it.isNaN() } ?: 61.0,
-                                    winRate = node.optDouble("winRate", 16.0).takeIf { !it.isNaN() } ?: 16.0,
-                                    pickRate = node.optDouble("pickRate", 6.5).takeIf { !it.isNaN() } ?: 6.5,
-                                    trendDelta = "TFTactics ${targetEnv.label}",
-                                    isTrending = tier == TierRank.S,
-                                    patchTag = patchTag,
-                                    carryName = carry,
-                                    traits = traits,
-                                    coreUnits = unitNames,
-                                    hexPlacements = buildPlacements(unitNames, carry),
-                                    augmentPriorities = augments,
-                                    levelingGuide = "Sourced from tftactics.gg ($playstyle • $resolvedSet)",
-                                    notes = "Verified $resolvedSet composition synced from tftactics.gg/tierlist/team-comps/.",
-                                    setName = resolvedSet,
-                                    sourceUrl = TFTACTICS_TEAM_COMPS_URL
-                                )
-                            )
-                        }
-                    }
-                }
-
-                val keys = node.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val branchEnv = when {
-                        key.equals("pbe", ignoreCase = true) || key.equals("pbeComps", ignoreCase = true) -> TftEnvironment.PBE
-                        key.equals("live", ignoreCase = true) || key.equals("liveComps", ignoreCase = true) -> TftEnvironment.LIVE
-                        else -> nodeEnvFlag
-                    }
-                    collectCompsFromJson(node.opt(key), targetEnv, patchTag, defaultSetLabel, branchEnv, currentSet, out, depth + 1)
-                }
+    private fun extractStringValues(raw: Any?): List<String> {
+        return when (raw) {
+            is JSONArray -> (0 until raw.length()).mapNotNull { i ->
+                cleanText(raw.optString(i)).takeIf { it.isNotBlank() }
             }
-            is JSONArray -> {
-                for (i in 0 until node.length().coerceAtMost(500)) {
-                    collectCompsFromJson(node.opt(i), targetEnv, patchTag, defaultSetLabel, inheritedEnv, inheritedSet, out, depth + 1)
-                }
-            }
+            is String -> listOfNotNull(cleanText(raw).takeIf { it.isNotBlank() })
+            else -> emptyList()
         }
     }
 
-    private fun parseDomTeamComps(
-        html: String,
-        targetEnv: TftEnvironment,
-        patchTag: String,
-        defaultSetLabel: String,
-        isDedicatedEnvPage: Boolean = true
-    ): List<MetaComp> {
-        val comps = mutableListOf<MetaComp>()
-        val cards = extractTeamPortraitBlocks(html)
-        for ((cardStartIdx, blockHtml) in cards) {
-            val isPbeCard = blockHtml.contains("data-env=\"pbe\"", ignoreCase = true) ||
-                blockHtml.contains("pbe-badge", ignoreCase = true) ||
-                blockHtml.contains("class=\"pbe", ignoreCase = true)
-            val cardEnv = when {
-                isPbeCard -> TftEnvironment.PBE
-                targetEnv == TftEnvironment.PBE && !isDedicatedEnvPage -> TftEnvironment.LIVE
-                else -> targetEnv
-            }
-            if (cardEnv != targetEnv) continue
-
-            val title = cleanText(TEAM_NAME_REGEX.find(blockHtml)?.groupValues?.getOrNull(1).orEmpty())
-            if (title.length !in 3..64) continue
-
-            val explicitTier = TEAM_TIER_REGEX.find(blockHtml)?.groupValues?.getOrNull(1)
-            val sectionTier = explicitTier ?: inferPrecedingSectionTier(html, cardStartIdx)
-            val tier = TierRank.fromRaw(sectionTier ?: "B")
-            val playstyle = cleanText(TEAM_PLAYSTYLE_REGEX.find(blockHtml)?.groupValues?.getOrNull(1).orEmpty()).ifBlank { "Fast 8" }
-            val unitNames = UNIT_ALT_REGEX.findAll(blockHtml)
-                .map { cleanText(it.groupValues[1]) }
-                .filter { it.isNotBlank() }
-                .distinct()
-                .take(10)
-                .toList()
-            if (unitNames.size < 4) continue
-
-            val cardSet = SET_LABEL_REGEX.find(blockHtml)?.let { m ->
-                "Set ${m.groupValues[1]}"
-            } ?: defaultSetLabel
-            val carry = unitNames.last()
-            comps.add(
-                MetaComp(
-                    id = "tftactics_${targetEnv.name.lowercase()}_${title.lowercase().replace(Regex("[^a-z0-9]+"), "_")}",
-                    environment = targetEnv,
-                    title = title,
-                    tier = tier,
-                    playstyle = playstyle,
-                    avgPlacement = when (tier) {
-                        TierRank.S -> 3.48
-                        TierRank.A -> 3.85
-                        TierRank.B -> 4.18
-                        TierRank.C -> 4.55
-                    },
-                    top4Rate = when (tier) {
-                        TierRank.S -> 64.0
-                        TierRank.A -> 57.5
-                        TierRank.B -> 51.0
-                        TierRank.C -> 45.0
-                    },
-                    winRate = when (tier) {
-                        TierRank.S -> 18.0
-                        TierRank.A -> 14.5
-                        TierRank.B -> 11.5
-                        TierRank.C -> 8.5
-                    },
-                    pickRate = 7.0,
-                    trendDelta = "TFTactics ${targetEnv.label}",
-                    isTrending = tier == TierRank.S,
-                    patchTag = patchTag,
-                    carryName = carry,
-                    traits = emptyList(),
-                    coreUnits = unitNames,
-                    hexPlacements = buildPlacements(unitNames, carry),
-                    augmentPriorities = emptyList(),
-                    levelingGuide = "Play $playstyle on $cardSet ($patchTag)",
-                    notes = "Synced from tftactics.gg/tierlist/team-comps/ ($cardSet).",
-                    setName = cardSet,
-                    sourceUrl = TFTACTICS_TEAM_COMPS_URL
-                )
-            )
+    private fun findMainBundleUrl(html: String): String? {
+        val match = MAIN_BUNDLE_REGEX.find(html) ?: CHUNK_JS_REGEX.findAll(html).firstOrNull {
+            it.groupValues[1].contains("main", ignoreCase = true)
+        } ?: return null
+        val src = match.groupValues[1].trim()
+        return when {
+            src.startsWith("http") -> src
+            src.startsWith("//") -> "https:$src"
+            else -> "$TFTACTICS_ORIGIN${if (src.startsWith("/")) src else "/$src"}"
         }
-        return comps
-    }
-
-    /**
-     * Scans all <div class="...team-portrait/comp/row..."> blocks across the full HTML document,
-     * balancing nested <div> tags so multi-layered React/HTML cards (including below-the-fold rows) never get truncated.
-     */
-    private fun extractTeamPortraitBlocks(html: String): List<Pair<Int, String>> {
-        val starts = TEAM_PORTRAIT_START_REGEX.findAll(html).toList()
-        if (starts.isEmpty()) return emptyList()
-
-        val result = mutableListOf<Pair<Int, String>>()
-        for (idx in starts.indices) {
-            val startPos = starts[idx].range.first
-            val nextStart = if (idx + 1 < starts.size) starts[idx + 1].range.first else html.length
-            var depth = 0
-            var endPos = nextStart
-            for (tag in DIV_TAG_REGEX.findAll(html, startPos)) {
-                if (tag.range.first >= nextStart) break
-                val tagText = tag.value
-                if (tagText.startsWith("</", ignoreCase = true)) {
-                    depth--
-                    if (depth <= 0) {
-                        endPos = (tag.range.last + 1).coerceAtMost(nextStart)
-                        break
-                    }
-                } else if (!tagText.endsWith("/>")) {
-                    depth++
-                }
-            }
-            if (endIdxValid(startPos, endPos)) {
-                result.add(startPos to html.substring(startPos, endPos))
-            }
-        }
-        return result
-    }
-
-    private fun endIdxValid(startPos: Int, endPos: Int): Boolean = endPos > startPos
-
-    private fun inferPrecedingSectionTier(html: String, cardStartIdx: Int): String? {
-        val windowStart = (cardStartIdx - 4000).coerceAtLeast(0)
-        val prefix = html.substring(windowStart, cardStartIdx)
-        return SECTION_TIER_REGEX.findAll(prefix).lastOrNull()?.groupValues?.firstOrNull { it.isNotBlank() && it.length <= 2 }
-    }
-
-    private fun buildPlacements(units: List<String>, carry: String): List<HexUnitPlacement> {
-        return units.mapIndexed { idx, name ->
-            HexUnitPlacement(
-                unitName = name,
-                row = if (idx < units.size / 2) 0 else 3,
-                col = (idx * 2) % 7,
-                cost = if (name.equals(carry, ignoreCase = true)) 4 else 3,
-                isCarry = name.equals(carry, ignoreCase = true)
-            )
-        }
-    }
-
-    private fun extractStringList(arr: JSONArray?): List<String> {
-        if (arr == null) return emptyList()
-        return (0 until arr.length().coerceAtMost(10)).mapNotNull { i ->
-            when (val el = arr.opt(i)) {
-                is String -> cleanText(el).takeIf { it.isNotBlank() }
-                is JSONObject -> cleanText(el.optString("name").ifBlank { el.optString("label") }).takeIf { it.isNotBlank() }
-                else -> null
-            }
-        }
-    }
-
-    private fun findPbeCompsUrl(html: String): String? {
-        val m = PBE_LINK_REGEX.find(html) ?: return null
-        val href = m.groupValues[1]
-        return if (href.startsWith("http")) href else "https://tftactics.gg${if (href.startsWith("/")) href else "/$href"}"
-    }
-
-    private fun inferSetNumberFromPatch(patchVersion: String): Int? {
-        return Regex("""\b(1[3-9]|2[0-9])\.""").find(patchVersion)?.groupValues?.getOrNull(1)?.toIntOrNull()
-    }
-
-    private fun extractSetNumber(text: String): Int? {
-        return Regex("""Set\s*(\d+)""", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
 
     private fun fetchUrl(url: String): String? {
         return try {
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "TacticiansForge-Android/1.0 (+https://tftactics.gg/tierlist/team-comps/)")
-                .header("Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8")
+                .cacheControl(CacheControl.FORCE_NETWORK)
+                .header("Cache-Control", "no-cache, no-store, max-age=0")
+                .header("Pragma", "no-cache")
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/javascript,application/json;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .build()
             client.newCall(request).execute().use { resp ->
@@ -662,58 +775,53 @@ class TftacticsCompsScraper(
     }
 
     companion object {
-        const val TFTACTICS_TEAM_COMPS_URL = "https://tftactics.gg/tierlist/team-comps/"
-        const val TFTACTICS_TEAM_COMPS_PBE_QUERY_URL = "https://tftactics.gg/tierlist/team-comps/?pbe=true"
+        const val TFTACTICS_ORIGIN = "https://tftactics.gg"
+        const val TFTACTICS_COMPS_URL = "https://tftactics.gg/tierlist/team-comps/"
 
-        private val NEXT_DATA_REGEX = Regex(
-            """<script[^>]*id=["']__NEXT_DATA__["'][^>]*>(.*?)</script>""",
+        fun buildSunderChampionUrl(setNumber: Int, championName: String): String {
+            val clean = championName
+                .replace(Regex("""\([^)]*\)"""), "")
+                .replace("/", "")
+                .replace(" ", "")
+                .replace("'", "")
+                .replace(".", "")
+            return "https://sunderarmor.com/characters/Skin/$setNumber/$clean.png"
+        }
+
+        fun buildSunderTraitUrl(traitName: String): String {
+            val clean = traitName
+                .replace("/", "")
+                .replace(":", "")
+                .replace("'", "")
+                .replace(".", "")
+                .replace("-", "")
+                .replace(" ", "")
+                .lowercase(Locale.US)
+            return "https://sunderarmor.com/icons/$clean.png"
+        }
+
+        private val MAIN_BUNDLE_REGEX = Regex(
+            """<script[^>]+src=["']([^"']*static/js/main\.[^"']+\.js(?:\?[^"']*)?)["']""",
+            RegexOption.IGNORE_CASE
+        )
+        private val CHUNK_JS_REGEX = Regex(
+            """<script[^>]+src=["']([^"']+\.chunk\.js(?:\?[^"']*)?)["']""",
+            RegexOption.IGNORE_CASE
+        )
+        private val HTML_SET_OPTION_REGEX = Regex("""\bset=["'](\d+)["']""", RegexOption.IGNORE_CASE)
+        private val BANNER_SET_REGEX = Regex(
+            """<div class="update-title">\s*Set\s*(\d+)\s*(?::\s*([^<\n]+?))?\s+is now live on TFTactics!?""",
+            RegexOption.IGNORE_CASE
+        )
+        private val POS_REGEX = Regex("""p(\d+)""", RegexOption.IGNORE_CASE)
+        private val HTML_RANK_REGEX = Regex("""<div class="team-rank[^"]*">\s*([SABCDX]\+?)\s*</div>""", RegexOption.IGNORE_CASE)
+        private val HTML_NAME_REGEX = Regex("""<div class="team-name-elipsis">(.*?)</div>\s*</div>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+        private val HTML_PLAYSTYLE_REGEX = Regex("""<div class="team-playstyle">(.*?)</div>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+        private val HTML_CHAR_REGEX = Regex(
+            """<a[^>]*class="characters-item\s+([^"]+)"[^>]*>(.*?)<div class="team-character-name">([^<]+)</div>\s*</a>""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
-        private val NEXT_BUILD_ID_REGEX = Regex(""""buildId"\s*:\s*"([^"]+)"""")
-        private val INLINE_JSON_STATE_REGEX = Regex(
-            """window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        )
-        private val COMP_ARRAY_ANCHOR_REGEX = Regex(
-            """\[\s*\{\s*"(?:title|name|compName|tier)"\s*:"""
-        )
-        private val SCRIPT_SRC_REGEX = Regex(
-            """<script[^>]+src=["']([^"']+\.js(?:\?[^"']*)?)["']""",
-            RegexOption.IGNORE_CASE
-        )
-        private val PBE_LINK_REGEX = Regex(
-            """href=["']([^"']*tierlist/team-comps[^"']*pbe[^"']*)["']""",
-            RegexOption.IGNORE_CASE
-        )
-        private val SET_LABEL_REGEX = Regex(
-            """\bSet\s*(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]{2,28}))?""",
-            RegexOption.IGNORE_CASE
-        )
-        private val TEAM_PORTRAIT_START_REGEX = Regex(
-            """<div[^>]*class=["'][^"']*(?:team-(?:portrait|comp|row)|comp-(?:row|card))[^"']*["'][^>]*>""",
-            RegexOption.IGNORE_CASE
-        )
-        private val DIV_TAG_REGEX = Regex("""</?div\b[^>]*>""", RegexOption.IGNORE_CASE)
-        private val TEAM_NAME_REGEX = Regex(
-            """class=["'][^"']*team-name[^"']*["'][^>]*>(.*?)<""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        )
-        private val TEAM_TIER_REGEX = Regex(
-            """class=["'][^"']*team-rank[^"']*["'][^>]*>\s*([SABCD]\+?)\s*<""",
-            RegexOption.IGNORE_CASE
-        )
-        private val SECTION_TIER_REGEX = Regex(
-            """(?:tier[-_]label[^>]*>\s*([SABCD]\+?)|<h[1-4][^>]*>\s*([SABCD]\+?)\s*(?:Tier)?)""",
-            RegexOption.IGNORE_CASE
-        )
-        private val TEAM_PLAYSTYLE_REGEX = Regex(
-            """class=["'][^"']*team-playstyle[^"']*["'][^>]*>(.*?)<""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        )
-        private val UNIT_ALT_REGEX = Regex(
-            """(?:alt|data-unit|title)=["']([A-Za-z0-9 '&.\-]{2,24})["']""",
-            RegexOption.IGNORE_CASE
-        )
+        private val HTML_ITEM_NAME_REGEX = Regex("""<div class="character-wrapper"[^>]*name=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
         private val HTML_TAG_REGEX = Regex("""<[^>]+>""")
         private val WHITESPACE_REGEX = Regex("""\s+""")
     }

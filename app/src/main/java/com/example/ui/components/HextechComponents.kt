@@ -121,17 +121,24 @@ fun EnvironmentToggleBar(
                 label = "envPillSlide"
             )
 
-            // Sliding active capsule indicator
+            // Sliding vibrant active capsule indicator
             Box(
                 modifier = Modifier
                     .offset(x = pillOffsetX)
                     .width(segmentWidth)
                     .height(48.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surface)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.surface,
+                                activeAccent.copy(alpha = 0.18f)
+                            )
+                        )
+                    )
                     .border(
-                        width = 1.dp,
-                        color = activeAccent.copy(alpha = 0.75f),
+                        width = 1.4.dp,
+                        color = activeAccent.copy(alpha = 0.85f),
                         shape = RoundedCornerShape(10.dp)
                     )
             )
@@ -207,12 +214,20 @@ fun TierBadge(tier: TierRank, modifier: Modifier = Modifier) {
         TierRank.A -> hextech.tierA
         TierRank.B -> hextech.tierB
         TierRank.C -> hextech.tierC
+        TierRank.X -> hextech.tierX
     }
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = badgeColor.copy(alpha = 0.16f),
-        border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.7f)),
+    Box(
         modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        badgeColor.copy(alpha = 0.28f),
+                        badgeColor.copy(alpha = 0.12f)
+                    )
+                )
+            )
+            .border(1.1.dp, badgeColor.copy(alpha = 0.82f), RoundedCornerShape(8.dp))
     ) {
         Text(
             text = "${tier.label}-TIER",
@@ -235,8 +250,8 @@ fun DeltaBadge(delta: DeltaType, modifier: Modifier = Modifier) {
     }
     Surface(
         shape = RoundedCornerShape(6.dp),
-        color = color.copy(alpha = 0.15f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.6f)),
+        color = color.copy(alpha = 0.18f),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.7f)),
         modifier = modifier
     ) {
         Text(
@@ -257,14 +272,26 @@ fun HextechPanelCard(
     content: @Composable () -> Unit
 ) {
     val hextech = LocalHextechColors.current
-    val borderColor = if (accentBorder) hextech.goldBorder else MaterialTheme.colorScheme.outline
+    val borderStroke = if (accentBorder) {
+        BorderStroke(
+            width = 1.25.dp,
+            brush = Brush.linearGradient(
+                listOf(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.82f),
+                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.55f)
+                )
+            )
+        )
+    } else {
+        BorderStroke(1.dp, hextech.goldBorder.copy(alpha = 0.25f).let { MaterialTheme.colorScheme.outline })
+    }
     if (onClick != null) {
         Surface(
             onClick = onClick,
             shape = MaterialTheme.shapes.medium,
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 2.dp,
-            border = BorderStroke(1.dp, borderColor),
+            tonalElevation = if (accentBorder) 4.dp else 2.dp,
+            border = borderStroke,
             modifier = modifier.fillMaxWidth()
         ) {
             content()
@@ -273,8 +300,8 @@ fun HextechPanelCard(
         Surface(
             shape = MaterialTheme.shapes.medium,
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 2.dp,
-            border = BorderStroke(1.dp, borderColor),
+            tonalElevation = if (accentBorder) 4.dp else 2.dp,
+            border = borderStroke,
             modifier = modifier.fillMaxWidth()
         ) {
             content()
@@ -286,6 +313,7 @@ fun HextechPanelCard(
 @Composable
 fun TftHexBoard(
     placements: List<HexUnitPlacement>,
+    environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val primary = MaterialTheme.colorScheme.primary
@@ -402,7 +430,8 @@ fun TftHexBoard(
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = (boxSizeDp - 4.dp).coerceIn(20.dp, 30.dp)
+                        size = (boxSizeDp - 4.dp).coerceIn(20.dp, 30.dp),
+                        environment = environment
                     )
                 }
             }
@@ -440,7 +469,8 @@ fun TftHexBoard(
                                             cost = unit.cost,
                                             isCarry = unit.isCarry,
                                             stars = unit.stars,
-                                            size = 28.dp
+                                            size = 28.dp,
+                                            environment = environment
                                         )
                                         Column {
                                             Text(

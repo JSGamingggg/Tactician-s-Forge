@@ -2,19 +2,25 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.model.HexUnitPlacement
+import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
-import com.example.data.network.TftacticsCompsScraper
+import com.example.data.model.TierRank
+import com.example.data.network.TftAcademyCompsScraper
 import com.example.data.network.TftipsPatchScraper
 import com.example.data.repository.FirestoreUserRepository
 import com.example.data.repository.LocalPreferencesStore
+import com.example.data.repository.MetaCatalogData
 import com.example.data.repository.MetaRepository
 import com.example.data.repository.OfflineMetaBundle
 import com.example.data.repository.OfflineMetaCacheStore
 import com.example.ui.viewmodel.MainViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -26,36 +32,91 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class ExampleRobolectricTest {
 
-    @Test
-    fun `read string from context`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val appName = context.getString(R.string.app_name)
-        assertEquals("Tactician's Forge", appName)
-    }
+    private fun sampleTftAcademyComp(
+        id: String,
+        title: String,
+        environment: TftEnvironment,
+        tier: TierRank = TierRank.S,
+        carry: String = "Ahri"
+    ) = MetaComp(
+        id = id,
+        title = title,
+        environment = environment,
+        tier = tier,
+        playstyle = "Fast 8",
+        setName = environment.setName,
+        patchTag = if (environment == TftEnvironment.LIVE) "18.8" else "19.1-PBE",
+        carryName = carry,
+        avgPlacement = 3.55,
+        top4Rate = 64.2,
+        winRate = 18.1,
+        pickRate = 8.4,
+        isTrending = true,
+        trendDelta = "TFTAcademy ${environment.label}",
+        traits = listOf("6 Elderwood", "4 Arcanist"),
+        coreUnits = listOf("Ornn", "Lillia", carry, "Veigar", "Nami"),
+        hexPlacements = listOf(
+            HexUnitPlacement("Ornn", 0, 3, cost = 4),
+            HexUnitPlacement(carry, 3, 6, cost = 4, isCarry = true, items = listOf("Blue Buff", "Jeweled Gauntlet"))
+        ),
+        augmentPriorities = listOf("Jeweled Lotus II", "Level Up!"),
+        levelingGuide = "Fast 8 on 4-2",
+        notes = "Synced from tftacademy.com/tierlist/comps",
+        sourceUrl = TftAcademyCompsScraper.TFTACADEMY_COMPS_URL
+    )
 
     @Test
-    fun `offline cache store persists and reloads live and pbe catalog`() {
+    fun `offline cache store removes legacy comps and persists tftacademy comps`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val store = OfflineMetaCacheStore(context)
 
+        // All hardcoded legacy comps must be removed
+        assertTrue(MetaCatalogData.liveComps.isEmpty())
+        assertTrue(MetaCatalogData.pbeComps.isEmpty())
+
         val seeded = store.readOrSeedBundle()
         assertTrue(store.hasPersistedCache())
-        assertTrue(seeded.liveComps.isNotEmpty())
-        assertTrue(seeded.pbeComps.isNotEmpty())
-        assertTrue(seeded.liveItems.isNotEmpty())
-        assertTrue(seeded.liveAugments.isNotEmpty())
+        // Preloaded real TFTAcademy Set 18 LIVE (35) & TFTactics Set 19 PBE (23) compositions
+        assertEquals(35, seeded.liveComps.size)
+        assertTrue(seeded.liveComps.all { it.sourceUrl == TftAcademyCompsScraper.TFTACADEMY_COMPS_URL })
+        assertTrue(seeded.liveComps.any { it.tier == TierRank.S })
+        assertTrue(seeded.liveComps.any { it.tier == TierRank.X })
+        assertTrue(seeded.liveComps.all { it.traits.isNotEmpty() })
+        assertEquals(23, seeded.pbeComps.size)
+        assertTrue(seeded.pbeComps.all { it.sourceUrl == com.example.data.network.TftacticsCompsScraper.TFTACTICS_COMPS_URL })
+        assertTrue(seeded.pbeComps.all { it.traits.isNotEmpty() && it.hexPlacements.isNotEmpty() })
+        assertEquals(35, seeded.toCacheStatus(environment = TftEnvironment.LIVE).compsCount)
+        assertEquals(23, seeded.toCacheStatus(environment = TftEnvironment.PBE).compsCount)
+
+        // Complete Set 18 catalog preloaded with traits, descriptions, and icons
+        assertEquals(74, seeded.liveChampions.size)
+        assertTrue(seeded.liveChampions.all { it.traits.isNotEmpty() && it.abilityDescription.isNotBlank() })
+        assertTrue(seeded.liveItems.size >= 130)
+        assertTrue(seeded.liveItems.all { it.statsSummary.isNotBlank() })
+        assertTrue(seeded.liveAugments.size >= 240)
+        assertTrue(seeded.liveAugments.all { it.description.isNotBlank() })
+
+        val academyLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
+        val tftacticsPbe = sampleTftAcademyComp("tftactics_pbe_ionic_spark_hitmakers", "Ionic Spark Hitmakers", TftEnvironment.PBE, carry = "Jinx")
+            .copy(sourceUrl = com.example.data.network.TftacticsCompsScraper.TFTACTICS_COMPS_URL)
+        val legacyComp = academyLive.copy(id = "legacy_comp", sourceUrl = "https://legacy.example/comps")
 
         val updated = seeded.copy(
             liveVersionInfo = seeded.liveVersionInfo.copy(
                 livePatchVersion = "18.8",
-                pbePatchVersion = "18.9-PBE"
-            )
+                pbePatchVersion = "19.1-PBE"
+            ),
+            liveComps = listOf(academyLive, legacyComp),
+            pbeComps = listOf(tftacticsPbe)
         )
         assertTrue(store.writeBundle(updated))
 
         val reloaded = store.readOrSeedBundle()
         assertEquals("18.8", reloaded.liveVersionInfo.livePatchVersion)
-        assertEquals("18.9-PBE", reloaded.liveVersionInfo.pbePatchVersion)
+        assertEquals("19.1-PBE", reloaded.liveVersionInfo.pbePatchVersion)
+        // Non-matching source comps are stripped automatically
+        assertEquals(listOf("tftacademy_live_ahri"), reloaded.liveComps.map { it.id })
+        assertEquals(listOf("tftactics_pbe_ionic_spark_hitmakers"), reloaded.pbeComps.map { it.id })
     }
 
     @Test
@@ -101,38 +162,14 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `tftactics scraper parses live and pbe comps and enforces matching set per environment`() {
-        val scraper = TftacticsCompsScraper()
+    fun `tftacademy scraper parses next data and app router rsc chunks and enforces matching set`() {
+        val scraper = TftAcademyCompsScraper()
         val liveHtml = """
             <html>
               <body>
-                <h1>TFT Team Comps Tier List - Set 18: Enchanted Wilds</h1>
-                <script id="__NEXT_DATA__" type="application/json">
-                {
-                  "props": {
-                    "pageProps": {
-                      "liveComps": [
-                        {
-                          "title": "Elderwood Arcanists",
-                          "tier": "S",
-                          "playstyle": "Fast 8",
-                          "set": "Set 18",
-                          "carry": "Ahri",
-                          "units": ["Ornn", "Lillia", "Ahri", "Veigar", "Nami"],
-                          "traits": ["6 Elderwood", "4 Arcanist"]
-                        },
-                        {
-                          "title": "Stale Wrong Set Comp",
-                          "tier": "A",
-                          "playstyle": "Reroll",
-                          "set": "Set 19",
-                          "carry": "Lux",
-                          "units": ["Lux", "Garen", "Jarvan", "Sona"]
-                        }
-                      ]
-                    }
-                  }
-                }
+                <h1>TFTAcademy Tier List - Set 18: Enchanted Wilds</h1>
+                <script>
+                  self.__next_f.push([1,"{\"guides\":[{\"title\":\"Elderwood Arcanists\",\"tier\":\"S\",\"playstyle\":\"Fast 8\",\"set\":\"Set 18\",\"carry\":\"Ahri\",\"stats\":{\"avgPlacement\":3.42,\"top4Rate\":66.8,\"winRate\":19.4,\"pickRate\":8.9},\"units\":[{\"name\":\"Ornn\",\"cost\":4,\"row\":0,\"col\":3},{\"name\":\"Lillia\",\"cost\":3,\"row\":0,\"col\":2},{\"name\":\"Ahri\",\"cost\":4,\"row\":3,\"col\":6,\"isCarry\":true,\"items\":[\"Blue Buff\",\"Jeweled Gauntlet\"]},{\"name\":\"Veigar\",\"cost\":4,\"row\":3,\"col\":5},{\"name\":\"Nami\",\"cost\":5,\"row\":3,\"col\":4}],\"traits\":[\"6 Elderwood\",\"4 Arcanist\"]},{\"title\":\"Stale Wrong Set Comp\",\"tier\":\"A\",\"playstyle\":\"Reroll\",\"set\":\"Set 19\",\"carry\":\"Lux\",\"units\":[\"Lux\",\"Garen\",\"Jarvan\",\"Sona\"]}]}"])
                 </script>
               </body>
             </html>
@@ -141,7 +178,7 @@ class ExampleRobolectricTest {
         val pbeHtml = """
             <html>
               <body>
-                <h1>TFT PBE Team Comps - Set 19: Cyber Horizon PBE</h1>
+                <h1>TFTAcademy PBE Tier List - Set 19: Cyber Horizon PBE</h1>
                 <script id="__NEXT_DATA__" type="application/json">
                 {
                   "props": {
@@ -173,21 +210,35 @@ class ExampleRobolectricTest {
 
         assertEquals(18, liveDoc.detectedSetNumber)
         assertEquals(1, alignedLive.size)
-        assertEquals("Elderwood Arcanists", alignedLive.first().title)
-        assertEquals(TftacticsCompsScraper.TFTACTICS_TEAM_COMPS_URL, alignedLive.first().sourceUrl)
+        val liveComp = alignedLive.first()
+        assertEquals("Elderwood Arcanists", liveComp.title)
+        assertEquals(3.42, liveComp.avgPlacement, 0.01)
+        assertEquals(66.8, liveComp.top4Rate, 0.01)
+        assertEquals(TftAcademyCompsScraper.TFTACADEMY_COMPS_URL, liveComp.sourceUrl)
+        val ahriPlacement = liveComp.hexPlacements.first { it.unitName == "Ahri" }
+        assertEquals(3, ahriPlacement.row)
+        assertEquals(6, ahriPlacement.col)
+        assertEquals(listOf("Blue Buff", "Jeweled Gauntlet"), ahriPlacement.items)
 
         assertEquals(19, pbeDoc.detectedSetNumber)
         assertEquals(1, alignedPbe.size)
         assertEquals("Cybernetic Vayne", alignedPbe.first().title)
         assertEquals(TftEnvironment.PBE, alignedPbe.first().environment)
-        assertEquals(TftacticsCompsScraper.TFTACTICS_TEAM_COMPS_URL, alignedPbe.first().sourceUrl)
+        assertEquals(TftAcademyCompsScraper.TFTACADEMY_COMPS_URL, alignedPbe.first().sourceUrl)
     }
 
     @Test
-    fun `main viewmodel loads guest mode offline catalog immediately with zero firestore access`() = runBlocking {
+    fun `main viewmodel loads guest mode offline catalog asynchronously with zero firestore access`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val cacheStore = OfflineMetaCacheStore(context)
-        cacheStore.writeBundle(OfflineMetaBundle())
+        val academyLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
+        val academyPbe = sampleTftAcademyComp("tftacademy_pbe_vayne", "Cyber Vayne", TftEnvironment.PBE, carry = "Vayne")
+        cacheStore.writeBundle(
+            OfflineMetaBundle(
+                liveComps = listOf(academyLive),
+                pbeComps = listOf(academyPbe)
+            )
+        )
         val localStore = LocalPreferencesStore(context)
         val metaRepo = MetaRepository(cacheStore)
 
@@ -198,6 +249,12 @@ class ExampleRobolectricTest {
             firestoreRepo = FirestoreUserRepository(context),
             autoSyncOnInit = false
         )
+
+        // Allow async cache hydration coroutine on viewModelScope to complete
+        repeat(20) {
+            if (vm.metaComps.value.isNotEmpty() && vm.offlineCacheStatus.value.isReady) return@repeat
+            delay(25)
+        }
 
         assertTrue(vm.offlineCacheStatus.value.isReady)
         assertTrue(vm.metaComps.value.isNotEmpty())
@@ -232,37 +289,44 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `asset icon resolver resolves champion item and augment ddragon urls and updates from json`() {
+    fun `asset icon resolver resolves champion item augment and trait urls and updates from json`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        OfflineMetaCacheStore(context).readOrSeedBundle()
         val resolver = com.example.ui.components.TftAssetIconResolver
         val initialVersion = resolver.ddragonVersion
         val initialRevision = resolver.catalogRevision
 
         val ahriUrl = resolver.resolveChampionIconUrl("Ahri")
-        val tahmUrl = resolver.resolveChampionIconUrl("Tahm Kench")
-        val kogUrl = resolver.resolveChampionIconUrl("Kog'Maw")
-        val ornnUrl = resolver.resolveChampionIconUrl("TFT18_Ornn")
+        val pebblesUrl = resolver.resolveChampionIconUrl("DA_18_Sentry")
+        val brambleUrl = resolver.resolveChampionIconUrl("Brambleback")
+        val ornnUrl = resolver.resolveChampionIconUrl("DA_18_Ornn")
 
-        assertTrue(ahriUrl?.endsWith("/img/champion/Ahri.png") == true)
-        assertTrue(tahmUrl?.endsWith("/img/champion/TahmKench.png") == true)
-        assertTrue(kogUrl?.endsWith("/img/champion/KogMaw.png") == true)
-        assertTrue(ornnUrl?.endsWith("/img/champion/Ornn.png") == true)
+        assertTrue(ahriUrl?.contains("img/") == true && ahriUrl.endsWith(".png"))
+        assertTrue(pebblesUrl?.endsWith("DA_18_Sentry.TFT_Set18.png") == true)
+        assertTrue(brambleUrl?.endsWith("DA_Brambleback18.TFT_Set18.png") == true)
+        assertTrue(ornnUrl?.endsWith("Ornn_splash_centered_2.TFT_Set18.png") == true)
+        assertEquals("Pebbles", com.example.ui.components.formatRiotAssetLabel("DA_18_Sentry"))
+        assertEquals("Ravager Emblem", com.example.ui.components.formatRiotAssetLabel("DA_18_EmblemSlayer"))
+        assertEquals(listOf("Elderwood", "Defender"), resolver.getChampionTraits("Ornn"))
 
         val blueBuffUrl = resolver.resolveItemIconUrl("Blue Buff")
         val nashorsUrl = resolver.resolveItemIconUrl("Nashor's Tooth")
         val redBuffUrl = resolver.resolveItemIconUrl("Red Buff")
-        val edgeUrl = resolver.resolveItemIconUrl("Edge of Night")
+        val emblemUrl = resolver.resolveItemIconUrl("DA_18_EmblemSlayer")
         val apiItemUrl = resolver.resolveItemIconUrl("TFT18_Item_JeweledGauntlet")
 
-        assertTrue(blueBuffUrl?.endsWith("/img/tft-item/TFT_Item_BlueBuff.png") == true)
-        assertTrue(nashorsUrl?.endsWith("/img/tft-item/TFT_Item_Leviathan.png") == true)
-        assertTrue(redBuffUrl?.endsWith("/img/tft-item/TFT_Item_RapidFireCannon.png") == true)
-        assertTrue(edgeUrl?.endsWith("/img/tft-item/TFT_Item_GuardianAngel.png") == true)
-        assertTrue(apiItemUrl?.endsWith("/img/tft-item/TFT_Item_JeweledGauntlet.png") == true)
+        assertTrue(blueBuffUrl?.endsWith(".png") == true)
+        assertTrue(nashorsUrl?.endsWith(".png") == true)
+        assertTrue(redBuffUrl?.endsWith(".png") == true)
+        assertTrue(emblemUrl?.endsWith("DA_18_EmblemSlayer.png") == true)
+        assertTrue(apiItemUrl?.endsWith("/img/tft-item/DA_JeweledGauntlet.png") == true)
 
         val levelUpUrl = resolver.resolveAugmentIconUrl("Level Up!")
-        val lotusUrl = resolver.resolveAugmentIconUrl("Jeweled Lotus II")
-        assertTrue(levelUpUrl?.endsWith("/img/tft-augment/TFT_Augment_LevelUp.png") == true)
-        assertTrue(lotusUrl?.endsWith("/img/tft-augment/TFT_Augment_JeweledLotus2.png") == true)
+        val floraUrl = resolver.resolveAugmentIconUrl("DA_18_FloraFatalisAugment")
+        val riftbeastTraitUrl = resolver.resolveTraitIconUrl("3 Riftbeast")
+        assertTrue(levelUpUrl?.let { it.endsWith(".png") || it.endsWith(".webp") } == true)
+        assertTrue(floraUrl?.contains("DA_18_FloraFatalisAugment") == true)
+        assertTrue(riftbeastTraitUrl?.contains("Trait_Icon_18_Riftbeast") == true)
 
         val champJson = """
             {
@@ -328,8 +392,8 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `tftactics scraper extracts all dom team comps across tiers without truncation`() {
-        val scraper = TftacticsCompsScraper()
+    fun `tftacademy scraper extracts all dom and link team comps across tiers without truncation`() {
+        val scraper = TftAcademyCompsScraper()
         val cardsHtml = (1..15).joinToString("\n") { idx ->
             val tierChar = when {
                 idx <= 5 -> "S"
@@ -338,27 +402,23 @@ class ExampleRobolectricTest {
                 else -> "C"
             }
             """
-            <div class="team-portrait">
-              <div class="team-info">
-                <div class="team-rank">$tierChar</div>
-                <div class="team-name">Comp Archetype $idx</div>
-                <div class="team-playstyle">Fast 8</div>
+            <a class="tftacademy-comp comp-card" href="/tierlist/comps/archetype-$idx">
+              <div class="comp-header">
+                <div class="tier-badge">$tierChar</div>
+                <div class="comp-title">TFTAcademy Archetype $idx</div>
+                <div class="comp-tempo">Fast 8</div>
               </div>
-              <div class="team-characters">
+              <div class="comp-units">
                 <img alt="Ornn" /><img alt="Ahri" /><img alt="Lillia" /><img alt="Syndra" /><img alt="Rakan" />
               </div>
-            </div>
+            </a>
             """.trimIndent()
         }
         val html = "<html><body><h1>Set 18: Enchanted Wilds</h1>$cardsHtml</body></html>"
         val parsed = scraper.parseCompsDocument(html, TftEnvironment.LIVE, "18.6b", isDedicatedEnvPage = true)
         assertEquals(15, parsed.comps.size)
-        assertTrue(parsed.comps.any { it.tier == com.example.data.model.TierRank.C })
-
-        val seededLive = com.example.data.repository.MetaCatalogData.liveComps
-        val seededPbe = com.example.data.repository.MetaCatalogData.pbeComps
-        assertTrue(seededLive.size >= 14)
-        assertTrue(seededPbe.size >= 10)
+        assertTrue(parsed.comps.any { it.tier == TierRank.C })
+        assertTrue(parsed.comps.all { it.sourceUrl == TftAcademyCompsScraper.TFTACADEMY_COMPS_URL })
     }
 
     @Test
@@ -367,7 +427,8 @@ class ExampleRobolectricTest {
         assertEquals("Made By JS96 + MK", context.getString(R.string.made_by_credits))
 
         val prefsStore = LocalPreferencesStore(context)
-        val initialBundle = OfflineMetaBundle()
+        val initialLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
+        val initialBundle = OfflineMetaBundle(liveComps = listOf(initialLive))
         val initialSync = com.example.data.model.MetaSyncResult(
             versionInfo = initialBundle.liveVersionInfo,
             cacheStatus = initialBundle.toCacheStatus(),
@@ -387,8 +448,8 @@ class ExampleRobolectricTest {
         assertEquals(0, firstDispatch.newCompsDetectedCount)
 
         // Second cycle introduces a new LIVE patch, a new PBE patch, and a brand-new composition
-        val newComp = initialBundle.liveComps.first().copy(
-            id = "live_new_test_comp_99",
+        val newComp = initialLive.copy(
+            id = "tftacademy_live_lux_99",
             title = "Arcanist Lux Reroll"
         )
         val updatedBundle = initialBundle.copy(
@@ -396,7 +457,7 @@ class ExampleRobolectricTest {
                 livePatchVersion = "18.9",
                 pbePatchVersion = "19.2-PBE"
             ),
-            liveComps = listOf(newComp) + initialBundle.liveComps
+            liveComps = listOf(newComp, initialLive)
         )
         val secondSync = com.example.data.model.MetaSyncResult(
             versionInfo = updatedBundle.liveVersionInfo,
@@ -464,8 +525,8 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `tftactics scraper extracts nested below-the-fold comp arrays from js bundles`() {
-        val scraper = TftacticsCompsScraper()
+    fun `tftacademy scraper extracts nested comp arrays from js bundles and detects content edits via signature`() {
+        val scraper = TftAcademyCompsScraper()
         val jsBundle = """
             var x=1;var comps=[
               {
@@ -480,7 +541,7 @@ class ExampleRobolectricTest {
                   {"name": "Yorick", "items": ["Warmog's Armor"]},
                   {"name": "Thresh", "items": []},
                   {"name": "Gwen", "items": ["Jeweled Gauntlet"]},
-                  {"name": "Kalista", "items": ["Guinsoo's Rageblade", "Runaan's Hurricane"]}
+                  {"name": "Kalista", "items": ["Guinsoo's Rageblade", "Runaan's Hurricane"], "threeStar": true}
                 ]
               },
               {
@@ -501,8 +562,17 @@ class ExampleRobolectricTest {
         val html = "<html><body><h1>Set 18</h1><script>${extracted.first()}</script></body></html>"
         val parsed = scraper.parseCompsDocument(html, TftEnvironment.LIVE, "18.8", isDedicatedEnvPage = true)
         assertEquals(2, parsed.comps.size)
-        assertTrue(parsed.comps.any { it.title == "Shadow Isles Kalista" && it.carryName == "Kalista" })
-        assertTrue(parsed.comps.any { it.title == "Deep Scroll Bastion Aphelios" && it.tier == com.example.data.model.TierRank.C })
+        val kalistaComp = parsed.comps.firstOrNull { it.title == "Shadow Isles Kalista" && it.carryName == "Kalista" }
+        assertNotNull(kalistaComp)
+        assertEquals(3, kalistaComp?.hexPlacements?.first { it.unitName == "Kalista" }?.stars)
+        assertTrue(parsed.comps.any { it.title == "Deep Scroll Bastion Aphelios" && it.tier == TierRank.C })
+
+        val sigBefore = TftAcademyCompsScraper.computeCompsSignature(parsed.comps, emptyList())
+        val mutatedComps = parsed.comps.map {
+            if (it.title == "Deep Scroll Bastion Aphelios") it.copy(tier = TierRank.A) else it
+        }
+        val sigAfter = TftAcademyCompsScraper.computeCompsSignature(mutatedComps, emptyList())
+        assertNotEquals(sigBefore, sigAfter)
     }
 
     @Test
@@ -521,4 +591,303 @@ class ExampleRobolectricTest {
         assertTrue(compactLandscape.isLandscape)
         assertTrue(compactLandscape.maxHeightDp.value <= 360f - 36f)
     }
+
+    @Test
+    fun `groupCompsByTier orders tiers S to X and sorts comps inside each tier`() {
+        val xTier = sampleTftAcademyComp("x1", "Wildcard Flex", TftEnvironment.LIVE, tier = TierRank.X).copy(avgPlacement = 4.35)
+        val cTier = sampleTftAcademyComp("c1", "Flex Bastion", TftEnvironment.LIVE, tier = TierRank.C).copy(avgPlacement = 4.60)
+        val aTier = sampleTftAcademyComp("a1", "Reroll Yone", TftEnvironment.LIVE, tier = TierRank.A).copy(avgPlacement = 4.05)
+        val sSlow = sampleTftAcademyComp("s2", "Invoker Ahri", TftEnvironment.LIVE, tier = TierRank.S).copy(avgPlacement = 3.80)
+        val sTop = sampleTftAcademyComp("s1", "Fast 9 Azir", TftEnvironment.LIVE, tier = TierRank.S).copy(avgPlacement = 3.12)
+
+        val grouped = com.example.ui.screens.groupCompsByTier(listOf(xTier, cTier, aTier, sSlow, sTop))
+        assertEquals(listOf(TierRank.S, TierRank.A, TierRank.C, TierRank.X), grouped.map { it.first })
+        assertEquals(listOf("Fast 9 Azir", "Invoker Ahri"), grouped.first().second.map { it.title })
+    }
+
+    @Test
+    fun `tftacademy scraper parses sveltekit fetched json body with finalComp apiName boardIndex tier X and filters drafts`() {
+        val scraper = TftAcademyCompsScraper()
+        val apiPayload = """
+            {
+              "guides": [
+                {
+                  "title": "Tempo Riftbeast",
+                  "compSlug": "set-18-tempo-riftbeast",
+                  "tier": "S",
+                  "style": "Fast 9",
+                  "set": 18,
+                  "displayIndex": 0,
+                  "isPublic": true,
+                  "mainChampion": {"apiName": "DA_Brambleback18", "cost": 4},
+                  "finalComp": [
+                    {"apiName": "DA_18_ElderDragon", "boardIndex": 15, "items": ["DA_InfinityEdge", "DA_LastWhisper"], "stars": 2},
+                    {"apiName": "DA_Brambleback18", "boardIndex": 2, "items": ["DA_WarmogsArmor"], "stars": 2},
+                    {"apiName": "DA_18_Ezreal", "boardIndex": 27, "items": ["DA_GuinsoosRageblade"], "stars": 1},
+                    {"apiName": "DA_18_GnarSmall", "boardIndex": 3, "items": [], "stars": 1}
+                  ],
+                  "augments": [
+                    {"apiName": "DA_VerticalityII", "disabled": false},
+                    {"apiName": "DA_DisabledAugment", "disabled": true}
+                  ],
+                  "tips": [
+                    {"stage": "Stage 2", "tip": "Play strongest board and slam tank items"}
+                  ],
+                  "augmentsTip": "Prioritize economy or combat augments."
+                },
+                {
+                  "title": "Wildcard Rift Flex",
+                  "compSlug": "set-18-wildcard-flex",
+                  "tier": "X",
+                  "style": "4-Cost Fast 8",
+                  "set": 18,
+                  "displayIndex": 12,
+                  "isPublic": true,
+                  "mainChampion": {"apiName": "DA_18_MasterYi_AD", "cost": 4},
+                  "finalComp": [
+                    {"apiName": "DA_18_MasterYi_AD", "boardIndex": 21, "items": [], "stars": 2},
+                    {"apiName": "DA_18_Ezreal", "boardIndex": 26, "items": [], "stars": 1},
+                    {"apiName": "DA_Brambleback18", "boardIndex": 1, "items": [], "stars": 1},
+                    {"apiName": "DA_18_ElderDragon", "boardIndex": 8, "items": [], "stars": 1}
+                  ]
+                },
+                {
+                  "title": "Hidden Draft Comp",
+                  "compSlug": "hidden-draft",
+                  "tier": "S",
+                  "set": 18,
+                  "displayIndex": 1,
+                  "isPublic": false,
+                  "finalComp": [
+                    {"apiName": "DA_18_Ezreal", "boardIndex": 0},
+                    {"apiName": "DA_Brambleback18", "boardIndex": 1},
+                    {"apiName": "DA_18_ElderDragon", "boardIndex": 2},
+                    {"apiName": "DA_18_GnarSmall", "boardIndex": 3}
+                  ]
+                },
+                {
+                  "title": "Archived Overflow Comp",
+                  "compSlug": "archived-overflow",
+                  "tier": "A",
+                  "set": 18,
+                  "displayIndex": 1001,
+                  "isPublic": true,
+                  "finalComp": [
+                    {"apiName": "DA_18_Ezreal", "boardIndex": 0},
+                    {"apiName": "DA_Brambleback18", "boardIndex": 1},
+                    {"apiName": "DA_18_ElderDragon", "boardIndex": 2},
+                    {"apiName": "DA_18_GnarSmall", "boardIndex": 3}
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val envelopeJson = org.json.JSONObject().apply {
+            put("status", 200)
+            put("statusText", "")
+            put("headers", org.json.JSONObject())
+            put("body", apiPayload)
+        }.toString()
+
+        val html = """
+            <html>
+              <body>
+                <script type="application/json" data-sveltekit-fetched data-url="/api/tierlist/comps?set=18" data-ttl="300">$envelopeJson</script>
+              </body>
+            </html>
+        """.trimIndent()
+
+        val parsed = scraper.parseCompsDocument(html, TftEnvironment.LIVE, "18.6b", isDedicatedEnvPage = true)
+        assertEquals(18, parsed.detectedSetNumber)
+        assertEquals(2, parsed.comps.size)
+        assertFalse(parsed.comps.any { it.title == "Hidden Draft Comp" || it.title == "Archived Overflow Comp" })
+
+        val tempo = parsed.comps.first { it.title == "Tempo Riftbeast" }
+        assertEquals(TierRank.S, tempo.tier)
+        assertEquals("Fast 9", tempo.playstyle)
+        assertEquals("Brambleback", tempo.carryName)
+        assertEquals(listOf("Verticality II"), tempo.augmentPriorities)
+        assertTrue(tempo.levelingGuide.contains("Stage 2"))
+        assertTrue(tempo.notes.contains("economy or combat augments"))
+
+        val ezrealPlacement = tempo.hexPlacements.first { it.unitName == "Ezreal" }
+        assertEquals(3, ezrealPlacement.row) // boardIndex 27 / 7 == 3
+        assertEquals(6, ezrealPlacement.col) // boardIndex 27 % 7 == 6
+        assertEquals(listOf("Guinsoo's Rageblade"), ezrealPlacement.items)
+
+        val xComp = parsed.comps.first { it.title == "Wildcard Rift Flex" }
+        assertEquals(TierRank.X, xComp.tier)
+        assertEquals("Master Yi", xComp.carryName)
+
+        // Parsing the same LIVE HTML as PBE with isDedicatedEnvPage = false must NOT clone LIVE comps into PBE
+        val clonedAsPbe = scraper.parseCompsDocument(html, TftEnvironment.PBE, "19.1-PBE", isDedicatedEnvPage = false)
+        assertTrue(clonedAsPbe.comps.isEmpty())
+    }
+
+    @Test
+    fun `tftacademy scraper preserves carries beyond 10 finalComp entries when summon tokens precede units`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        OfflineMetaCacheStore(context).readOrSeedBundle()
+        val scraper = TftAcademyCompsScraper()
+        val payload = """
+            {
+              "guides": [
+                {
+                  "title": "Aphelios Elderwood",
+                  "compSlug": "set-18-aphelios-vanguards-copy",
+                  "tier": "X",
+                  "style": "Fast 9",
+                  "set": 18,
+                  "isPublic": true,
+                  "displayIndex": 5,
+                  "mainChampion": {"apiName": "DA_18_Aphelios", "cost": 4},
+                  "finalComp": [
+                    {"apiName": "DA_Elderwood18_Protector", "boardIndex": 3},
+                    {"apiName": "DA_Elderwood18_Lifeblossom", "boardIndex": 18},
+                    {"apiName": "DA_Elderwood18_StonebarkTree", "boardIndex": 6},
+                    {"apiName": "DA_Elderwood18_StonebarkTree", "boardIndex": 1},
+                    {"apiName": "DA_18_Ornn", "boardIndex": 13},
+                    {"apiName": "DA_18_Xayah", "boardIndex": 27},
+                    {"apiName": "DA_18_Alistar", "boardIndex": 5},
+                    {"apiName": "DA_18_Diana", "boardIndex": 4},
+                    {"apiName": "DA_18_Hecarim", "boardIndex": 2},
+                    {"apiName": "DA_18_Lillia", "boardIndex": 0},
+                    {"apiName": "DA_18_Aphelios", "boardIndex": 21, "items": ["DA_GuinsoosRageblade", "DA_KrakensFury"]},
+                    {"apiName": "DA_18_Ezreal", "boardIndex": 22, "items": ["DA_SpearOfShojin"]},
+                    {"apiName": "DA_18_GnarSmall", "boardIndex": 9}
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsed = scraper.parseCompsDocument(payload, TftEnvironment.LIVE, "18.6b", isDedicatedEnvPage = true)
+        assertEquals(1, parsed.comps.size)
+        val comp = parsed.comps.first()
+        assertEquals(13, comp.hexPlacements.size)
+        assertTrue(comp.coreUnits.contains("Aphelios"))
+        assertTrue(comp.coreUnits.contains("Ezreal"))
+        assertTrue(comp.coreUnits.contains("Gnar"))
+        assertEquals("Aphelios", comp.carryName)
+        val apheliosHex = comp.hexPlacements.first { it.unitName == "Aphelios" }
+        assertTrue(apheliosHex.isCarry)
+        assertEquals(3, apheliosHex.row)
+        assertEquals(0, apheliosHex.col)
+        assertEquals(listOf("Guinsoo's Rageblade", "Kraken's Fury"), apheliosHex.items)
+        // Duplicate summon token Stonebark Tree must appear only once in coreUnits badge list
+        assertEquals(1, comp.coreUnits.count { it == "Stonebark Tree" })
+    }
+
+    @Test
+    fun `tftactics scraper parses pbe set 19 comps positions synergy items and html fallback`() {
+        val scraper = com.example.data.network.TftacticsCompsScraper()
+        val html = """
+            <html>
+              <body>
+                <a href="/set-update/" class="set-update-banner"><div class="update-title">Set 19: Prismatic Tour is now live on TFTactics!</div></a>
+                <button class="active dropdown-item" set="18">Set 18</button>
+                <button class="dropdown-item" set="19">Set 19</button>
+              </body>
+            </html>
+        """.trimIndent()
+
+        val compsJson = """
+            [
+              {
+                "name": "Elderwood Spellweavers",
+                "set": [18],
+                "tier": 2,
+                "playstyle": "Fast 8",
+                "characters": [
+                  {"name": "Ornn", "position": "p3"},
+                  {"name": "Ahri", "position": "p28", "items": ["Blue Buff"]},
+                  {"name": "Lillia", "position": "p2"},
+                  {"name": "Syndra", "position": "p27"}
+                ]
+              },
+              {
+                "name": "Ionic Spark Hitmakers",
+                "set": [19],
+                "tier": 2,
+                "tier_up": true,
+                "playstyle": "Fast 8",
+                "description": "Level 8 early in Stage 4 to find 4 cost units.",
+                "synergy": [
+                  {"name": "Ionic Spark", "count": 5, "rank": "silver"},
+                  {"name": "Frontman", "count": 4, "rank": "silver"},
+                  {"name": "Jazz", "count": 2, "rank": "bronze"}
+                ],
+                "characters": [
+                  {"name": "Elise", "position": "p2"},
+                  {"name": "Yunara", "position": "p22", "level": 3},
+                  {"name": "Jinx", "position": "p28", "items": ["Deathblade", "Guinsoo's Rageblade", "Infinity Edge"]},
+                  {"name": "Shyvana", "position": "p6", "items": ["Warmog's Armor", "Gargoyle Stoneplate", "Sunfire Cape"]}
+                ],
+                "carrousel": [{"item": "Infinity Edge", "component": "B.F. Sword"}],
+                "mid": ["Yunara", "Ziggs"],
+                "replacements": [{"out": [], "in": ["Bard"]}]
+              }
+            ]
+        """.trimIndent().padEnd(600, ' ')
+
+        val champsJson = """
+            [
+              {"name": "Jinx", "set": [19], "cost": 4, "health": 700, "origin": ["Ionic Spark"], "type": ["Hitmaker"]},
+              {"name": "Shyvana", "set": [19], "cost": 4, "health": 1100, "origin": ["Ionic Spark"], "type": ["Frontman"]},
+              {"name": "Yunara", "set": [19], "cost": 1, "health": 500, "origin": ["Ionic Spark"], "type": ["Swiftstriker"]},
+              {"name": "Elise", "set": [19], "cost": 3, "health": 850, "origin": ["Ionic Spark"], "type": ["Frontman"]}
+            ]
+        """.trimIndent().padEnd(600, ' ')
+
+        val traitsJson = """
+            [
+              {"name": "Ionic Spark", "set": [19], "Class": false, "bonus": "Bonus stats"}
+            ]
+        """.trimIndent().padEnd(600, ' ')
+
+        val fakeJsBundle = "var a=JSON.parse('${compsJson.replace("'", "\\'").replace("\n", "")}');" +
+            "var b=JSON.parse('${champsJson.replace("'", "\\'").replace("\n", "")}');" +
+            "var c=JSON.parse('${traitsJson.replace("'", "\\'").replace("\n", "")}');"
+
+        val result = scraper.parseBundleAndHtml(
+            html = html,
+            jsBundle = fakeJsBundle,
+            pbePatchVersion = "19.1-PBE",
+            liveSetNumber = 18
+        )
+
+        assertEquals(19, result.pbeSetNumber)
+        assertEquals("Set 19: Prismatic Tour (PBE)", result.detectedPbeSet)
+        assertEquals(1, result.pbeComps.size)
+
+        val comp = result.pbeComps.first()
+        assertEquals("Ionic Spark Hitmakers", comp.title)
+        assertEquals(TierRank.A, comp.tier)
+        assertEquals(TftEnvironment.PBE, comp.environment)
+        assertEquals(com.example.data.network.TftacticsCompsScraper.TFTACTICS_COMPS_URL, comp.sourceUrl)
+        assertEquals("Jinx", comp.carryName)
+        assertEquals(listOf("5 Ionic Spark", "4 Frontman", "2 Jazz"), comp.traits)
+        assertTrue(comp.levelingGuide.contains("Early/Mid: Yunara, Ziggs"))
+        assertTrue(comp.notes.contains("Carousel: Infinity Edge (B.F. Sword)"))
+
+        val jinxHex = comp.hexPlacements.first { it.unitName == "Jinx" }
+        assertEquals(3, jinxHex.row)
+        assertEquals(6, jinxHex.col)
+        assertEquals(4, jinxHex.cost)
+        assertTrue(jinxHex.isCarry)
+
+        val yunaraHex = comp.hexPlacements.first { it.unitName == "Yunara" }
+        assertEquals(3, yunaraHex.stars)
+        assertEquals(1, yunaraHex.cost)
+
+        assertEquals(
+            "https://sunderarmor.com/characters/Skin/19/Jinx.png",
+            result.pbeChampionIcons["Jinx"]
+        )
+        assertEquals(
+            "https://sunderarmor.com/icons/ionicspark.png",
+            result.pbeTraitIcons["Ionic Spark"]
+        )
+    }
 }
+

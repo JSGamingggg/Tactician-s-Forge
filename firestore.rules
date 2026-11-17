@@ -46,7 +46,7 @@ service cloud.firestore {
              isValidId(data.compId) &&
              data.environment in ['LIVE', 'PBE'] &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 80 &&
-             data.tier in ['S', 'A', 'B', 'C'] &&
+             data.tier in ['S', 'A', 'B', 'C', 'X'] &&
              data.playstyle is string && data.playstyle.size() >= 1 && data.playstyle.size() <= 40 &&
              data.carryName is string && data.carryName.size() >= 1 && data.carryName.size() <= 50 &&
              isValidBoundedStringList(data.coreUnits, 10) &&

@@ -390,7 +390,7 @@ fun PatchAlertsScreen(
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = "Patches: tftips.app/en/patches • Comps: tftactics.gg/tierlist/team-comps/",
+                        text = "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftactics.gg",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center

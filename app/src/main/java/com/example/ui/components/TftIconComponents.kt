@@ -63,11 +63,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.SubcomposeAsyncImage
+import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.AugmentTier
 import com.example.data.model.ItemCategory
 import com.example.data.model.OfflineCacheStatus
+import com.example.data.model.TftEnvironment
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -98,14 +99,45 @@ fun championMonogram(name: String): String {
 fun formatRiotAssetLabel(rawId: String): String {
     val trimmed = rawId.trim()
     if (trimmed.isEmpty()) return ""
+    TftAssetIconResolver.resolveDisplayName(trimmed)?.let { return it }
     if (!trimmed.contains("_") && trimmed.any { it == ' ' }) return trimmed
-    val stripped = trimmed
-        .replace(Regex("^TFT\\d*_(?:Item|Augment|Trait|Champion)?_?", RegexOption.IGNORE_CASE), "")
+    var stripped = trimmed
+        .replace(Regex("^(?:DA|TFT\\d*)_(?:\\d+_)?(?:Item|Augment|Trait|Champion|Artifact|Component)?_?", RegexOption.IGNORE_CASE), "")
         .replace(Regex("^Set\\d+_", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("_(?:AD|AP|Tank|Carry)$", RegexOption.IGNORE_CASE), "")
         .substringAfterLast("_")
+        .replace(Regex("(Small)$"), "")
+        .replace(Regex("(\\D)\\d{2}$"), "$1")
+    if (stripped.startsWith("Emblem") && stripped.length > 6) {
+        stripped = stripped.removePrefix("Emblem") + "Emblem"
+    }
     return stripped
         .replace(Regex("([a-z])([A-Z])"), "$1 $2")
         .replace(Regex("([A-Za-z])(\\d)"), "$1 $2")
+        .replace(Regex("\\s+(II|III)$"), " $1")
+        .replace("Guinsoos", "Guinsoo's")
+        .replace("Dragons", "Dragon's")
+        .replace("Thiefs", "Thief's")
+        .replace("Nashors", "Nashor's")
+        .replace("Steraks", "Sterak's")
+        .replace("Warmogs", "Warmog's")
+        .replace("Archangels", "Archangel's")
+        .replace("Runaans", "Runaan's")
+        .replace("Protectors", "Protector's")
+        .replace("Titans", "Titan's")
+        .replace("Krakens", "Kraken's")
+        .replace("Strikers", "Striker's")
+        .replace("Rabadons", "Rabadon's")
+        .replace("Giants", "Giant's")
+        .replace("Tacticians", "Tactician's")
+        .replace("Kha Zix", "Kha'Zix")
+        .replace("Vel Koz", "Vel'Koz")
+        .replace("Cho Gath", "Cho'Gath")
+        .replace("Kog Maw", "Kog'Maw")
+        .replace("Kai Sa", "Kai'Sa")
+        .replace("Rek Sai", "Rek'Sai")
+        .replace("Bel Veth", "Bel'Veth")
+        .replace("K Sante", "K'Sante")
         .trim()
         .ifBlank { trimmed }
 }
@@ -117,16 +149,18 @@ fun TftChampionAvatar(
     isCarry: Boolean = false,
     stars: Int = 2,
     size: Dp = 36.dp,
+    environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val cleanName = formatRiotAssetLabel(name)
     val iconUrl = remember(
         name,
+        environment,
         TftAssetIconResolver.ddragonVersion,
         TftAssetIconResolver.catalogRevision
     ) {
-        TftAssetIconResolver.resolveChampionIconUrl(name)
+        TftAssetIconResolver.resolveChampionIconUrl(name, environment)
     }
     val color = championCostColor(cost)
     val borderColor = if (isCarry) MaterialTheme.colorScheme.primary else color
@@ -145,27 +179,22 @@ fun TftChampionAvatar(
                 ),
             contentAlignment = Alignment.Center
         ) {
+            ChampionMonogramFallback(cleanName, isCarry, color, size)
             if (iconUrl != null) {
-                SubcomposeAsyncImage(
-                    model = ImageRequest.Builder(context)
+                val request = remember(iconUrl, context) {
+                    ImageRequest.Builder(context)
                         .data(iconUrl)
-                        .crossfade(true)
-                        .allowHardware(false)
-                        .build(),
+                        .crossfade(70)
+                        .build()
+                }
+                AsyncImage(
+                    model = request,
                     contentDescription = "$cleanName champion icon",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(CircleShape),
-                    loading = {
-                        ChampionMonogramFallback(cleanName, isCarry, color, size)
-                    },
-                    error = {
-                        ChampionMonogramFallback(cleanName, isCarry, color, size)
-                    }
+                        .clip(CircleShape)
                 )
-            } else {
-                ChampionMonogramFallback(cleanName, isCarry, color, size)
             }
         }
 
@@ -224,29 +253,40 @@ private fun ChampionMonogramFallback(
 private fun traitVisual(traitName: String): Pair<ImageVector, Color> {
     val t = traitName.lowercase()
     return when {
-        t.contains("elderwood") || t.contains("grove") -> Icons.Default.Park to Color(0xFF2ECC71)
-        t.contains("arcanist") || t.contains("invoker") -> Icons.Default.AutoFixHigh to Color(0xFF0AC8B9)
-        t.contains("vanguard") || t.contains("bastion") || t.contains("brawler") -> Icons.Default.Shield to Color(0xFF38BDF8)
-        t.contains("sniper") || t.contains("artillery") || t.contains("trickshot") -> Icons.Default.GpsFixed to Color(0xFFF59E0B)
-        t.contains("slayer") || t.contains("nightshade") || t.contains("thornbound") -> Icons.Default.FlashOn to Color(0xFFE74C3C)
-        t.contains("blossom") || t.contains("enchanted") || t.contains("starlight") -> Icons.Default.Favorite to Color(0xFFF472B6)
-        t.contains("chrono") -> Icons.Default.Schedule to Color(0xFF60A5FA)
-        t.contains("mystic") || t.contains("sprykin") -> Icons.Default.Spa to Color(0xFFA855F7)
-        t.contains("ascendant") || t.contains("wisp") -> Icons.Default.AutoAwesome to Color(0xFFF0B949)
-        else -> Icons.Default.MilitaryTech to Color(0xFFC89B3C)
+        t.contains("elderwood") || t.contains("grove") || t.contains("flora") -> Icons.Default.Park to Color(0xFF2ECC71)
+        t.contains("arcanist") || t.contains("invoker") || t.contains("spellweaver") || t.contains("battlemage") -> Icons.Default.AutoFixHigh to Color(0xFF00E5D4)
+        t.contains("vanguard") || t.contains("bastion") || t.contains("brawler") || t.contains("defender") || t.contains("juggernaut") -> Icons.Default.Shield to Color(0xFF38BDF8)
+        t.contains("sniper") || t.contains("artillery") || t.contains("trickshot") || t.contains("hunter") || t.contains("rapidfire") -> Icons.Default.GpsFixed to Color(0xFFF59E0B)
+        t.contains("slayer") || t.contains("ravager") || t.contains("inferno") || t.contains("predator") || t.contains("reaper") -> Icons.Default.FlashOn to Color(0xFFFF5C8A)
+        t.contains("blossom") || t.contains("enchanted") || t.contains("fae") || t.contains("starlight") -> Icons.Default.Favorite to Color(0xFFF472B6)
+        t.contains("chrono") || t.contains("lunar") || t.contains("solar") -> Icons.Default.Schedule to Color(0xFF60A5FA)
+        t.contains("blackthorn") || t.contains("coven") || t.contains("mystic") || t.contains("sprykin") -> Icons.Default.Spa to Color(0xFFA855F7)
+        t.contains("riftbeast") || t.contains("primal") -> Icons.Default.LocalFireDepartment to Color(0xFFFF7A45)
+        t.contains("adaptor") || t.contains("avatar") || t.contains("ascendant") || t.contains("bounty") -> Icons.Default.AutoAwesome to Color(0xFFF5B731)
+        else -> Icons.Default.MilitaryTech to Color(0xFFF5B731)
     }
 }
 
 @Composable
 fun TftTraitChip(
     traitLabel: String,
+    environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val formatted = formatRiotAssetLabel(traitLabel)
     val countMatch = Regex("^(\\d+)\\s+(.+)$").find(formatted)
     val count = countMatch?.groupValues?.getOrNull(1)
     val name = countMatch?.groupValues?.getOrNull(2) ?: formatted
-    val (icon, tint) = traitVisual(name)
+    val (fallbackIcon, tint) = traitVisual(name)
+    val iconUrl = remember(
+        name,
+        environment,
+        TftAssetIconResolver.ddragonVersion,
+        TftAssetIconResolver.catalogRevision
+    ) {
+        TftAssetIconResolver.resolveTraitIconUrl(name, environment)
+    }
 
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -259,12 +299,31 @@ fun TftTraitChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = "$name trait icon",
-                tint = tint,
-                modifier = Modifier.size(14.dp)
-            )
+            Box(
+                modifier = Modifier.size(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = fallbackIcon,
+                    contentDescription = "$name trait icon",
+                    tint = tint,
+                    modifier = Modifier.size(14.dp)
+                )
+                if (iconUrl != null) {
+                    val request = remember(iconUrl, context) {
+                        ImageRequest.Builder(context)
+                            .data(iconUrl)
+                            .crossfade(70)
+                            .build()
+                    }
+                    AsyncImage(
+                        model = request,
+                        contentDescription = "$name trait icon",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
             if (!count.isNullOrBlank()) {
                 Text(
                     text = count,
@@ -364,41 +423,26 @@ fun TftItemIcon(
             .border(0.8.dp, tint.copy(alpha = 0.55f), RoundedCornerShape(4.dp)),
         contentAlignment = Alignment.Center
     ) {
+        Icon(
+            imageVector = fallbackIcon,
+            contentDescription = "$cleanName item icon",
+            tint = tint,
+            modifier = Modifier.size(size * 0.72f)
+        )
         if (iconUrl != null) {
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(context)
+            val request = remember(iconUrl, context) {
+                ImageRequest.Builder(context)
                     .data(iconUrl)
-                    .crossfade(true)
-                    .allowHardware(false)
-                    .build(),
+                    .crossfade(120)
+                    .build()
+            }
+            AsyncImage(
+                model = request,
                 contentDescription = "$cleanName item icon",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(RoundedCornerShape(4.dp)),
-                loading = {
-                    Icon(
-                        imageVector = fallbackIcon,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(size * 0.72f)
-                    )
-                },
-                error = {
-                    Icon(
-                        imageVector = fallbackIcon,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(size * 0.72f)
-                    )
-                }
-            )
-        } else {
-            Icon(
-                imageVector = fallbackIcon,
-                contentDescription = "$cleanName item icon",
-                tint = tint,
-                modifier = Modifier.size(size * 0.72f)
+                    .clip(RoundedCornerShape(4.dp))
             )
         }
     }
@@ -503,41 +547,26 @@ fun TftAugmentIcon(
             .border(0.9.dp, tint.copy(alpha = 0.70f), RoundedCornerShape(5.dp)),
         contentAlignment = Alignment.Center
     ) {
+        Icon(
+            imageVector = fallbackIcon,
+            contentDescription = "$cleanName (${augTier.label} augment)",
+            tint = tint,
+            modifier = Modifier.size(size * 0.72f)
+        )
         if (iconUrl != null) {
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(context)
+            val request = remember(iconUrl, context) {
+                ImageRequest.Builder(context)
                     .data(iconUrl)
-                    .crossfade(true)
-                    .allowHardware(false)
-                    .build(),
+                    .crossfade(120)
+                    .build()
+            }
+            AsyncImage(
+                model = request,
                 contentDescription = "$cleanName (${augTier.label} augment)",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(RoundedCornerShape(5.dp)),
-                loading = {
-                    Icon(
-                        imageVector = fallbackIcon,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(size * 0.72f)
-                    )
-                },
-                error = {
-                    Icon(
-                        imageVector = fallbackIcon,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(size * 0.72f)
-                    )
-                }
-            )
-        } else {
-            Icon(
-                imageVector = fallbackIcon,
-                contentDescription = "$cleanName (${augTier.label} augment)",
-                tint = tint,
-                modifier = Modifier.size(size * 0.72f)
+                    .clip(RoundedCornerShape(5.dp))
             )
         }
     }
@@ -608,9 +637,16 @@ fun OfflineCacheStatusBanner(
     }
 
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+        border = BorderStroke(
+            1.dp,
+            if (cacheStatus.isOfflineFallback) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+            } else {
+                MaterialTheme.colorScheme.secondary.copy(alpha = 0.48f)
+            }
+        ),
         modifier = modifier
             .fillMaxWidth()
             .testTag("offline_cache_banner")
@@ -618,35 +654,47 @@ fun OfflineCacheStatusBanner(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.weight(1f)
             ) {
-                Icon(
-                    imageVector = when {
-                        cacheStatus.isOfflineFallback -> Icons.Default.CloudOff
-                        isGuestMode -> Icons.Default.OfflinePin
-                        else -> Icons.Default.CloudDone
-                    },
-                    contentDescription = "Session and offline cache status",
-                    tint = if (cacheStatus.isOfflineFallback) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.size(18.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(
+                            (if (cacheStatus.isOfflineFallback) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary)
+                                .copy(alpha = 0.16f)
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = when {
+                            cacheStatus.isOfflineFallback -> Icons.Default.CloudOff
+                            isGuestMode -> Icons.Default.OfflinePin
+                            else -> Icons.Default.CloudDone
+                        },
+                        contentDescription = "Session and offline cache status",
+                        tint = if (cacheStatus.isOfflineFallback) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
                 Column {
                     Text(
-                        text = if (isGuestMode) "Guest Mode • Offline Cache Ready" else "Cloud Synced • Offline Cache Ready",
+                        text = if (isGuestMode) "Pre-loaded • Instant Offline & Live Sync" else "Cloud Synced • Instant Cache Ready",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${cacheStatus.compsCount} comps • ${cacheStatus.itemsCount} items • ${cacheStatus.augmentsCount} augments • Cached $timeText",
+                        text = "${cacheStatus.compsCount} comps • ${cacheStatus.championsCount} champs • ${cacheStatus.itemsCount} items • ${cacheStatus.augmentsCount} augs • $timeText",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -661,25 +709,29 @@ fun OfflineCacheStatusBanner(
                         onClick = onSignInClick,
                         modifier = Modifier.testTag("banner_sign_in_button")
                     ) {
-                        Text("Sign In", style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            text = "Sign In",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
                 IconButton(
                     onClick = onRefreshClick,
                     enabled = !isRefreshing,
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     if (isRefreshing) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp
                         )
                     } else {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "Sync patches and offline cache from tftips.app/en/patches",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
+                            contentDescription = "Sync patches and offline cache",
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }

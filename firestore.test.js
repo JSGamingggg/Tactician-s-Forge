@@ -123,6 +123,24 @@ test("Owner can create, list, partially update, and delete favorites with exact 
   );
 
   await assertSucceeds(compRef.delete());
+
+  const tierXRef = aliceDb.collection("users").doc(ALICE_UID).collection("favorites").doc("live_wildcard_x");
+  await assertSucceeds(
+    tierXRef.set({
+      userId: ALICE_UID,
+      compId: "live_wildcard_x",
+      environment: "LIVE",
+      title: "Wildcard Rift Flex",
+      tier: "X",
+      playstyle: "Fast 8",
+      carryName: "Master Yi",
+      coreUnits: ["Master Yi", "Ornn"],
+      hexPositions: ["Master Yi@3,5@Guinsoo's Rageblade"],
+      pinnedToOverlay: false,
+      createdAt: created,
+      updatedAt: created,
+    })
+  );
 });
 
 test("Cross-user isolation: Alice cannot read, list, update, or delete Bob's data", async () => {

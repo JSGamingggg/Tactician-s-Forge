@@ -43,6 +43,11 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import android.content.ContextWrapper
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.GetCredentialProviderConfigurationException
+import androidx.credentials.exceptions.GetCredentialUnsupportedException
+import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
 import com.example.ui.theme.LocalHextechColors
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
@@ -50,9 +55,11 @@ import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
@@ -62,15 +69,14 @@ import kotlinx.coroutines.withContext
 object GoogleAuthHelper {
     private const val TAG = "GoogleAuthHelper"
 
-    @Suppress("DiscouragedApi")
+    private tailrec fun Context.findActivity(): Activity? = when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
+
     private fun resolveDefaultWebClientId(context: Context): String? {
-        val resId = context.resources.getIdentifier(
-            "default_web_client_id",
-            "string",
-            context.packageName
-        )
-        if (resId == 0) return null
-        return runCatching { context.getString(resId) }
+        return runCatching { context.getString(R.string.default_web_client_id) }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
     }
@@ -107,7 +113,8 @@ object GoogleAuthHelper {
 
         scope.launch {
             try {
-                val cred = credentialManager.getCredential(context, request).credential
+                val hostContext: Context = context.findActivity() ?: context
+                val cred = credentialManager.getCredential(hostContext, request).credential
                 if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                     val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
                     firebaseAuth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
@@ -115,6 +122,8 @@ object GoogleAuthHelper {
                 } else {
                     onUnauthenticated()
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 onUnauthenticated()
             }
@@ -146,22 +155,55 @@ object GoogleAuthHelper {
 
         scope.launch {
             try {
-                val activity = context as? Activity
-                val cred = if (activity != null) {
-                    credentialManager.getCredential(activity, request).credential
-                } else {
-                    credentialManager.getCredential(context, request).credential
-                }
+                val hostContext: Context = context.findActivity() ?: context
+                val cred = credentialManager.getCredential(hostContext, request).credential
                 if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                     val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
                     firebaseAuth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
                     onAuthSuccess()
                 } else {
-                    onAuthError("Unexpected credential type returned.")
+                    onAuthError("Unexpected credential type returned by Google Play Services.")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: GetCredentialCancellationException) {
                 Log.w(TAG, "Google Sign-In cancelled or dismissed: ${e.message}", e)
-                onAuthCancelled()
+                val rawMsg = e.message.orEmpty()
+                val looksLikeConfigOrAccountError = rawMsg.contains("16", ignoreCase = true) ||
+                    rawMsg.contains("10", ignoreCase = true) ||
+                    rawMsg.contains("28436", ignoreCase = true) ||
+                    rawMsg.contains("developer", ignoreCase = true) ||
+                    rawMsg.contains("sha", ignoreCase = true) ||
+                    rawMsg.contains("reauth", ignoreCase = true) ||
+                    rawMsg.contains("matching credential", ignoreCase = true)
+                if (looksLikeConfigOrAccountError) {
+                    onAuthError(
+                        "Google Sign-In could not verify this APK signing key or Google account ($rawMsg). Tap Explore as Guest to use all offline features immediately."
+                    )
+                } else {
+                    onAuthCancelled()
+                }
+            } catch (e: NoCredentialException) {
+                Log.w(TAG, "No Google credential available: ${e.message}", e)
+                onAuthError(
+                    "No Google account or credential available on this device. Add a Google account in Settings or tap Explore as Guest."
+                )
+            } catch (e: GetCredentialProviderConfigurationException) {
+                Log.e(TAG, "Credential provider configuration error", e)
+                onAuthError(
+                    "Google Play Services Credential Manager is unavailable or needs updating. Tap Explore as Guest to continue."
+                )
+            } catch (e: GetCredentialUnsupportedException) {
+                Log.e(TAG, "Credential Manager unsupported on device", e)
+                onAuthError(
+                    "Google Sign-In is unsupported on this device configuration. Tap Explore as Guest to continue."
+                )
+            } catch (e: GetCredentialException) {
+                Log.e(TAG, "Credential Manager error: ${e.type} - ${e.message}", e)
+                onAuthError(e.errorMessage?.toString() ?: e.localizedMessage ?: "Google Sign-In failed (${e.type}).")
+            } catch (e: FirebaseAuthException) {
+                Log.e(TAG, "FirebaseAuth error: ${e.errorCode} - ${e.message}", e)
+                onAuthError("Firebase Sign-In failed (${e.errorCode}): ${e.localizedMessage ?: "Try again or Explore as Guest."}")
             } catch (e: Exception) {
                 Log.e(TAG, "Google Sign-In failed", e)
                 onAuthError(e.localizedMessage ?: "Google Sign-In failed")

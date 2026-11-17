@@ -5,10 +5,12 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,7 +37,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,6 +57,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import com.example.R
@@ -74,192 +76,262 @@ fun AuthWelcomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
-    val hextechColors = LocalHextechColors.current
     var isSigningIn by remember { mutableStateOf(false) }
 
-    Box(
+    val triggerSignIn = {
+        isSigningIn = true
+        GoogleAuthHelper.onGoogleSignInClicked(
+            context = context,
+            credentialManager = credentialManager,
+            scope = scope,
+            onAuthSuccess = {
+                isSigningIn = false
+                onAuthSuccess()
+            },
+            onAuthError = { msg ->
+                isSigningIn = false
+                onAuthError(msg)
+            },
+            onAuthCancelled = { isSigningIn = false }
+        )
+    }
+
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .windowInsetsPadding(WindowInsets.safeDrawing),
         contentAlignment = Alignment.Center
     ) {
+        val isLandscapeSplit = maxWidth >= 600.dp && maxHeight < 560.dp
+
+        if (isLandscapeSplit) {
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 920.dp)
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(0.95f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    AuthHeroBanner(bannerHeight = 168.dp)
+                    Spacer(Modifier.height(10.dp))
+                    MadeByAttributionBadge()
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1.1f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically)
+                ) {
+                    AuthFeaturesCard()
+                    AuthActionsColumn(
+                        isSigningIn = isSigningIn,
+                        onExploreAsGuest = onExploreAsGuest,
+                        onSignInClick = triggerSignIn
+                    )
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 520.dp)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                AuthHeroBanner(bannerHeight = 176.dp)
+                AuthFeaturesCard()
+                AuthActionsColumn(
+                    isSigningIn = isSigningIn,
+                    onExploreAsGuest = onExploreAsGuest,
+                    onSignInClick = triggerSignIn
+                )
+                MadeByAttributionBadge(
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuthHeroBanner(bannerHeight: Dp) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(bannerHeight)
+            .clip(RoundedCornerShape(22.dp))
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.img_hextech_banner),
+            contentDescription = "Tactician's Forge Hextech Arena",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Black.copy(alpha = 0.25f),
+                            MaterialTheme.colorScheme.background.copy(alpha = 0.92f)
+                        )
+                    )
+                )
+        )
         Column(
             modifier = Modifier
-                .widthIn(max = 520.dp)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .align(Alignment.BottomCenter)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Box(
+            Image(
+                painter = painterResource(id = R.drawable.ic_forge_emblem),
+                contentDescription = "Tactician's Forge Emblem",
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(176.dp)
-                    .clip(RoundedCornerShape(22.dp))
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_hextech_banner),
-                    contentDescription = "Tactician's Forge Hextech Arena",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.Black.copy(alpha = 0.25f),
-                                    MaterialTheme.colorScheme.background.copy(alpha = 0.92f)
-                                )
-                            )
-                        )
-                )
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_forge_emblem),
-                        contentDescription = "Tactician's Forge Emblem",
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(CircleShape)
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = stringResource(R.string.app_name),
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Set 18 LIVE & PBE Meta • tftips.app/en/patches",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
+                    .size(56.dp)
+                    .clip(CircleShape)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.app_name),
+                style = MaterialTheme.typography.headlineMedium,
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Set 18 LIVE & PBE Meta • tftips.app/en/patches",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
 
-            HextechPanelCard(accentBorder = true) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    FeatureRow(
-                        icon = Icons.Default.AutoAwesome,
-                        tint = MaterialTheme.colorScheme.primary,
-                        title = "LIVE & PBE Meta Snapshots",
-                        subtitle = "Set-matched comps from tftactics.gg, 4×7 hex boards, BIS items, and patch alerts from tftips.app/en/patches."
-                    )
-                    FeatureRow(
-                        icon = Icons.Default.MilitaryTech,
-                        tint = MaterialTheme.colorScheme.secondary,
-                        title = "Champions, Items & Augments Tier Lists",
-                        subtitle = "Full recipes, component breakdowns, trait icons, and patch balance shifts."
-                    )
-                    FeatureRow(
-                        icon = Icons.Default.OfflinePin,
-                        tint = hextechColors.buff,
-                        title = "Explore as Guest with Offline Caching",
-                        subtitle = "Browse meta snapshots, tier lists, favorites, and floating overlay offline with zero sign-in."
-                    )
-                    FeatureRow(
-                        icon = Icons.Default.NotificationsActive,
-                        tint = hextechColors.pbeBadge,
-                        title = "Instant Patch & Comp Push Alerts",
-                        subtitle = "Notifies you automatically whenever new LIVE/PBE patches or comps release."
-                    )
-                }
-            }
+@Composable
+private fun AuthFeaturesCard() {
+    val hextechColors = LocalHextechColors.current
+    HextechPanelCard(accentBorder = true) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            FeatureRow(
+                icon = Icons.Default.AutoAwesome,
+                tint = MaterialTheme.colorScheme.primary,
+                title = "LIVE & PBE Meta Snapshots",
+                subtitle = "Set-matched comps from tftactics.gg, 4×7 hex boards, BIS items, and patch alerts from tftips.app/en/patches."
+            )
+            FeatureRow(
+                icon = Icons.Default.MilitaryTech,
+                tint = MaterialTheme.colorScheme.secondary,
+                title = "Champions, Items & Augments Tier Lists",
+                subtitle = "Full recipes, component breakdowns, trait icons, and patch balance shifts."
+            )
+            FeatureRow(
+                icon = Icons.Default.OfflinePin,
+                tint = hextechColors.buff,
+                title = "Explore as Guest with Offline Caching",
+                subtitle = "Browse meta snapshots, tier lists, favorites, and floating overlay offline with zero sign-in."
+            )
+            FeatureRow(
+                icon = Icons.Default.NotificationsActive,
+                tint = hextechColors.pbeBadge,
+                title = "Instant Patch & Comp Push Alerts",
+                subtitle = "Notifies you automatically whenever new LIVE/PBE patches or comps release."
+            )
+        }
+    }
+}
 
-            Button(
-                onClick = onExploreAsGuest,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("explore_as_guest_button")
-            ) {
+@Composable
+private fun AuthActionsColumn(
+    isSigningIn: Boolean,
+    onExploreAsGuest: () -> Unit,
+    onSignInClick: () -> Unit
+) {
+    val hextechColors = LocalHextechColors.current
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Button(
+            onClick = onExploreAsGuest,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .testTag("explore_as_guest_button")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Explore,
+                contentDescription = "Explore as Guest",
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = stringResource(R.string.explore_as_guest),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        OutlinedButton(
+            onClick = onSignInClick,
+            enabled = !isSigningIn,
+            border = BorderStroke(1.dp, hextechColors.goldBorder),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .testTag("auth_google_sign_in_button")
+        ) {
+            if (isSigningIn) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Signing in with Google...")
+            } else {
                 Icon(
-                    imageVector = Icons.Default.Explore,
-                    contentDescription = "Explore as Guest",
+                    imageVector = Icons.Default.CloudSync,
+                    contentDescription = "Sign in with Google for Cloud Sync",
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = stringResource(R.string.explore_as_guest),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
+                    text = "Sign in with Google (Cloud Sync)",
+                    style = MaterialTheme.typography.titleSmall
                 )
             }
-
-            OutlinedButton(
-                onClick = {
-                    isSigningIn = true
-                    GoogleAuthHelper.onGoogleSignInClicked(
-                        context = context,
-                        credentialManager = credentialManager,
-                        scope = scope,
-                        onAuthSuccess = {
-                            isSigningIn = false
-                            onAuthSuccess()
-                        },
-                        onAuthError = { msg ->
-                            isSigningIn = false
-                            onAuthError(msg)
-                        },
-                        onAuthCancelled = { isSigningIn = false }
-                    )
-                },
-                enabled = !isSigningIn,
-                border = BorderStroke(1.dp, hextechColors.goldBorder),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("auth_google_sign_in_button")
-            ) {
-                if (isSigningIn) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Signing in with Google...")
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.CloudSync,
-                        contentDescription = "Sign in with Google for Cloud Sync",
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Sign in with Google (Cloud Sync)",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                }
-            }
-
-            Text(
-                text = "Guest Mode caches all meta snapshots and tier lists locally on your device. You can sign in later anytime to sync favorites across devices.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-
-            MadeByAttributionBadge(
-                modifier = Modifier.padding(top = 4.dp)
-            )
         }
+
+        Text(
+            text = "Guest Mode caches all meta snapshots and tier lists locally on your device. You can sign in later anytime to sync favorites across devices.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 

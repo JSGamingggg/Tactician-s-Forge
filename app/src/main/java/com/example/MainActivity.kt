@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.MilitaryTech
@@ -331,6 +333,7 @@ private fun AuthenticatedOrGuestWorkspace(
     TacticiansForgeTheme(themeMode = themeMode) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val useNavRail = maxWidth >= 600.dp
+            val compactRailLabels = maxHeight >= 360.dp
 
             Scaffold(
                 contentWindowInsets = WindowInsets.safeDrawing,
@@ -351,7 +354,7 @@ private fun AuthenticatedOrGuestWorkspace(
                                             contentDescription = stringResource(tab.labelRes)
                                         )
                                     },
-                                    label = { Text(stringResource(tab.labelRes)) },
+                                    label = { Text(stringResource(tab.labelRes), maxLines = 1) },
                                     modifier = Modifier.testTag("nav_${tab.key}")
                                 )
                             }
@@ -373,92 +376,103 @@ private fun AuthenticatedOrGuestWorkspace(
                                 NavigationRailItem(
                                     selected = selected,
                                     onClick = { currentTab = tab },
+                                    alwaysShowLabel = compactRailLabels,
                                     icon = {
                                         Icon(
                                             imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
                                             contentDescription = stringResource(tab.labelRes)
                                         )
                                     },
-                                    label = { Text(stringResource(tab.labelRes)) },
+                                    label = { Text(stringResource(tab.labelRes), maxLines = 1) },
                                     modifier = Modifier.testTag("nav_${tab.key}")
                                 )
                             }
                         }
                     }
 
-                    when (currentTab) {
-                        AppTab.META -> MetaSnapshotsScreen(
-                            environment = environment,
-                            onSelectEnvironment = mainViewModel::setEnvironment,
-                            comps = metaComps,
-                            favoritesState = favoritesState,
-                            liveVersionInfo = liveVersionInfo,
-                            offlineCacheStatus = offlineCacheStatus,
-                            isRefreshing = isRefreshingVersions,
-                            isGuestMode = currentUser == null,
-                            isOverlayRunning = isOverlayRunning,
-                            onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
-                            onSignInRequested = triggerGoogleSignIn,
-                            onToggleOverlay = toggleOverlayAction,
-                            onToggleFavorite = mainViewModel::toggleFavorite,
-                            onTogglePin = mainViewModel::toggleOverlayPin,
-                            onCreateCustomComp = mainViewModel::saveCustomFavorite,
-                            modifier = Modifier.weight(1f)
-                        )
-                        AppTab.TIERS -> ChampionTierListScreen(
-                            environment = environment,
-                            onSelectEnvironment = mainViewModel::setEnvironment,
-                            champions = championTiers,
-                            items = itemTiers,
-                            augments = augmentTiers,
-                            liveVersionInfo = liveVersionInfo,
-                            offlineCacheStatus = offlineCacheStatus,
-                            isRefreshing = isRefreshingVersions,
-                            isGuestMode = currentUser == null,
-                            onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
-                            onSignInRequested = triggerGoogleSignIn,
-                            modifier = Modifier.weight(1f)
-                        )
-                        AppTab.STATS -> PlayerStatsScreen(
-                            lookupState = lookupState,
-                            selectedPlatform = selectedPlatform,
-                            isApiKeyConfigured = playerViewModel.isApiKeyConfigured,
-                            trackedPlayers = trackedPlayers,
-                            selectedMatch = selectedMatch,
-                            onSelectPlatform = playerViewModel::selectPlatform,
-                            onSearchPlayer = playerViewModel::searchPlayer,
-                            onBookmarkPlayer = playerViewModel::bookmarkCurrentPlayer,
-                            onRemoveTrackedPlayer = playerViewModel::removeTrackedPlayer,
-                            onOpenMatchAnalysis = playerViewModel::openMatchAnalysis,
-                            onDismissMatchAnalysis = playerViewModel::closeMatchAnalysis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        AppTab.ALERTS -> PatchAlertsScreen(
-                            environment = environment,
-                            onSelectEnvironment = mainViewModel::setEnvironment,
-                            patches = patchFeed,
-                            preferences = preferences,
-                            liveVersionInfo = liveVersionInfo,
-                            isRefreshingVersions = isRefreshingVersions,
-                            themeMode = themeMode,
-                            isOverlayRunning = isOverlayRunning,
-                            currentUser = currentUser,
-                            onRefreshVersions = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
-                            onUpdateAlertSettings = mainViewModel::updateAlertSettings,
-                            onSetThemeMode = mainViewModel::setThemeMode,
-                            onToggleOverlay = toggleOverlayAction,
-                            onShowMessage = mainViewModel::showMessage,
-                            onAuthSuccess = {
-                                scope.launch { localStore.setGuestModeChoice(false) }
-                                mainViewModel.showMessage("Signed in with Google! Syncing favorites to Firestore.")
-                            },
-                            onAuthError = { msg -> mainViewModel.showMessage(msg) },
-                            onSignedOut = {
-                                scope.launch { localStore.setGuestModeChoice(false) }
-                                mainViewModel.showMessage("Signed out — choose Explore as Guest or Sign in.")
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxSize(),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        val contentModifier = Modifier
+                            .widthIn(max = 880.dp)
+                            .fillMaxSize()
+                        when (currentTab) {
+                            AppTab.META -> MetaSnapshotsScreen(
+                                environment = environment,
+                                onSelectEnvironment = mainViewModel::setEnvironment,
+                                comps = metaComps,
+                                favoritesState = favoritesState,
+                                liveVersionInfo = liveVersionInfo,
+                                offlineCacheStatus = offlineCacheStatus,
+                                isRefreshing = isRefreshingVersions,
+                                isGuestMode = currentUser == null,
+                                isOverlayRunning = isOverlayRunning,
+                                onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
+                                onSignInRequested = triggerGoogleSignIn,
+                                onToggleOverlay = toggleOverlayAction,
+                                onToggleFavorite = mainViewModel::toggleFavorite,
+                                onTogglePin = mainViewModel::toggleOverlayPin,
+                                onCreateCustomComp = mainViewModel::saveCustomFavorite,
+                                modifier = contentModifier
+                            )
+                            AppTab.TIERS -> ChampionTierListScreen(
+                                environment = environment,
+                                onSelectEnvironment = mainViewModel::setEnvironment,
+                                champions = championTiers,
+                                items = itemTiers,
+                                augments = augmentTiers,
+                                liveVersionInfo = liveVersionInfo,
+                                offlineCacheStatus = offlineCacheStatus,
+                                isRefreshing = isRefreshingVersions,
+                                isGuestMode = currentUser == null,
+                                onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
+                                onSignInRequested = triggerGoogleSignIn,
+                                modifier = contentModifier
+                            )
+                            AppTab.STATS -> PlayerStatsScreen(
+                                lookupState = lookupState,
+                                selectedPlatform = selectedPlatform,
+                                isApiKeyConfigured = playerViewModel.isApiKeyConfigured,
+                                trackedPlayers = trackedPlayers,
+                                selectedMatch = selectedMatch,
+                                onSelectPlatform = playerViewModel::selectPlatform,
+                                onSearchPlayer = playerViewModel::searchPlayer,
+                                onBookmarkPlayer = playerViewModel::bookmarkCurrentPlayer,
+                                onRemoveTrackedPlayer = playerViewModel::removeTrackedPlayer,
+                                onOpenMatchAnalysis = playerViewModel::openMatchAnalysis,
+                                onDismissMatchAnalysis = playerViewModel::closeMatchAnalysis,
+                                modifier = contentModifier
+                            )
+                            AppTab.ALERTS -> PatchAlertsScreen(
+                                environment = environment,
+                                onSelectEnvironment = mainViewModel::setEnvironment,
+                                patches = patchFeed,
+                                preferences = preferences,
+                                liveVersionInfo = liveVersionInfo,
+                                isRefreshingVersions = isRefreshingVersions,
+                                themeMode = themeMode,
+                                isOverlayRunning = isOverlayRunning,
+                                currentUser = currentUser,
+                                onRefreshVersions = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
+                                onUpdateAlertSettings = mainViewModel::updateAlertSettings,
+                                onSetThemeMode = mainViewModel::setThemeMode,
+                                onToggleOverlay = toggleOverlayAction,
+                                onShowMessage = mainViewModel::showMessage,
+                                onAuthSuccess = {
+                                    scope.launch { localStore.setGuestModeChoice(false) }
+                                    mainViewModel.showMessage("Signed in with Google! Syncing favorites to Firestore.")
+                                },
+                                onAuthError = { msg -> mainViewModel.showMessage(msg) },
+                                onSignedOut = {
+                                    scope.launch { localStore.setGuestModeChoice(false) }
+                                    mainViewModel.showMessage("Signed out — choose Explore as Guest or Sign in.")
+                                },
+                                modifier = contentModifier
+                            )
+                        }
                     }
                 }
             }

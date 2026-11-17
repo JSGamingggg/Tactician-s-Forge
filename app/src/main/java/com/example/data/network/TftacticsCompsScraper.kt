@@ -18,8 +18,9 @@ data class TftacticsCompsFetchResult(
 )
 
 /**
- * Fetches team compositions for BOTH LIVE and PBE exclusively from
- * https://tftactics.gg/tierlist/team-comps/ (and its PBE view/data endpoints),
+ * Fetches ALL team compositions for BOTH LIVE and PBE exclusively from
+ * https://tftactics.gg/tierlist/team-comps/ (including lazy/below-the-fold comps
+ * embedded in Next.js _next/data payloads, referenced JSON chunks, and JS bundles),
  * ensuring each environment strictly uses compositions from its matching TFT Set.
  */
 class TftacticsCompsScraper(
@@ -50,13 +51,15 @@ class TftacticsCompsScraper(
             html = baseHtml,
             targetEnvironment = TftEnvironment.LIVE,
             patchTag = livePatchVersion,
-            isDedicatedEnvPage = true
+            isDedicatedEnvPage = true,
+            includeRemoteBundles = true
         )
         val pbeParsed = parseCompsDocument(
             html = pbeHtml ?: baseHtml,
             targetEnvironment = TftEnvironment.PBE,
             patchTag = pbePatchVersion,
-            isDedicatedEnvPage = pbeHtml != null
+            isDedicatedEnvPage = pbeHtml != null,
+            includeRemoteBundles = true
         )
 
         val liveSetNumber = liveParsed.detectedSetNumber ?: inferSetNumberFromPatch(livePatchVersion)
@@ -94,7 +97,8 @@ class TftacticsCompsScraper(
         html: String,
         targetEnvironment: TftEnvironment,
         patchTag: String,
-        isDedicatedEnvPage: Boolean = true
+        isDedicatedEnvPage: Boolean = true,
+        includeRemoteBundles: Boolean = false
     ): ParsedDocumentResult {
         val detectedSet = detectSetForEnvironment(html, targetEnvironment)
         val defaultSetLabel = detectedSet?.second ?: if (targetEnvironment == TftEnvironment.LIVE) {
@@ -109,11 +113,13 @@ class TftacticsCompsScraper(
         var combined = (fromJson + fromDom)
             .distinctBy { it.id }
 
-        // If the page is a client-rendered SPA shell, inspect referenced app/team-comps script bundles for embedded JSON data
-        if (combined.size < 6) {
+        // Always inspect Next.js _next/data JSON and external JS/data bundles when fetching from network
+        // so below-the-fold or lazy-mounted compositions are captured completely without truncation.
+        if (includeRemoteBundles) {
+            val fromNextData = parseNextDataEndpoint(html, targetEnvironment, patchTag, defaultSetLabel)
             val fromBundles = parseScriptBundleComps(html, targetEnvironment, patchTag, defaultSetLabel)
-            if (fromBundles.isNotEmpty()) {
-                combined = (combined + fromBundles).distinctBy { it.id }
+            if (fromNextData.isNotEmpty() || fromBundles.isNotEmpty()) {
+                combined = (combined + fromNextData + fromBundles).distinctBy { it.id }
             }
         }
 
@@ -208,9 +214,7 @@ class TftacticsCompsScraper(
             INLINE_JSON_STATE_REGEX.findAll(html).forEach { m ->
                 m.groupValues.getOrNull(1)?.let(::add)
             }
-            INLINE_COMP_ARRAY_REGEX.findAll(html).forEach { m ->
-                m.groupValues.getOrNull(1)?.let(::add)
-            }
+            addAll(extractCandidateCompArrays(html))
         }
         for (jsonText in scriptMatches) {
             runCatching {
@@ -218,6 +222,35 @@ class TftacticsCompsScraper(
                 val root: Any = if (trimmed.startsWith("[")) JSONArray(trimmed) else JSONObject(trimmed)
                 collectCompsFromJson(root, targetEnvironment, patchTag, defaultSetLabel, inheritedEnv = null, inheritedSet = null, out = out)
             }
+        }
+        return out
+    }
+
+    private fun parseNextDataEndpoint(
+        html: String,
+        targetEnvironment: TftEnvironment,
+        patchTag: String,
+        defaultSetLabel: String
+    ): List<MetaComp> {
+        val buildId = NEXT_BUILD_ID_REGEX.find(html)?.groupValues?.getOrNull(1)?.trim()
+            ?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val path = if (targetEnvironment == TftEnvironment.PBE) {
+            "https://tftactics.gg/_next/data/$buildId/tierlist/team-comps.json?pbe=true"
+        } else {
+            "https://tftactics.gg/_next/data/$buildId/tierlist/team-comps.json"
+        }
+        val body = fetchUrl(path) ?: return emptyList()
+        val out = mutableListOf<MetaComp>()
+        runCatching {
+            collectCompsFromJson(
+                node = JSONObject(body),
+                targetEnv = targetEnvironment,
+                patchTag = patchTag,
+                defaultSetLabel = defaultSetLabel,
+                inheritedEnv = null,
+                inheritedSet = null,
+                out = out
+            )
         }
         return out
     }
@@ -233,7 +266,14 @@ class TftacticsCompsScraper(
             .mapNotNull { it.groupValues.getOrNull(1)?.trim() }
             .filter { src ->
                 val lower = src.lowercase()
-                lower.contains("main") || lower.contains("comp") || lower.contains("tier") || lower.contains("chunk")
+                lower.contains("main") ||
+                    lower.contains("comp") ||
+                    lower.contains("tier") ||
+                    lower.contains("chunk") ||
+                    lower.contains("app") ||
+                    lower.contains("page") ||
+                    lower.contains("_next") ||
+                    lower.contains("bundle")
             }
             .map { src ->
                 when {
@@ -243,13 +283,12 @@ class TftacticsCompsScraper(
                 }
             }
             .distinct()
-            .take(3)
+            .take(10)
             .toList()
 
         for (url in scriptUrls) {
             val jsBody = fetchUrl(url) ?: continue
-            INLINE_COMP_ARRAY_REGEX.findAll(jsBody).forEach { m ->
-                val arrText = m.groupValues.getOrNull(1)?.trim() ?: return@forEach
+            extractCandidateCompArrays(jsBody).forEach { arrText ->
                 runCatching {
                     collectCompsFromJson(
                         node = JSONArray(arrText),
@@ -266,6 +305,67 @@ class TftacticsCompsScraper(
         return out.distinctBy { it.id }
     }
 
+    /**
+     * Walks bracket depth with string/escape awareness to extract full top-level JSON/JS object
+     * arrays containing TFT unit rosters (even with nested items/traits/hexes inside each object).
+     */
+    internal fun extractCandidateCompArrays(source: String): List<String> {
+        val out = mutableListOf<String>()
+        val anchors = COMP_ARRAY_ANCHOR_REGEX.findAll(source).toList()
+        var lastConsumedEnd = -1
+        for (anchor in anchors) {
+            val startIdx = anchor.range.first
+            if (startIdx < lastConsumedEnd) continue
+            var depth = 0
+            var inString = false
+            var stringChar = '"'
+            var escaped = false
+            var endIdx = -1
+            val maxScan = (startIdx + 350_000).coerceAtMost(source.length)
+            for (i in startIdx until maxScan) {
+                val ch = source[i]
+                if (escaped) {
+                    escaped = false
+                    continue
+                }
+                if (inString) {
+                    if (ch == '\\') {
+                        escaped = true
+                    } else if (ch == stringChar) {
+                        inString = false
+                    }
+                    continue
+                }
+                when (ch) {
+                    '"', '\'' -> {
+                        inString = true
+                        stringChar = ch
+                    }
+                    '[' -> depth++
+                    ']' -> {
+                        depth--
+                        if (depth == 0) {
+                            endIdx = i + 1
+                            break
+                        }
+                    }
+                }
+            }
+            if (endIdx > startIdx) {
+                val slice = source.substring(startIdx, endIdx)
+                if (slice.contains("units", ignoreCase = true) ||
+                    slice.contains("champions", ignoreCase = true) ||
+                    slice.contains("characters", ignoreCase = true) ||
+                    slice.contains("members", ignoreCase = true)
+                ) {
+                    out.add(slice)
+                }
+                lastConsumedEnd = endIdx
+            }
+        }
+        return out
+    }
+
     private fun collectCompsFromJson(
         node: Any?,
         targetEnv: TftEnvironment,
@@ -276,7 +376,7 @@ class TftacticsCompsScraper(
         out: MutableList<MetaComp>,
         depth: Int = 0
     ) {
-        if (node == null || depth > 10 || out.size >= 250) return
+        if (node == null || depth > 12 || out.size >= 300) return
         when (node) {
             is JSONObject -> {
                 val rawSet = node.optString("set")
@@ -294,10 +394,16 @@ class TftacticsCompsScraper(
                     else -> inheritedEnv
                 }
 
-                val title = cleanText(node.optString("title").ifBlank { node.optString("name") })
+                val title = cleanText(
+                    node.optString("title")
+                        .ifBlank { node.optString("name") }
+                        .ifBlank { node.optString("compName") }
+                )
                 val unitsArr = node.optJSONArray("units")
                     ?: node.optJSONArray("champions")
+                    ?: node.optJSONArray("characters")
                     ?: node.optJSONArray("members")
+                    ?: node.optJSONArray("team")
 
                 if (title.length in 3..64 && unitsArr != null && unitsArr.length() >= 4) {
                     val effectiveEnv = nodeEnvFlag ?: targetEnv
@@ -449,8 +555,8 @@ class TftacticsCompsScraper(
     }
 
     /**
-     * Scans all <div class="...team-portrait..."> blocks across the full HTML document,
-     * balancing nested <div> tags so multi-layered React/HTML cards never get truncated.
+     * Scans all <div class="...team-portrait/comp/row..."> blocks across the full HTML document,
+     * balancing nested <div> tags so multi-layered React/HTML cards (including below-the-fold rows) never get truncated.
      */
     private fun extractTeamPortraitBlocks(html: String): List<Pair<Int, String>> {
         val starts = TEAM_PORTRAIT_START_REGEX.findAll(html).toList()
@@ -475,12 +581,14 @@ class TftacticsCompsScraper(
                     depth++
                 }
             }
-            if (endPos > startPos) {
+            if (endIdxValid(startPos, endPos)) {
                 result.add(startPos to html.substring(startPos, endPos))
             }
         }
         return result
     }
+
+    private fun endIdxValid(startPos: Int, endPos: Int): Boolean = endPos > startPos
 
     private fun inferPrecedingSectionTier(html: String, cardStartIdx: Int): String? {
         val windowStart = (cardStartIdx - 4000).coerceAtLeast(0)
@@ -561,13 +669,13 @@ class TftacticsCompsScraper(
             """<script[^>]*id=["']__NEXT_DATA__["'][^>]*>(.*?)</script>""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
+        private val NEXT_BUILD_ID_REGEX = Regex(""""buildId"\s*:\s*"([^"]+)"""")
         private val INLINE_JSON_STATE_REGEX = Regex(
             """window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
-        private val INLINE_COMP_ARRAY_REGEX = Regex(
-            """(\[\s*\{\s*"(?:title|name)"\s*:\s*"[^"]+"\s*,.*?"(?:units|champions|members)"\s*:\s*\[.*?\]\s*\}\s*\])""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        private val COMP_ARRAY_ANCHOR_REGEX = Regex(
+            """\[\s*\{\s*"(?:title|name|compName|tier)"\s*:"""
         )
         private val SCRIPT_SRC_REGEX = Regex(
             """<script[^>]+src=["']([^"']+\.js(?:\?[^"']*)?)["']""",
@@ -582,7 +690,7 @@ class TftacticsCompsScraper(
             RegexOption.IGNORE_CASE
         )
         private val TEAM_PORTRAIT_START_REGEX = Regex(
-            """<div[^>]*class=["'][^"']*team-(?:portrait|comp)[^"']*["'][^>]*>""",
+            """<div[^>]*class=["'][^"']*(?:team-(?:portrait|comp|row)|comp-(?:row|card))[^"']*["'][^>]*>""",
             RegexOption.IGNORE_CASE
         )
         private val DIV_TAG_REGEX = Regex("""</?div\b[^>]*>""", RegexOption.IGNORE_CASE)

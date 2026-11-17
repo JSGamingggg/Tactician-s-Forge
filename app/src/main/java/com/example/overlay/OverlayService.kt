@@ -6,6 +6,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
@@ -25,6 +26,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -52,7 +54,6 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Star
@@ -65,6 +66,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,11 +79,14 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -203,6 +208,36 @@ internal fun computeEdgeSnapDecision(
     )
 }
 
+data class OverlayDrawerDimensions(
+    val widthDp: Dp,
+    val maxHeightDp: Dp,
+    val isLandscape: Boolean
+)
+
+internal fun computeOverlayDrawerDimensions(
+    screenWidthDp: Int,
+    screenHeightDp: Int
+): OverlayDrawerDimensions {
+    val safeW = screenWidthDp.coerceAtLeast(240)
+    val safeH = screenHeightDp.coerceAtLeast(240)
+    val isLandscape = safeW > safeH
+    val widthDp = if (isLandscape) {
+        (safeW * 0.56f).coerceIn(300f, 440f).dp
+    } else {
+        (safeW - 24).coerceIn(260, 360).dp
+    }
+    val maxHeightDp = if (isLandscape) {
+        (safeH - 36).coerceIn(220, 390).dp
+    } else {
+        (safeH - 72).coerceIn(320, 560).dp
+    }
+    return OverlayDrawerDimensions(
+        widthDp = widthDp,
+        maxHeightDp = maxHeightDp,
+        isLandscape = isLandscape
+    )
+}
+
 class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
     private lateinit var windowManager: WindowManager
@@ -220,6 +255,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     private val displayState = mutableStateOf(OverlayDisplayState.BUBBLE)
     private val dockEdgeState = mutableStateOf(OverlayDockEdge.LEFT)
+    private val configurationVersion = mutableIntStateOf(0)
     private var savedBubbleAnchorY = 220
     private val allCompsState = mutableStateOf<List<MetaComp>>(emptyList())
     private val favoriteDocsState = mutableStateOf<List<FavoriteCompDoc>>(emptyList())
@@ -411,6 +447,51 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     private fun screenHeightPx(): Int = resources.displayMetrics.heightPixels.coerceAtLeast(1)
 
+    private fun currentDrawerDimensions(): OverlayDrawerDimensions {
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val widthDp = (screenWidthPx() / density).roundToInt()
+        val heightDp = (screenHeightPx() / density).roundToInt()
+        return computeOverlayDrawerDimensions(screenWidthDp = widthDp, screenHeightDp = heightDp)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        configurationVersion.intValue += 1
+        clampOverlayPositionForCurrentBounds()
+    }
+
+    private fun clampOverlayPositionForCurrentBounds() {
+        if (!::overlayLayoutParams.isInitialized) return
+        val marginPx = dpToPx(12)
+        val minY = dpToPx(16)
+        val maxCompactY = (screenHeightPx() - dpToPx(104)).coerceAtLeast(minY)
+        val drawerDims = currentDrawerDimensions()
+        val maxExpandedY = (screenHeightPx() - dpToPx(drawerDims.maxHeightDp.value.roundToInt() + 20)).coerceAtLeast(minY)
+
+        savedBubbleAnchorY = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
+        when (displayState.value) {
+            OverlayDisplayState.EDGE_COLLAPSED -> {
+                val edgeGravity = if (dockEdgeState.value == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
+                overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
+                overlayLayoutParams.x = 0
+                overlayLayoutParams.y = savedBubbleAnchorY
+            }
+            OverlayDisplayState.BUBBLE -> {
+                overlayLayoutParams.x = overlayLayoutParams.x.coerceIn(0, (screenWidthPx() - dpToPx(72)).coerceAtLeast(0))
+                overlayLayoutParams.y = savedBubbleAnchorY
+            }
+            OverlayDisplayState.EXPANDED -> {
+                val edgeGravity = if (dockEdgeState.value == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
+                overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
+                overlayLayoutParams.x = marginPx
+                overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxExpandedY)
+            }
+        }
+        overlayView?.let { view ->
+            runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+        }
+    }
+
     private fun transitionDisplayState(
         targetState: OverlayDisplayState,
         dockEdge: OverlayDockEdge = dockEdgeState.value
@@ -425,9 +506,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
         val edgeGravity = if (dockEdge == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
         val marginPx = dpToPx(12)
-        val minY = dpToPx(24)
-        val maxCompactY = (screenHeightPx() - dpToPx(110)).coerceAtLeast(minY)
-        val maxExpandedY = (screenHeightPx() - dpToPx(480)).coerceAtLeast(minY)
+        val minY = dpToPx(16)
+        val maxCompactY = (screenHeightPx() - dpToPx(104)).coerceAtLeast(minY)
+        val drawerDims = currentDrawerDimensions()
+        val maxExpandedY = (screenHeightPx() - dpToPx(drawerDims.maxHeightDp.value.roundToInt() + 20)).coerceAtLeast(minY)
 
         when (targetState) {
             OverlayDisplayState.EDGE_COLLAPSED -> {
@@ -494,8 +576,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
                 val viewW = view.width.takeIf { it > 0 } ?: dpToPx(60)
                 val screenW = screenWidthPx()
-                val minY = dpToPx(24)
-                val maxY = (screenHeightPx() - dpToPx(110)).coerceAtLeast(minY)
+                val minY = dpToPx(16)
+                val maxY = (screenHeightPx() - dpToPx(104)).coerceAtLeast(minY)
 
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -568,6 +650,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                     OverlayRootContent(
                         displayState = displayState.value,
                         dockEdge = dockEdgeState.value,
+                        configVersion = configurationVersion.intValue,
                         allComps = allCompsState.value,
                         favoriteDocs = favoriteDocsState.value,
                         onExpandDrawer = {
@@ -625,6 +708,7 @@ private enum class OverlayBrowseMode {
 private fun OverlayRootContent(
     displayState: OverlayDisplayState,
     dockEdge: OverlayDockEdge,
+    configVersion: Int,
     allComps: List<MetaComp>,
     favoriteDocs: List<FavoriteCompDoc>,
     onExpandDrawer: () -> Unit,
@@ -634,6 +718,15 @@ private fun OverlayRootContent(
     onToggleFavorite: (MetaComp) -> Unit,
     onCloseOverlay: () -> Unit
 ) {
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val drawerDims = remember(configVersion, configuration.screenWidthDp, configuration.screenHeightDp, configuration.orientation) {
+        val metrics = context.resources.displayMetrics
+        val densityVal = metrics.density.coerceAtLeast(1f)
+        val wDp = (metrics.widthPixels / densityVal).roundToInt().takeIf { it > 0 } ?: configuration.screenWidthDp
+        val hDp = (metrics.heightPixels / densityVal).roundToInt().takeIf { it > 0 } ?: configuration.screenHeightDp
+        computeOverlayDrawerDimensions(screenWidthDp = wDp, screenHeightDp = hDp)
+    }
     val favoriteIds = remember(favoriteDocs) {
         favoriteDocs.map { it.compId.ifBlank { it.id } }.toSet()
     }
@@ -817,7 +910,7 @@ private fun OverlayRootContent(
 
             OverlayDisplayState.EXPANDED -> {
                 var browseMode by remember { mutableStateOf(OverlayBrowseMode.ALL_COMPS) }
-                var envFilter by remember { mutableStateOf<TftEnvironment?>(null) }
+                var envFilter by remember { mutableStateOf(TftEnvironment.LIVE) }
                 var tierFilter by remember { mutableStateOf<TierRank?>(null) }
                 var selectedHexCompId by remember { mutableStateOf<String?>(null) }
                 val collapseArrow = if (dockEdge == OverlayDockEdge.LEFT) {
@@ -834,10 +927,17 @@ private fun OverlayRootContent(
                     matched + extra
                 }
 
+                val envScopedCompsCount = remember(mergedAllComps, envFilter) {
+                    mergedAllComps.count { it.environment == envFilter }
+                }
+                val envScopedFavoritesCount = remember(favoriteComps, envFilter) {
+                    favoriteComps.count { it.environment == envFilter }
+                }
+
                 val displayed = remember(mergedAllComps, favoriteComps, browseMode, envFilter, tierFilter) {
                     val source = if (browseMode == OverlayBrowseMode.FAVORITES) favoriteComps else mergedAllComps
                     source.filter { comp ->
-                        val matchesEnv = envFilter == null || comp.environment == envFilter
+                        val matchesEnv = comp.environment == envFilter
                         val matchesTier = tierFilter == null || comp.tier == tierFilter
                         matchesEnv && matchesTier
                     }
@@ -848,9 +948,17 @@ private fun OverlayRootContent(
                     color = ObsidianVoid.copy(alpha = 0.95f),
                     border = BorderStroke(1.5.dp, BrushedGold.copy(alpha = 0.7f)),
                     shadowElevation = 14.dp,
-                    modifier = Modifier.width(332.dp)
+                    modifier = Modifier
+                        .width(drawerDims.widthDp)
+                        .heightIn(max = drawerDims.maxHeightDp)
+                        .testTag("overlay_expanded_drawer")
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(
+                        modifier = Modifier.padding(
+                            horizontal = 12.dp,
+                            vertical = if (drawerDims.isLandscape) 8.dp else 12.dp
+                        )
+                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -907,35 +1015,36 @@ private fun OverlayRootContent(
                             }
                         }
 
-                        // All Comps vs Favorites Switcher
+                        // Comps vs Favorites + LIVE/PBE/S-Tier controls (scrollable horizontally if narrow)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
                                 .padding(top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             OverlayEnvChip(
-                                label = "All Comps (${mergedAllComps.size})",
+                                label = "${envFilter.label} Comps ($envScopedCompsCount)",
                                 selected = browseMode == OverlayBrowseMode.ALL_COMPS,
                                 icon = Icons.AutoMirrored.Filled.FormatListBulleted,
                                 onClick = { browseMode = OverlayBrowseMode.ALL_COMPS }
                             )
                             OverlayEnvChip(
-                                label = "Favorites (${favoriteComps.size})",
+                                label = "Favorites ($envScopedFavoritesCount)",
                                 selected = browseMode == OverlayBrowseMode.FAVORITES,
                                 icon = Icons.Filled.Star,
                                 onClick = { browseMode = OverlayBrowseMode.FAVORITES }
                             )
                         }
 
-                        // Environment & S-Tier quick filter
+                        // LIVE | PBE | S-Tier quick filter (defaults to LIVE; no ALL tab)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
                                 .padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            OverlayEnvChip("ALL", envFilter == null, Icons.Default.Public) { envFilter = null }
                             OverlayEnvChip("LIVE", envFilter == TftEnvironment.LIVE, Icons.Default.Bolt) { envFilter = TftEnvironment.LIVE }
                             OverlayEnvChip("PBE", envFilter == TftEnvironment.PBE, Icons.Default.Science) { envFilter = TftEnvironment.PBE }
                             OverlayEnvChip("S-Tier", tierFilter == TierRank.S, Icons.Default.WorkspacePremium) {
@@ -943,50 +1052,55 @@ private fun OverlayRootContent(
                             }
                         }
 
-                        AnimatedContent(
-                            targetState = Triple(browseMode, envFilter, tierFilter),
-                            transitionSpec = {
-                                fadeIn(tween(180)) togetherWith fadeOut(tween(130))
-                            },
-                            label = "overlayCompsFilterTransition"
-                        ) { (activeMode, _, _) ->
-                            if (displayed.isEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(DeepSlate, RoundedCornerShape(12.dp))
-                                        .padding(14.dp)
-                                ) {
-                                    Text(
-                                        text = if (activeMode == OverlayBrowseMode.FAVORITES) {
-                                            "No favorites yet. Tap the Star icon on any composition in All Comps to add it to your favorites."
-                                        } else {
-                                            "No compositions match the active LIVE/PBE or tier filter."
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = Color(0xFF93A1B8)
-                                    )
-                                }
-                            } else {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 390.dp)
-                                        .verticalScroll(rememberScrollState()),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    displayed.forEach { comp ->
-                                        val showHex = selectedHexCompId == comp.id
-                                        val isFav = favoriteIds.contains(comp.id)
-                                        OverlayCompCard(
-                                            comp = comp,
-                                            isFavorite = isFav,
-                                            expanded = showHex,
-                                            onCardClick = {
-                                                selectedHexCompId = if (showHex) null else comp.id
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = false)
+                        ) {
+                            AnimatedContent(
+                                targetState = Triple(browseMode, envFilter, tierFilter),
+                                transitionSpec = {
+                                    fadeIn(tween(180)) togetherWith fadeOut(tween(130))
+                                },
+                                label = "overlayCompsFilterTransition"
+                            ) { (activeMode, activeEnv, _) ->
+                                if (displayed.isEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(DeepSlate, RoundedCornerShape(12.dp))
+                                            .padding(14.dp)
+                                    ) {
+                                        Text(
+                                            text = if (activeMode == OverlayBrowseMode.FAVORITES) {
+                                                "No ${activeEnv.label} favorites yet. Tap the Star icon on any composition to add it."
+                                            } else {
+                                                "No compositions match the active ${activeEnv.label} or tier filter."
                                             },
-                                            onToggleFavorite = { onToggleFavorite(comp) }
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF93A1B8)
                                         )
+                                    }
+                                } else {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .verticalScroll(rememberScrollState()),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        displayed.forEach { comp ->
+                                            val showHex = selectedHexCompId == comp.id
+                                            val isFav = favoriteIds.contains(comp.id)
+                                            OverlayCompCard(
+                                                comp = comp,
+                                                isFavorite = isFav,
+                                                expanded = showHex,
+                                                onCardClick = {
+                                                    selectedHexCompId = if (showHex) null else comp.id
+                                                },
+                                                onToggleFavorite = { onToggleFavorite(comp) }
+                                            )
+                                        }
                                     }
                                 }
                             }

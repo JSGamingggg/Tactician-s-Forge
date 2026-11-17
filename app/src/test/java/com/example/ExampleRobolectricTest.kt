@@ -462,4 +462,63 @@ class ExampleRobolectricTest {
         )
         assertFalse(midScreen.shouldCollapseToEdge)
     }
+
+    @Test
+    fun `tftactics scraper extracts nested below-the-fold comp arrays from js bundles`() {
+        val scraper = TftacticsCompsScraper()
+        val jsBundle = """
+            var x=1;var comps=[
+              {
+                "title": "Shadow Isles Kalista",
+                "tier": "S",
+                "playstyle": "Fast 8",
+                "set": "Set 18",
+                "carry": "Kalista",
+                "traits": [{"name": "5 Shadow Isles"}, {"name": "2 Challenger"}],
+                "augments": ["Lotus I", "Cybernetic Uplink"],
+                "units": [
+                  {"name": "Yorick", "items": ["Warmog's Armor"]},
+                  {"name": "Thresh", "items": []},
+                  {"name": "Gwen", "items": ["Jeweled Gauntlet"]},
+                  {"name": "Kalista", "items": ["Guinsoo's Rageblade", "Runaan's Hurricane"]}
+                ]
+              },
+              {
+                "title": "Deep Scroll Bastion Aphelios",
+                "tier": "C",
+                "playstyle": "Reroll",
+                "set": "Set 18",
+                "carry": "Aphelios",
+                "traits": ["4 Bastion"],
+                "units": ["Poppy", "Leona", "Taric", "Aphelios"]
+              }
+            ];function noop(){}
+        """.trimIndent()
+
+        val extracted = scraper.extractCandidateCompArrays(jsBundle)
+        assertEquals(1, extracted.size)
+
+        val html = "<html><body><h1>Set 18</h1><script>${extracted.first()}</script></body></html>"
+        val parsed = scraper.parseCompsDocument(html, TftEnvironment.LIVE, "18.8", isDedicatedEnvPage = true)
+        assertEquals(2, parsed.comps.size)
+        assertTrue(parsed.comps.any { it.title == "Shadow Isles Kalista" && it.carryName == "Kalista" })
+        assertTrue(parsed.comps.any { it.title == "Deep Scroll Bastion Aphelios" && it.tier == com.example.data.model.TierRank.C })
+    }
+
+    @Test
+    fun `overlay drawer dimensions adapt safely to both portrait and landscape viewports`() {
+        val portrait = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 411, screenHeightDp = 915)
+        assertFalse(portrait.isLandscape)
+        assertTrue(portrait.widthDp.value in 260f..360f)
+        assertTrue(portrait.maxHeightDp.value < 915f)
+
+        val landscapePhone = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 915, screenHeightDp = 411)
+        assertTrue(landscapePhone.isLandscape)
+        assertTrue(landscapePhone.widthDp.value in 300f..440f)
+        assertTrue(landscapePhone.maxHeightDp.value <= 411f - 36f)
+
+        val compactLandscape = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 640, screenHeightDp = 360)
+        assertTrue(compactLandscape.isLandscape)
+        assertTrue(compactLandscape.maxHeightDp.value <= 360f - 36f)
+    }
 }

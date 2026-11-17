@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Tactician\'s Forge</string>
+    <string name="app_tagline">Set 18 Enchanted Wilds Tactical Companion</string>
+    <string name="nav_meta">Meta</string>
+    <string name="nav_tiers">Tiers</string>
+    <string name="nav_stats">Stats</string>
+    <string name="nav_alerts">Alerts</string>
+    <string name="env_live">LIVE</string>
+    <string name="env_pbe">PBE</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="explore_as_guest">Explore as Guest</string>
+    <string name="sign_out">Sign out</string>
+    <string name="cloud_sync_prompt">Sync favorites &amp; Riot IDs across devices</string>
+    <string name="guest_mode_label">Guest Mode (Offline Cache Ready)</string>
+    <string name="channel_patch_updates_name">Patch &amp; Balance Updates</string>
+    <string name="channel_patch_updates_desc">Immediate alerts for new LIVE and PBE game patches and balance hotfixes.</string>
+    <string name="channel_trending_comps_name">Trending Compositions</string>
+    <string name="channel_trending_comps_desc">Alerts when new S-tier compositions surge in win rate.</string>
+    <string name="channel_overlay_name">Live Match Overlay</string>
+    <string name="channel_overlay_desc">Persistent control notification while the in-game favorites overlay bubble is active.</string>
+    <string name="overlay_action_stop">Close Overlay</string>
+    <string name="overlay_empty_pins">Star a composition and tap the pin icon to display it here during live matches.</string>
+    <string name="made_by_credits">Made By JS96 + MK</string>
+    <string name="auto_sync_cadence_summary">Auto-sync: Launch • Resume • 5m Active • 15m Background</string>
+</resources>

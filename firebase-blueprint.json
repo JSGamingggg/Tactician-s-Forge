@@ -1,0 +1,225 @@
+{
+  "entities": {
+    "FavoriteComp": {
+      "title": "FavoriteComp",
+      "description": "A user-saved or custom Teamfight Tactics team composition synced for quick in-game and overlay access.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated owner UID matching request.auth.uid."
+        },
+        "compId": {
+          "type": "string",
+          "description": "Canonical composition identifier."
+        },
+        "environment": {
+          "type": "string",
+          "enum": ["LIVE", "PBE"],
+          "description": "Target TFT server environment for this composition."
+        },
+        "title": {
+          "type": "string",
+          "description": "Display name of the team composition."
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["S", "A", "B", "C"],
+          "description": "Meta tier rank."
+        },
+        "playstyle": {
+          "type": "string",
+          "description": "Leveling and tempo archetype (e.g., Fast 8, Reroll Lv 6)."
+        },
+        "carryName": {
+          "type": "string",
+          "description": "Primary carry unit name."
+        },
+        "coreUnits": {
+          "type": "array",
+          "description": "Bounded list (max 10) of core champion names."
+        },
+        "hexPositions": {
+          "type": "array",
+          "description": "Bounded list (max 10) of encoded unit@row,col@items strings for 4x7 board display."
+        },
+        "pinnedToOverlay": {
+          "type": "boolean",
+          "description": "Whether this composition appears in the live-match floating overlay drawer."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional user scouting or augment notes (omitted if empty)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "compId",
+        "environment",
+        "title",
+        "tier",
+        "playstyle",
+        "carryName",
+        "coreUnits",
+        "hexPositions",
+        "pinnedToOverlay",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TrackedPlayer": {
+      "title": "TrackedPlayer",
+      "description": "A bookmarked Riot ID and regional routing profile for one-tap player stats and match history analysis.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated owner UID matching request.auth.uid."
+        },
+        "puuid": {
+          "type": "string",
+          "description": "Riot Games account PUUID."
+        },
+        "gameName": {
+          "type": "string",
+          "description": "Riot ID game name."
+        },
+        "tagLine": {
+          "type": "string",
+          "description": "Riot ID tag line."
+        },
+        "region": {
+          "type": "string",
+          "enum": ["AMERICAS", "EUROPE", "ASIA", "SEA"],
+          "description": "Regional routing host."
+        },
+        "platform": {
+          "type": "string",
+          "description": "Platform routing host (e.g., NA1, EUW1, KR)."
+        },
+        "lastTier": {
+          "type": "string",
+          "description": "Last observed ranked tier label."
+        },
+        "lastLp": {
+          "type": "integer",
+          "description": "Last observed League Points."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "puuid",
+        "gameName",
+        "tagLine",
+        "region",
+        "platform",
+        "lastTier",
+        "lastLp",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPreferences": {
+      "title": "UserPreferences",
+      "description": "Synced user preferences for theme mode, LIVE/PBE workspace selection, and patch/balance notification channels.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated owner UID matching request.auth.uid."
+        },
+        "themeMode": {
+          "type": "string",
+          "enum": ["SYSTEM", "DARK", "LIGHT"],
+          "description": "App appearance mode."
+        },
+        "selectedEnvironment": {
+          "type": "string",
+          "enum": ["LIVE", "PBE"],
+          "description": "Active dataset mode."
+        },
+        "patchAlertsEnabled": {
+          "type": "boolean",
+          "description": "Notify on new LIVE patch releases."
+        },
+        "pbeAlertsEnabled": {
+          "type": "boolean",
+          "description": "Notify on new PBE patch deployments."
+        },
+        "balanceAlertsEnabled": {
+          "type": "boolean",
+          "description": "Notify on significant champion and trait balance updates."
+        },
+        "trendingAlertsEnabled": {
+          "type": "boolean",
+          "description": "Notify on surging S-tier meta compositions."
+        },
+        "lastSeenLivePatch": {
+          "type": "string",
+          "description": "Latest LIVE patch version acknowledged."
+        },
+        "lastSeenPbePatch": {
+          "type": "string",
+          "description": "Latest PBE patch version acknowledged."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "themeMode",
+        "selectedEnvironment",
+        "patchAlertsEnabled",
+        "pbeAlertsEnabled",
+        "balanceAlertsEnabled",
+        "trendingAlertsEnabled",
+        "lastSeenLivePatch",
+        "lastSeenPbePatch",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/favorites/{compId}": {
+      "schema": { "$ref": "#/entities/FavoriteComp" },
+      "description": "User-scoped favorite TFT compositions."
+    },
+    "/users/{userId}/tracked_players/{playerId}": {
+      "schema": { "$ref": "#/entities/TrackedPlayer" },
+      "description": "User-scoped bookmarked Riot IDs."
+    },
+    "/users/{userId}/preferences/{prefId}": {
+      "schema": { "$ref": "#/entities/UserPreferences" },
+      "description": "User-scoped app and notification preferences."
+    }
+  }
+}

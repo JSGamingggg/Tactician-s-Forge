@@ -1,0 +1,192 @@
+package com.example.notifications
+
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.example.MainActivity
+import com.example.R
+import com.example.data.model.TftEnvironment
+
+object TftNotificationHelper {
+    const val CHANNEL_PATCH_UPDATES = "tft_patch_updates"
+    const val CHANNEL_TRENDING_COMPS = "tft_trending_comps"
+    const val CHANNEL_OVERLAY = "tft_live_overlay"
+
+    const val EXTRA_NAV_TAB = "extra_nav_tab"
+    const val EXTRA_ENVIRONMENT = "extra_environment"
+
+    fun ensureChannels(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        val patchChannel = NotificationChannel(
+            CHANNEL_PATCH_UPDATES,
+            context.getString(R.string.channel_patch_updates_name),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = context.getString(R.string.channel_patch_updates_desc)
+            enableLights(true)
+            enableVibration(true)
+        }
+
+        val trendingChannel = NotificationChannel(
+            CHANNEL_TRENDING_COMPS,
+            context.getString(R.string.channel_trending_comps_name),
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = context.getString(R.string.channel_trending_comps_desc)
+        }
+
+        val overlayChannel = NotificationChannel(
+            CHANNEL_OVERLAY,
+            context.getString(R.string.channel_overlay_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = context.getString(R.string.channel_overlay_desc)
+            setShowBadge(false)
+        }
+
+        manager.createNotificationChannels(listOf(patchChannel, trendingChannel, overlayChannel))
+    }
+
+    fun hasNotificationPermission(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    fun postPatchOrBalanceNotification(
+        context: Context,
+        title: String,
+        shortBody: String,
+        expandedBody: String,
+        environment: TftEnvironment,
+        notificationId: Int = (System.currentTimeMillis() % 100_000).toInt()
+    ): Boolean {
+        ensureChannels(context)
+        if (!hasNotificationPermission(context)) return false
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_NAV_TAB, "alerts")
+            putExtra(EXTRA_ENVIRONMENT, environment.name)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_PATCH_UPDATES)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(title)
+            .setContentText(shortBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        return try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    fun postTrendingCompNotification(
+        context: Context,
+        compTitle: String,
+        environment: TftEnvironment,
+        summary: String,
+        notificationId: Int = 20_401
+    ): Boolean {
+        ensureChannels(context)
+        if (!hasNotificationPermission(context)) return false
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_NAV_TAB, "meta")
+            putExtra(EXTRA_ENVIRONMENT, environment.name)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_TRENDING_COMPS)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("${environment.label} Trending S-Tier: $compTitle")
+            .setContentText(summary)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        return try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    fun postNewCompsBatchNotification(
+        context: Context,
+        title: String,
+        shortBody: String,
+        expandedBody: String,
+        environment: TftEnvironment,
+        notificationId: Int = 20_402
+    ): Boolean {
+        ensureChannels(context)
+        if (!hasNotificationPermission(context)) return false
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_NAV_TAB, "meta")
+            putExtra(EXTRA_ENVIRONMENT, environment.name)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_TRENDING_COMPS)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(title)
+            .setContentText(shortBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        return try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification)
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+}

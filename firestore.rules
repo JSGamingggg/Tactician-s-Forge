@@ -1,0 +1,190 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isValidBoundedStringList(arr, maxLen) {
+      return arr is list &&
+             arr.size() <= maxLen &&
+             (arr.size() == 0 || (arr[0] is string && arr[0].size() <= 160));
+    }
+
+    // --- Validation Helpers ---
+
+    function isValidFavoriteComp(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             isValidId(data.compId) &&
+             data.environment in ['LIVE', 'PBE'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 80 &&
+             data.tier in ['S', 'A', 'B', 'C'] &&
+             data.playstyle is string && data.playstyle.size() >= 1 && data.playstyle.size() <= 40 &&
+             data.carryName is string && data.carryName.size() >= 1 && data.carryName.size() <= 50 &&
+             isValidBoundedStringList(data.coreUnits, 10) &&
+             isValidBoundedStringList(data.hexPositions, 10) &&
+             data.pinnedToOverlay is bool &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 300)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidTrackedPlayer(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.puuid is string && data.puuid.size() >= 1 && data.puuid.size() <= 128 &&
+             data.gameName is string && data.gameName.size() >= 1 && data.gameName.size() <= 32 &&
+             data.tagLine is string && data.tagLine.size() >= 1 && data.tagLine.size() <= 16 &&
+             data.region in ['AMERICAS', 'EUROPE', 'ASIA', 'SEA'] &&
+             data.platform is string && data.platform.size() >= 2 && data.platform.size() <= 10 &&
+             data.lastTier is string && data.lastTier.size() <= 32 &&
+             data.lastLp is int && data.lastLp >= 0 && data.lastLp <= 5000 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUserPreferences(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.themeMode in ['SYSTEM', 'DARK', 'LIGHT'] &&
+             data.selectedEnvironment in ['LIVE', 'PBE'] &&
+             data.patchAlertsEnabled is bool &&
+             data.pbeAlertsEnabled is bool &&
+             data.balanceAlertsEnabled is bool &&
+             data.trendingAlertsEnabled is bool &&
+             data.lastSeenLivePatch is string && data.lastSeenLivePatch.size() <= 32 &&
+             data.lastSeenPbePatch is string && data.lastSeenPbePatch.size() <= 32 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId}/favorites/{compId} {
+      allow get: if isOwner(userId) && isValidId(compId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(compId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'compId', 'environment', 'title', 'tier',
+                         'playstyle', 'carryName', 'coreUnits', 'hexPositions',
+                         'pinnedToOverlay', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'compId', 'environment', 'title', 'tier',
+                         'playstyle', 'carryName', 'coreUnits', 'hexPositions',
+                         'pinnedToOverlay', 'notes', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidFavoriteComp(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(compId) &&
+                       isValidFavoriteComp(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().compId == existing().compId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'environment', 'title', 'tier', 'playstyle', 'carryName',
+                         'coreUnits', 'hexPositions', 'pinnedToOverlay', 'notes', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(compId);
+    }
+
+    match /users/{userId}/tracked_players/{playerId} {
+      allow get: if isOwner(userId) && isValidId(playerId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(playerId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'puuid', 'gameName', 'tagLine', 'region',
+                         'platform', 'lastTier', 'lastLp', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'puuid', 'gameName', 'tagLine', 'region',
+                         'platform', 'lastTier', 'lastLp', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidTrackedPlayer(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(playerId) &&
+                       isValidTrackedPlayer(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().puuid == existing().puuid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'gameName', 'tagLine', 'region', 'platform',
+                         'lastTier', 'lastLp', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(playerId);
+    }
+
+    match /users/{userId}/preferences/{prefId} {
+      allow get: if isOwner(userId) && isValidId(prefId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(prefId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'themeMode', 'selectedEnvironment',
+                         'patchAlertsEnabled', 'pbeAlertsEnabled',
+                         'balanceAlertsEnabled', 'trendingAlertsEnabled',
+                         'lastSeenLivePatch', 'lastSeenPbePatch',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'themeMode', 'selectedEnvironment',
+                         'patchAlertsEnabled', 'pbeAlertsEnabled',
+                         'balanceAlertsEnabled', 'trendingAlertsEnabled',
+                         'lastSeenLivePatch', 'lastSeenPbePatch',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidUserPreferences(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(prefId) &&
+                       isValidUserPreferences(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'themeMode', 'selectedEnvironment',
+                         'patchAlertsEnabled', 'pbeAlertsEnabled',
+                         'balanceAlertsEnabled', 'trendingAlertsEnabled',
+                         'lastSeenLivePatch', 'lastSeenPbePatch', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(prefId);
+    }
+  }
+}

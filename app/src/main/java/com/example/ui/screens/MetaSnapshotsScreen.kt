@@ -1,0 +1,967 @@
+package com.example.ui.screens
+
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.example.R
+import com.example.data.model.FavoriteCompDoc
+import com.example.data.model.LiveVersionInfo
+import com.example.data.model.MetaComp
+import com.example.data.model.OfflineCacheStatus
+import com.example.data.model.TftEnvironment
+import com.example.data.model.TierRank
+import com.example.ui.components.EnvironmentToggleBar
+import com.example.ui.components.HextechEmptyState
+import com.example.ui.components.HextechPanelCard
+import com.example.ui.components.OfflineCacheStatusBanner
+import com.example.ui.components.TftAugmentChip
+import com.example.ui.components.TftChampionAvatar
+import com.example.ui.components.TftHexBoard
+import com.example.ui.components.TftItemChip
+import com.example.ui.components.TftTraitChip
+import com.example.ui.components.TierBadge
+import com.example.ui.components.environmentSlideTransitionSpec
+import com.example.ui.theme.LocalHextechColors
+import com.example.ui.viewmodel.UiState
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun MetaSnapshotsScreen(
+    environment: TftEnvironment,
+    onSelectEnvironment: (TftEnvironment) -> Unit,
+    comps: List<MetaComp>,
+    favoritesState: UiState<List<FavoriteCompDoc>>,
+    liveVersionInfo: LiveVersionInfo?,
+    offlineCacheStatus: OfflineCacheStatus,
+    isRefreshing: Boolean,
+    isGuestMode: Boolean,
+    isOverlayRunning: Boolean,
+    onRefreshSync: () -> Unit,
+    onSignInRequested: () -> Unit,
+    onToggleOverlay: () -> Unit,
+    onToggleFavorite: (MetaComp) -> Unit,
+    onTogglePin: (String, Boolean) -> Unit,
+    onCreateCustomComp: (String, TftEnvironment, TierRank, String, String, String, String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilter by remember { mutableStateOf("ALL") }
+    var showFavoritesOnly by remember { mutableStateOf(false) }
+    var inspectedComp by remember { mutableStateOf<MetaComp?>(null) }
+    var showCreateDialog by remember { mutableStateOf(false) }
+
+    val favorites = (favoritesState as? UiState.Success)?.data.orEmpty()
+    val favoriteIds = remember(favorites) { favorites.map { it.compId.ifBlank { it.id } }.toSet() }
+    val pinnedIds = remember(favorites) { favorites.filter { it.pinnedToOverlay }.map { it.compId.ifBlank { it.id } }.toSet() }
+
+    val displayedComps = remember(comps, favorites, showFavoritesOnly, searchQuery, selectedFilter, environment) {
+        val baseList = if (showFavoritesOnly) {
+            favorites.filter { it.environment == environment.name }.map { it.toMetaComp() }
+        } else {
+            comps
+        }
+        baseList.filter { comp ->
+            val matchesSearch = searchQuery.isBlank() ||
+                comp.title.contains(searchQuery, ignoreCase = true) ||
+                comp.carryName.contains(searchQuery, ignoreCase = true) ||
+                comp.traits.any { it.contains(searchQuery, ignoreCase = true) } ||
+                comp.coreUnits.any { it.contains(searchQuery, ignoreCase = true) }
+            val matchesFilter = when (selectedFilter) {
+                "S" -> comp.tier == TierRank.S
+                "A" -> comp.tier == TierRank.A
+                "REROLL" -> comp.playstyle.contains("Reroll", ignoreCase = true)
+                "FAST8" -> comp.playstyle.contains("Fast", ignoreCase = true)
+                "TRENDING" -> comp.isTrending
+                else -> true
+            }
+            matchesSearch && matchesFilter
+        }
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Hero Header
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(148.dp)
+                    .clip(RoundedCornerShape(18.dp))
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.img_hextech_banner),
+                    contentDescription = "Set 18 Hextech Arena Banner",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color.Black.copy(alpha = 0.25f),
+                                    MaterialTheme.colorScheme.background.copy(alpha = 0.92f)
+                                )
+                            )
+                        )
+                )
+                val badgeColor by animateColorAsState(
+                    targetValue = if (environment == TftEnvironment.LIVE) {
+                        LocalHextechColors.current.liveBadge
+                    } else {
+                        LocalHextechColors.current.pbeBadge
+                    },
+                    animationSpec = tween(250),
+                    label = "heroEnvBadgeColor"
+                )
+                AnimatedContent(
+                    targetState = environment,
+                    transitionSpec = environmentSlideTransitionSpec(),
+                    label = "metaHeroEnvTransition",
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                ) { activeEnv ->
+                    Column {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = badgeColor.copy(alpha = 0.22f),
+                                border = BorderStroke(1.dp, badgeColor)
+                            ) {
+                                Text(
+                                    text = if (activeEnv == TftEnvironment.LIVE) {
+                                        "LIVE • ${liveVersionInfo?.livePatchVersion ?: "18.6b"}"
+                                    } else {
+                                        "PBE • ${liveVersionInfo?.pbePatchVersion ?: "19.1-PBE"}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = badgeColor,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                            Text(
+                                text = if (activeEnv == TftEnvironment.LIVE) {
+                                    liveVersionInfo?.liveSetName ?: activeEnv.setName
+                                } else {
+                                    liveVersionInfo?.pbeSetName ?: activeEnv.setName
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (activeEnv == TftEnvironment.LIVE) "Live Meta Snapshots" else "PBE Experimental Meta",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Surface(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse("https://tftactics.gg/tierlist/team-comps/"))
+                                        )
+                                    }
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "tftactics.gg",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                        contentDescription = "Open tftactics.gg team comps",
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Guest & Offline Cache Banner
+        item {
+            OfflineCacheStatusBanner(
+                isGuestMode = isGuestMode,
+                cacheStatus = offlineCacheStatus,
+                isRefreshing = isRefreshing,
+                onRefreshClick = onRefreshSync,
+                onSignInClick = onSignInRequested
+            )
+        }
+
+        // LIVE vs PBE Switcher
+        item {
+            EnvironmentToggleBar(
+                selected = environment,
+                onSelect = onSelectEnvironment,
+                liveLabel = liveVersionInfo?.livePatchVersion ?: "18.6b Live",
+                pbeLabel = liveVersionInfo?.pbePatchVersion ?: "18.7 PBE",
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // Favorites & Live Overlay Quick Strip
+        item {
+            HextechPanelCard(accentBorder = true) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Favorites & Live Overlay (${favorites.count { it.pinnedToOverlay }} pinned)",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Star comps below to pin them into your floating in-game drawer.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { showCreateDialog = true },
+                                contentPadding = PaddingValues(horizontal = 10.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("create_custom_comp_button")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Create custom composition", modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Custom")
+                            }
+                            Button(
+                                onClick = onToggleOverlay,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isOverlayRunning) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                                    contentColor = if (isOverlayRunning) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onPrimary
+                                ),
+                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("toggle_live_overlay_button")
+                            ) {
+                                Icon(Icons.Default.Layers, contentDescription = "Toggle live match overlay", modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (isOverlayRunning) "Overlay On" else "Overlay")
+                            }
+                        }
+                    }
+
+                    AnimatedVisibility(visible = favorites.isNotEmpty()) {
+                        LazyRow(
+                            modifier = Modifier.padding(top = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(favorites, key = { it.compId.ifBlank { it.id } }) { fav ->
+                                Surface(
+                                    onClick = { inspectedComp = fav.toMetaComp() },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (fav.pinnedToOverlay) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        if (fav.carryName.isNotBlank()) {
+                                            TftChampionAvatar(
+                                                name = fav.carryName,
+                                                cost = 4,
+                                                isCarry = true,
+                                                size = 20.dp
+                                            )
+                                        }
+                                        Text(
+                                            text = "${fav.environment} • ${fav.title}",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Icon(
+                                            imageVector = if (fav.pinnedToOverlay) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                                            contentDescription = if (fav.pinnedToOverlay) "Pinned to overlay" else "Not pinned",
+                                            tint = if (fav.pinnedToOverlay) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Search & Filter Bar
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search comp, trait, carry, or unit...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search compositions") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("meta_search_input")
+                )
+
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item {
+                        FilterChip(
+                            selected = showFavoritesOnly,
+                            onClick = { showFavoritesOnly = !showFavoritesOnly },
+                            label = { Text("Favorites") },
+                            leadingIcon = {
+                                Icon(
+                                    if (showFavoritesOnly) Icons.Default.Star else Icons.Outlined.StarOutline,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        )
+                    }
+                    val filters = listOf(
+                        "ALL" to "All Tiers",
+                        "TRENDING" to "Trending",
+                        "S" to "S-Tier",
+                        "A" to "A-Tier",
+                        "FAST8" to "Fast 8/9",
+                        "REROLL" to "Reroll"
+                    )
+                    items(filters) { (key, label) ->
+                        FilterChip(
+                            selected = selectedFilter == key,
+                            onClick = { selectedFilter = key },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (displayedComps.isEmpty()) {
+            item(key = "empty_comps_${environment.name}") {
+                HextechEmptyState(
+                    icon = Icons.Default.AutoAwesome,
+                    title = if (showFavoritesOnly) "No Saved Favorites in ${environment.label}" else "No Matching Compositions",
+                    subtitle = if (showFavoritesOnly) {
+                        "Star a ${environment.label} composition or tap Custom to craft your own board."
+                    } else {
+                        "Try clearing your search or switching between LIVE and PBE snapshots."
+                    },
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = tween(220),
+                        fadeOutSpec = tween(160),
+                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                    )
+                )
+            }
+        } else {
+            items(displayedComps, key = { it.id }) { comp ->
+                val isFav = favoriteIds.contains(comp.id)
+                val isPinned = pinnedIds.contains(comp.id)
+                MetaCompCard(
+                    comp = comp,
+                    isFavorite = isFav,
+                    isPinned = isPinned,
+                    onCardClick = { inspectedComp = comp },
+                    onToggleFavorite = { onToggleFavorite(comp) },
+                    onTogglePin = {
+                        if (!isFav) onToggleFavorite(comp)
+                        else onTogglePin(comp.id, !isPinned)
+                    },
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = tween(220),
+                        fadeOutSpec = tween(160),
+                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                    )
+                )
+            }
+        }
+
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+
+    inspectedComp?.let { comp ->
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val isFav = favoriteIds.contains(comp.id)
+        val isPinned = pinnedIds.contains(comp.id)
+        ModalBottomSheet(
+            onDismissRequest = { inspectedComp = null },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            CompDetailSheetContent(
+                comp = comp,
+                isFavorite = isFav,
+                isPinned = isPinned,
+                onToggleFavorite = { onToggleFavorite(comp) },
+                onTogglePin = {
+                    if (!isFav) onToggleFavorite(comp)
+                    else onTogglePin(comp.id, !isPinned)
+                }
+            )
+        }
+    }
+
+    if (showCreateDialog) {
+        CreateCustomCompDialog(
+            defaultEnvironment = environment,
+            onDismiss = { showCreateDialog = false },
+            onSave = { title, env, tier, playstyle, carry, units, notes ->
+                onCreateCustomComp(title, env, tier, playstyle, carry, units, notes)
+                showCreateDialog = false
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MetaCompCard(
+    comp: MetaComp,
+    isFavorite: Boolean,
+    isPinned: Boolean,
+    onCardClick: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onTogglePin: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hextech = LocalHextechColors.current
+    val placementCostByUnit = remember(comp.hexPlacements) {
+        comp.hexPlacements.associate { it.unitName to it.cost }
+    }
+    val carryItems = remember(comp.hexPlacements) {
+        comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
+    }
+
+    HextechPanelCard(
+        accentBorder = comp.tier == TierRank.S,
+        onClick = onCardClick,
+        modifier = modifier.testTag("comp_card_${comp.id}")
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    TierBadge(comp.tier)
+                    Text(
+                        text = comp.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onTogglePin,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("pin_comp_${comp.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                            contentDescription = if (isPinned) "Unpin from Live Overlay" else "Pin to Live Overlay",
+                            tint = if (isPinned) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(
+                        onClick = onToggleFavorite,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("fav_comp_${comp.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Default.Star else Icons.Outlined.StarOutline,
+                            contentDescription = if (isFavorite) "Remove favorite" else "Save favorite",
+                            tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "${comp.playstyle} • Carry: ${comp.carryName}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (comp.isTrending) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.TrendingUp,
+                            contentDescription = "Trending composition",
+                            tint = hextech.buff,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            text = comp.trendDelta,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = hextech.buff
+                        )
+                    }
+                }
+            }
+
+            if (comp.traits.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    comp.traits.forEach { trait ->
+                        TftTraitChip(traitLabel = trait)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // Metrics strip
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                StatCell("AVG PLACE", String.format("%.2f", comp.avgPlacement))
+                StatCell("TOP 4", "${comp.top4Rate}%")
+                StatCell("WIN RATE", "${comp.winRate}%")
+                StatCell("PATCH", comp.patchTag)
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                text = "Team Roster",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(5.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                comp.coreUnits.forEach { unit ->
+                    val isCarry = unit.equals(comp.carryName, ignoreCase = true)
+                    val cost = placementCostByUnit[unit] ?: if (isCarry) 4 else 3
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isCarry) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        border = if (isCarry) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            TftChampionAvatar(
+                                name = unit,
+                                cost = cost,
+                                isCarry = isCarry,
+                                size = 20.dp
+                            )
+                            Text(
+                                text = unit,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isCarry) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                fontWeight = if (isCarry) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (carryItems.isNotEmpty() || comp.augmentPriorities.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    carryItems.forEach { item ->
+                        TftItemChip(itemName = item, compact = true)
+                    }
+                    comp.augmentPriorities.take(2).forEach { aug ->
+                        TftAugmentChip(augmentName = aug, compact = true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatCell(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CompDetailSheetContent(
+    comp: MetaComp,
+    isFavorite: Boolean,
+    isPinned: Boolean,
+    onToggleFavorite: () -> Unit,
+    onTogglePin: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TierBadge(comp.tier)
+                    Text(
+                        text = "${comp.environment.label} • ${comp.setName} • Patch ${comp.patchTag}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = comp.title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
+        if (comp.traits.isNotEmpty()) {
+            Text(
+                text = "Active Synergies & Traits",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                comp.traits.forEach { trait ->
+                    TftTraitChip(traitLabel = trait)
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = onToggleFavorite,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+            ) {
+                Icon(
+                    if (isFavorite) Icons.Default.Star else Icons.Outlined.StarOutline,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(if (isFavorite) "Favorited" else "Save Favorite")
+            }
+            OutlinedButton(
+                onClick = onTogglePin,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+            ) {
+                Icon(
+                    if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(if (isPinned) "Pinned Overlay" else "Pin to Overlay")
+            }
+        }
+
+        if (comp.hexPlacements.isNotEmpty()) {
+            Text(
+                text = "Board Positioning (4×7 Hex Grid)",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            TftHexBoard(placements = comp.hexPlacements)
+        }
+
+        val carryItems = comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
+        if (carryItems.isNotEmpty()) {
+            Text(
+                text = "Carry Best-In-Slot Items (${comp.carryName})",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                carryItems.forEach { item ->
+                    TftItemChip(itemName = item)
+                }
+            }
+        }
+
+        if (comp.augmentPriorities.isNotEmpty()) {
+            Text(
+                text = "Recommended Augments",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                comp.augmentPriorities.forEach { aug ->
+                    TftAugmentChip(augmentName = aug)
+                }
+            }
+        }
+
+        HextechPanelCard {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Leveling & Tempo Guide",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = comp.levelingGuide,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (comp.notes.isNotBlank()) {
+                    Text(
+                        text = comp.notes,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreateCustomCompDialog(
+    defaultEnvironment: TftEnvironment,
+    onDismiss: () -> Unit,
+    onSave: (String, TftEnvironment, TierRank, String, String, String, String) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var env by remember { mutableStateOf(defaultEnvironment) }
+    var tier by remember { mutableStateOf(TierRank.S) }
+    var playstyle by remember { mutableStateOf("Fast 8") }
+    var carry by remember { mutableStateOf("") }
+    var unitsCsv by remember { mutableStateOf("") }
+    var notes by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Create Favorite Comp") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                EnvironmentToggleBar(selected = env, onSelect = { env = it })
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Composition Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = carry,
+                        onValueChange = { carry = it },
+                        label = { Text("Main Carry") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = playstyle,
+                        onValueChange = { playstyle = it },
+                        label = { Text("Tempo") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TierRank.entries.forEach { t ->
+                        FilterChip(
+                            selected = tier == t,
+                            onClick = { tier = t },
+                            label = { Text(t.label) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = unitsCsv,
+                    onValueChange = { unitsCsv = it },
+                    label = { Text("Units (comma-separated)") },
+                    placeholder = { Text("Ahri, Ornn, Lillia, Syndra") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = notes,
+                    onValueChange = { notes = it },
+                    label = { Text("In-Game Notes (optional)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(title, env, tier, playstyle, carry, unitsCsv, notes) }) {
+                Text("Save & Pin")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}

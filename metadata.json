@@ -1,0 +1,6 @@
+{
+  "name": "Tactician's Forge",
+  "description": "Teamfight Tactics companion app with live Riot API match analysis, Set 18 meta snapshots, champion tier lists, patch alerts, cloud-synced favorites, and a live-match floating overlay.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

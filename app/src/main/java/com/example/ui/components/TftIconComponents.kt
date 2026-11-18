@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -200,18 +201,19 @@ fun TftChampionAvatar(
     val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(48) }
     val color = championCostColor(cost)
     val borderColor = if (isCarry) MaterialTheme.colorScheme.primary else color
+    val shape = RoundedCornerShape(8.dp)
 
     Box(modifier = modifier.size(size + 4.dp)) {
         Box(
             modifier = Modifier
                 .size(size)
                 .align(Alignment.Center)
-                .clip(CircleShape)
+                .clip(shape)
                 .background(color.copy(alpha = 0.20f))
                 .border(
                     width = if (isCarry) 2.dp else 1.5.dp,
                     color = borderColor,
-                    shape = CircleShape
+                    shape = shape
                 ),
             contentAlignment = Alignment.Center
         ) {
@@ -230,7 +232,7 @@ fun TftChampionAvatar(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(CircleShape)
+                        .clip(shape)
                 )
             }
         }
@@ -268,6 +270,41 @@ fun TftChampionAvatar(
                 )
             }
         }
+    }
+}
+
+@Composable
+fun TftChampionTile(
+    name: String,
+    cost: Int,
+    isCarry: Boolean = false,
+    stars: Int = 2,
+    size: Dp = 32.dp,
+    environment: TftEnvironment? = null,
+    modifier: Modifier = Modifier
+) {
+    val cleanName = remember(name) { formatRiotAssetLabel(name) }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+    ) {
+        TftChampionAvatar(
+            name = name,
+            cost = cost,
+            isCarry = isCarry,
+            stars = stars,
+            size = size,
+            environment = environment
+        )
+        Spacer(Modifier.height(1.dp))
+        Text(
+            text = cleanName,
+            fontSize = 9.sp,
+            fontWeight = if (isCarry) FontWeight.Bold else FontWeight.Medium,
+            color = if (isCarry) Color(0xFFFFD700) else Color(0xFFE6ECF5),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

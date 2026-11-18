@@ -150,6 +150,7 @@ import com.example.notifications.MetaUpdateNotifier
 import com.example.notifications.TftNotificationHelper
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
+import com.example.ui.components.TftChampionTile
 import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftItemIcon
 import com.example.ui.components.TftTraitChip
@@ -2347,29 +2348,13 @@ private fun OverlayCompLeftDetailPane(
             ) {
                 comp.coreUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        modifier = Modifier
-                            .background(
-                                if (isCarryUnit) BrushedGold.copy(alpha = 0.25f) else SlateElevated,
-                                RoundedCornerShape(6.dp)
-                            )
-                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                    ) {
-                        TftChampionAvatar(
-                            name = unit,
-                            cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
-                            isCarry = isCarryUnit,
-                            size = 16.dp,
-                            environment = comp.environment
-                        )
-                        Text(
-                            text = unit,
-                            fontSize = 10.sp,
-                            color = if (isCarryUnit) BrightGold else Color(0xFFE6ECF5)
-                        )
-                    }
+                    TftChampionTile(
+                        name = unit,
+                        cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
+                        isCarry = isCarryUnit,
+                        size = 26.dp,
+                        environment = comp.environment
+                    )
                 }
             }
 
@@ -2663,29 +2648,13 @@ private fun OverlayCompCard(
             ) {
                 comp.coreUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        modifier = Modifier
-                            .background(
-                                if (isCarryUnit) BrushedGold.copy(alpha = 0.25f) else SlateElevated,
-                                RoundedCornerShape(6.dp)
-                            )
-                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                    ) {
-                        TftChampionAvatar(
-                            name = unit,
-                            cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
-                            isCarry = isCarryUnit,
-                            size = 16.dp,
-                            environment = comp.environment
-                        )
-                        Text(
-                            text = unit,
-                            fontSize = 10.sp,
-                            color = if (isCarryUnit) BrightGold else Color(0xFFE6ECF5)
-                        )
-                    }
+                    TftChampionTile(
+                        name = unit,
+                        cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
+                        isCarry = isCarryUnit,
+                        size = 24.dp,
+                        environment = comp.environment
+                    )
                 }
             }
 

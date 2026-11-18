@@ -98,6 +98,7 @@ import com.example.ui.components.HextechPanelCard
 import com.example.ui.components.OfflineCacheStatusBanner
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
+import com.example.ui.components.TftChampionTile
 import com.example.ui.components.TftHexBoard
 import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftTraitChip
@@ -960,31 +961,13 @@ private fun MetaCompCard(
                 comp.coreUnits.forEach { unit ->
                     val isCarry = unit.equals(comp.carryName, ignoreCase = true)
                     val cost = placementCostByUnit[unit] ?: if (isCarry) 4 else 3
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isCarry) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                        border = if (isCarry) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            TftChampionAvatar(
-                                name = unit,
-                                cost = cost,
-                                isCarry = isCarry,
-                                size = 20.dp,
-                                environment = comp.environment
-                            )
-                            Text(
-                                text = unit,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (isCarry) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                fontWeight = if (isCarry) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
+                    TftChampionTile(
+                        name = unit,
+                        cost = cost,
+                        isCarry = isCarry,
+                        size = 30.dp,
+                        environment = comp.environment
+                    )
                 }
             }
 

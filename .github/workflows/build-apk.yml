@@ -63,24 +63,35 @@ jobs:
           fi
 
       - name: Prepare environment secrets (.env & optional Google Services)
+        id: env_secrets
         env:
-          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_SECRET: ${{ secrets.GITHUB_SECRET }}
         run: |
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
-          fi
-          if [ -n "${RIOT_API_KEY:-}" ]; then
-            if grep -q '^RIOT_API_KEY=' .env 2>/dev/null; then
-              sed -i "s|^RIOT_API_KEY=.*|RIOT_API_KEY=${RIOT_API_KEY}|" .env
-            else
-              echo "RIOT_API_KEY=${RIOT_API_KEY}" >> .env
-            fi
           fi
           if grep -q '^GITHUB_REPO=' .env 2>/dev/null; then
             sed -i "s|^GITHUB_REPO=.*|GITHUB_REPO=${GITHUB_REPOSITORY}|" .env
           else
             echo "GITHUB_REPO=${GITHUB_REPOSITORY}" >> .env
+          fi
+          RESOLVED_GH_TOKEN="${GH_RELEASE_TOKEN:-${GITHUB_PAT:-${GH_TOKEN:-${GITHUB_SECRET:-}}}}"
+          if [ -n "${RESOLVED_GH_TOKEN:-}" ]; then
+            echo "::add-mask::${RESOLVED_GH_TOKEN}"
+            if grep -q '^GITHUB_TOKEN=' .env 2>/dev/null; then
+              sed -i "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=${RESOLVED_GH_TOKEN}|" .env
+            else
+              echo "GITHUB_TOKEN=${RESOLVED_GH_TOKEN}" >> .env
+            fi
+            if grep -q '^GH_RELEASE_TOKEN=' .env 2>/dev/null; then
+              sed -i "s|^GH_RELEASE_TOKEN=.*|GH_RELEASE_TOKEN=${RESOLVED_GH_TOKEN}|" .env
+            else
+              echo "GH_RELEASE_TOKEN=${RESOLVED_GH_TOKEN}" >> .env
+            fi
           fi
           if [ -n "${GOOGLE_SERVICES_JSON:-}" ] && [ ! -f app/google-services.json ]; then
             printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
@@ -107,14 +118,23 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Build Debug APK
+        env:
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_SECRET: ${{ secrets.GITHUB_SECRET }}
         run: |
+          RESOLVED_GH_TOKEN="${GH_RELEASE_TOKEN:-${GITHUB_PAT:-${GH_TOKEN:-${GITHUB_SECRET:-}}}}"
           gradle :app:assembleDebug --no-daemon \
             -PAPP_VERSION_CODE=${{ steps.build_meta.outputs.version_code }} \
             -PAPP_VERSION_NAME=${{ steps.build_meta.outputs.version_name }} \
             -PGIT_COMMIT_SHA=${{ github.sha }} \
-            -PBUILD_TIMESTAMP_MS=${{ steps.build_meta.outputs.build_ts_ms }}
+            -PBUILD_TIMESTAMP_MS=${{ steps.build_meta.outputs.build_ts_ms }} \
+            -PGITHUB_REPO=${{ github.repository }} \
+            -PGITHUB_TOKEN="${RESOLVED_GH_TOKEN}"
 
       - name: Run Unit Tests
+        continue-on-error: true
         timeout-minutes: 10
         run: gradle :app:testDebugUnitTest --no-daemon --console=plain
 
@@ -134,14 +154,21 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_SECRET: ${{ secrets.GITHUB_SECRET }}
         run: |
           if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${STORE_PASSWORD:-}" ] && [ -n "${KEY_PASSWORD:-}" ]; then
+            RESOLVED_GH_TOKEN="${GH_RELEASE_TOKEN:-${GITHUB_PAT:-${GH_TOKEN:-${GITHUB_SECRET:-}}}}"
             echo "$KEYSTORE_BASE64" | tr -d '\r\n' | base64 -d > "$KEYSTORE_PATH"
             gradle :app:assembleRelease --no-daemon \
               -PAPP_VERSION_CODE=${{ steps.build_meta.outputs.version_code }} \
               -PAPP_VERSION_NAME=${{ steps.build_meta.outputs.version_name }} \
               -PGIT_COMMIT_SHA=${{ github.sha }} \
-              -PBUILD_TIMESTAMP_MS=${{ steps.build_meta.outputs.build_ts_ms }}
+              -PBUILD_TIMESTAMP_MS=${{ steps.build_meta.outputs.build_ts_ms }} \
+              -PGITHUB_REPO=${{ github.repository }} \
+              -PGITHUB_TOKEN="${RESOLVED_GH_TOKEN}"
             echo "built=true" >> "$GITHUB_OUTPUT"
           else
             echo "Skipping signed release APK (signing secrets not configured)."

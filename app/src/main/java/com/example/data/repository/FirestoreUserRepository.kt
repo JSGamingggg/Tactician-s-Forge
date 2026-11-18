@@ -4,11 +4,8 @@ import android.content.Context
 import com.example.R
 import com.example.data.model.FavoriteCompDoc
 import com.example.data.model.MetaComp
-import com.example.data.model.RiotPlatform
-import com.example.data.model.RiotRegion
 import com.example.data.model.TftEnvironment
 import com.example.data.model.ThemeMode
-import com.example.data.model.TrackedPlayerDoc
 import com.example.data.model.UserPreferencesDoc
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
@@ -78,33 +75,6 @@ class FirestoreUserRepository(
         )
     }
 
-    fun observeTrackedPlayers(userId: String): Flow<List<TrackedPlayerDoc>> = flow {
-        check(userId.isNotBlank() && auth.currentUser?.uid == userId) {
-            "Refusing unauthenticated Firestore query."
-        }
-        val path = "users/$userId/tracked_players"
-        emitAll(
-            db.collection("users").document(userId).collection("tracked_players")
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.toObjects(
-                        TrackedPlayerDoc::class.java,
-                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                    )
-                }
-                .catch { error ->
-                    val firestoreError = generateSequence(error) { it.cause }
-                        .filterIsInstance<FirebaseFirestoreException>()
-                        .firstOrNull()
-                    if (firestoreError == null && error is CancellationException) throw error
-                    val exceptionToLog = firestoreError ?: (error as? Exception)
-                    if (exceptionToLog != null && auth.currentUser?.uid == userId) {
-                        handleFirestoreError(exceptionToLog, OperationType.LIST, path)
-                    }
-                    throw error
-                }
-        )
-    }
 
     fun observePreferences(userId: String): Flow<UserPreferencesDoc?> = flow {
         check(userId.isNotBlank() && auth.currentUser?.uid == userId) {
@@ -236,72 +206,6 @@ class FirestoreUserRepository(
         }
     }
 
-    suspend fun saveTrackedPlayer(
-        puuid: String,
-        gameName: String,
-        tagLine: String,
-        region: RiotRegion,
-        platform: RiotPlatform,
-        lastTier: String,
-        lastLp: Long
-    ): Result<Unit> {
-        val docId = sanitizeDocId("${platform.code}_${gameName}_${tagLine}".lowercase())
-        var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tracked_players/$docId"
-        return try {
-            val uid = requireUserId()
-            val docRef = db.collection("users").document(uid).collection("tracked_players").document(docId)
-            docPath = docRef.path
-            val existing = docRef.get().await()
-            if (existing.exists()) {
-                docRef.update(
-                    mapOf(
-                        "gameName" to gameName.trim().take(32),
-                        "tagLine" to tagLine.trim().take(16),
-                        "region" to region.name,
-                        "platform" to platform.code,
-                        "lastTier" to lastTier.take(32),
-                        "lastLp" to lastLp.coerceIn(0L, 5000L),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
-            } else {
-                val doc = TrackedPlayerDoc(
-                    userId = uid,
-                    puuid = puuid,
-                    gameName = gameName,
-                    tagLine = tagLine,
-                    region = region.name,
-                    platform = platform.code,
-                    lastTier = lastTier,
-                    lastLp = lastLp
-                )
-                docRef.set(doc.toCreateMap(uid)).await()
-            }
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.WRITE, docPath)
-            Result.failure(e)
-        }
-    }
-
-    suspend fun removeTrackedPlayer(playerId: String): Result<Unit> {
-        val cleanId = sanitizeDocId(playerId)
-        var docPath = "users/${auth.currentUser?.uid ?: "unauthenticated"}/tracked_players/$cleanId"
-        return try {
-            val uid = requireUserId()
-            val docRef = db.collection("users").document(uid).collection("tracked_players").document(cleanId)
-            docPath = docRef.path
-            docRef.delete().await()
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, docPath)
-            Result.failure(e)
-        }
-    }
 
     suspend fun upsertPreferences(
         themeMode: ThemeMode,

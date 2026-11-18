@@ -447,11 +447,16 @@ fun AppUpdateSettingsCard(
     onOpenUpdateDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var editingRepo by remember(updateState.configuredRepo) {
         mutableStateOf(updateState.configuredRepo.isNullOrBlank())
     }
     var repoInput by remember(updateState.configuredRepo) {
         mutableStateOf(updateState.configuredRepo.orEmpty())
+    }
+    var tokenInput by remember(updateState.configuredToken) {
+        mutableStateOf(updateState.configuredToken.orEmpty())
     }
 
     HextechPanelCard(accentBorder = true, modifier = modifier) {
@@ -495,7 +500,7 @@ fun AppUpdateSettingsCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Edit,
-                            contentDescription = "Edit GitHub repository slug",
+                            contentDescription = "Edit GitHub repository and token",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp)
                         )
@@ -508,12 +513,23 @@ fun AppUpdateSettingsCard(
                     value = repoInput,
                     onValueChange = { repoInput = it },
                     label = { Text("GitHub Repository (owner/repo or URL)") },
-                    placeholder = { Text("username/tacticians-forge") },
+                    placeholder = { Text("JSGamingggg/Tactician-s-Forge") },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("github_repo_input")
+                )
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = { tokenInput = it },
+                    label = { Text("GitHub Token (Required only for Private repos)") },
+                    placeholder = { Text("github_pat_... or ghp_... (Contents: Read)") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("github_token_input")
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -521,8 +537,15 @@ fun AppUpdateSettingsCard(
                 ) {
                     Button(
                         onClick = {
-                            onSaveGithubRepo(repoInput)
-                            editingRepo = false
+                            scope.launch {
+                                AppUpdateCoordinator.saveGithubRepoSlug(
+                                    context = context,
+                                    rawInput = repoInput,
+                                    rawTokenInput = tokenInput
+                                )
+                                onSaveGithubRepo(repoInput)
+                                editingRepo = false
+                            }
                         },
                         modifier = Modifier
                             .weight(1f)
@@ -541,8 +564,9 @@ fun AppUpdateSettingsCard(
                     }
                 }
             } else {
+                val tokenStatus = if (updateState.hasGithubToken) " • Token Active (Private/Public)" else " • Public Mode"
                 Text(
-                    text = "Source: github.com/${updateState.configuredRepo}/releases",
+                    text = "Source: github.com/${updateState.configuredRepo}/releases$tokenStatus",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -673,11 +697,56 @@ fun AppUpdateSettingsCard(
                 }
 
                 is AppUpdateStatus.Error -> {
-                    Text(
-                        text = status.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = status.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        if (status.needsTokenOrPublicRepo && !editingRepo) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { editingRepo = true },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(40.dp)
+                                        .testTag("add_github_token_button")
+                                ) {
+                                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Add GitHub Token", style = MaterialTheme.typography.labelMedium)
+                                }
+                                if (!updateState.configuredRepo.isNullOrBlank()) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            runCatching {
+                                                context.startActivity(
+                                                    Intent(
+                                                        Intent.ACTION_VIEW,
+                                                        Uri.parse("https://github.com/${updateState.configuredRepo}/settings")
+                                                    )
+                                                )
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(40.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.OpenInNew,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Repo Settings", style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 AppUpdateStatus.RepoNotConfigured -> {

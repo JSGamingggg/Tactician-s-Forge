@@ -21,6 +21,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -45,7 +46,8 @@ data class GitHubReleaseInfo(
     val apkAssetId: Long,
     val apkDownloadUrl: String,
     val apkSizeBytes: Long,
-    val assetUpdatedAtMs: Long
+    val assetUpdatedAtMs: Long,
+    val apkApiAssetUrl: String = ""
 ) {
     val displayVersionLabel: String
         get() = when {
@@ -86,11 +88,17 @@ sealed interface AppUpdateStatus {
         val apkFilePath: String,
         val needsInstallPermission: Boolean
     ) : AppUpdateStatus
-    data class Error(val message: String, val release: GitHubReleaseInfo? = null) : AppUpdateStatus
+    data class Error(
+        val message: String,
+        val release: GitHubReleaseInfo? = null,
+        val needsTokenOrPublicRepo: Boolean = false
+    ) : AppUpdateStatus
 }
 
 data class AppUpdateUiState(
     val configuredRepo: String? = null,
+    val configuredToken: String? = null,
+    val hasGithubToken: Boolean = false,
     val installedVersionLabel: String = "v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
     val installedCommitShort: String? = BuildConfig.GIT_COMMIT_SHA.takeIf { it.isNotBlank() }?.take(7),
     val appUpdateAlertsEnabled: Boolean = true,
@@ -112,12 +120,23 @@ object GitHubReleaseParser {
     private val versionRegex = Regex("(?i)Version\\s*[:=]\\s*([0-9]+(?:\\.[0-9]+)+(?:[-+._A-Za-z0-9]*)?)")
     private val commitRegex = Regex("(?i)Commit\\s*[:=]\\s*([0-9a-f]{7,40})")
     private val semverTagRegex = Regex("^[vV]?([0-9]+(?:\\.[0-9]+)+)(?:[-+._A-Za-z0-9]*)?$")
+    private val htmlApkHrefRegex = Regex(
+        """href=["']([^"']*?/releases/download/([^/"']+)/([^"'?]+\.apk))["']""",
+        RegexOption.IGNORE_CASE
+    )
+    private val htmlTagHrefRegex = Regex(
+        """href=["'][^"']*?/releases/tag/([^"'?#]+)["']""",
+        RegexOption.IGNORE_CASE
+    )
 
     fun normalizeRepoSlug(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
         val trimmed = raw.trim()
         if (trimmed.equals("MY_GITHUB_OWNER_REPO", ignoreCase = true)) return null
         val cleaned = trimmed
+            .removePrefix("https://api.github.com/repos/")
+            .removePrefix("http://api.github.com/repos/")
+            .removePrefix("api.github.com/repos/")
             .removePrefix("https://github.com/")
             .removePrefix("http://github.com/")
             .removePrefix("github.com/")
@@ -127,6 +146,24 @@ object GitHubReleaseParser {
         if (segments.size < 2) return null
         val candidate = "${segments[0]}/${segments[1]}"
         return candidate.takeIf { repoSlugRegex.matches(it) }
+    }
+
+    fun normalizeGithubToken(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+            .removePrefix("Bearer ")
+            .removePrefix("bearer ")
+            .removePrefix("token ")
+            .removePrefix("Token ")
+            .trim()
+        if (trimmed.isBlank() ||
+            trimmed.equals("MY_GITHUB_TOKEN", ignoreCase = true) ||
+            trimmed.equals("MY_GH_RELEASE_TOKEN", ignoreCase = true) ||
+            trimmed.equals("null", ignoreCase = true)
+        ) {
+            return null
+        }
+        return trimmed
     }
 
     fun parseIsoTimestampMs(raw: String?): Long {
@@ -171,7 +208,10 @@ object GitHubReleaseParser {
                     val asset = assets.optJSONObject(aIdx) ?: continue
                     val assetName = asset.optString("name", "")
                     val downloadUrl = asset.optString("browser_download_url", "")
-                    if (assetName.endsWith(".apk", ignoreCase = true) && downloadUrl.isNotBlank()) {
+                    val apiAssetUrl = asset.optString("url", "")
+                    if (assetName.endsWith(".apk", ignoreCase = true) &&
+                        (downloadUrl.isNotBlank() || apiAssetUrl.isNotBlank())
+                    ) {
                         add(asset)
                     }
                 }
@@ -193,6 +233,10 @@ object GitHubReleaseParser {
             val tagVersion = semverTagRegex.find(tagName)?.groupValues?.getOrNull(1)
             val parsedVersionName = bodyVersion ?: tagVersion
             val parsedCommitSha = commitRegex.find(body)?.groupValues?.getOrNull(1)?.lowercase(Locale.US)
+            val assetId = selectedAsset.optLong("id", 0L)
+            val apiAssetUrl = selectedAsset.optString("url", "").trim()
+            val browserDownloadUrl = selectedAsset.optString("browser_download_url", "").trim()
+                .ifBlank { apiAssetUrl }
 
             results += GitHubReleaseInfo(
                 releaseId = obj.optLong("id", 0L),
@@ -207,10 +251,11 @@ object GitHubReleaseParser {
                 parsedCommitSha = parsedCommitSha,
                 isPrerelease = obj.optBoolean("prerelease", false),
                 apkAssetName = selectedAsset.optString("name", "app.apk"),
-                apkAssetId = selectedAsset.optLong("id", 0L),
-                apkDownloadUrl = selectedAsset.optString("browser_download_url", ""),
+                apkAssetId = assetId,
+                apkDownloadUrl = browserDownloadUrl,
                 apkSizeBytes = selectedAsset.optLong("size", 0L),
-                assetUpdatedAtMs = assetUpdatedAtMs
+                assetUpdatedAtMs = assetUpdatedAtMs,
+                apkApiAssetUrl = apiAssetUrl
             )
         }
 
@@ -219,6 +264,78 @@ object GitHubReleaseParser {
                 .thenByDescending { maxOf(it.assetUpdatedAtMs, it.publishedAtMs) }
                 .thenByDescending { it.releaseId }
         )
+    }
+
+    /**
+     * Parses GitHub web releases HTML (and optional expanded_assets fragment) as a fallback
+     * when api.github.com is rate-limited on a public repository.
+     */
+    fun parseGitHubHtmlReleasesFallback(
+        releasesHtml: String,
+        expandedAssetsHtml: String,
+        repoSlug: String,
+        isDebugBuild: Boolean
+    ): List<GitHubReleaseInfo> {
+        val combinedHtml = "$releasesHtml\n$expandedAssetsHtml"
+        val apkMatches = htmlApkHrefRegex.findAll(combinedHtml).toList()
+        if (apkMatches.isEmpty()) return emptyList()
+
+        val chosenMatch = if (isDebugBuild) {
+            apkMatches.firstOrNull { it.groupValues[3].contains("debug", ignoreCase = true) }
+                ?: apkMatches.first()
+        } else {
+            apkMatches.firstOrNull {
+                val n = it.groupValues[3]
+                n.contains("release", ignoreCase = true) && !n.contains("unsigned", ignoreCase = true)
+            } ?: apkMatches.first()
+        }
+
+        val rawHref = chosenMatch.groupValues[1]
+        val tagName = chosenMatch.groupValues[2]
+        val assetName = chosenMatch.groupValues[3]
+        val fullDownloadUrl = if (rawHref.startsWith("http")) {
+            rawHref
+        } else {
+            "https://github.com/${rawHref.trimStart('/')}"
+        }
+
+        val strippedBody = releasesHtml.replace(Regex("<[^>]+>"), " ")
+        val parsedVersionCode = buildCodeRegex.find(strippedBody)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val bodyVersion = versionRegex.find(strippedBody)?.groupValues?.getOrNull(1)
+        val tagVersion = semverTagRegex.find(tagName)?.groupValues?.getOrNull(1)
+        val parsedVersionName = bodyVersion ?: tagVersion
+        val parsedCommitSha = commitRegex.find(strippedBody)?.groupValues?.getOrNull(1)?.lowercase(Locale.US)
+        val syntheticId = kotlin.math.abs("$tagName/$assetName/${parsedVersionCode ?: 0}".hashCode().toLong()).coerceAtLeast(1L)
+
+        return listOf(
+            GitHubReleaseInfo(
+                releaseId = syntheticId,
+                tagName = tagName,
+                releaseTitle = "Tactician's Forge ${parsedVersionName?.let { "v$it" } ?: tagName}",
+                body = buildString {
+                    parsedVersionName?.let { appendLine("Version: $it") }
+                    parsedVersionCode?.let { appendLine("BuildCode: $it") }
+                    parsedCommitSha?.let { appendLine("Commit: $it") }
+                }.trim(),
+                htmlUrl = "https://github.com/$repoSlug/releases/tag/$tagName",
+                publishedAtIso = "",
+                publishedAtMs = 0L,
+                parsedVersionCode = parsedVersionCode,
+                parsedVersionName = parsedVersionName,
+                parsedCommitSha = parsedCommitSha,
+                isPrerelease = false,
+                apkAssetName = assetName,
+                apkAssetId = syntheticId,
+                apkDownloadUrl = fullDownloadUrl,
+                apkSizeBytes = 0L,
+                assetUpdatedAtMs = 0L,
+                apkApiAssetUrl = ""
+            )
+        )
+    }
+
+    fun extractFirstReleaseTagFromHtml(releasesHtml: String): String? {
+        return htmlTagHrefRegex.find(releasesHtml)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
     }
 
     private fun selectMatchingApkAsset(
@@ -326,19 +443,44 @@ object AppUpdateCoordinator {
     suspend fun resolveConfiguredRepo(prefsStore: LocalPreferencesStore): String? {
         val override = GitHubReleaseParser.normalizeRepoSlug(prefsStore.getGithubRepoOverride())
         if (override != null) return override
-        val defaultSlug = GitHubReleaseParser.normalizeRepoSlug(BuildConfig.GITHUB_REPO)
+        val resolvedBuildRepo = GitHubReleaseParser.normalizeRepoSlug(
+            runCatching { BuildConfig.RESOLVED_GITHUB_REPO }.getOrNull()
+        )
+        if (resolvedBuildRepo != null) return resolvedBuildRepo
+        val defaultSlug = GitHubReleaseParser.normalizeRepoSlug(
+            runCatching { BuildConfig.GITHUB_REPO }.getOrNull()
+        )
         if (defaultSlug != null) return defaultSlug
-        return "js96-mk/tacticians-forge"
+        return "JSGamingggg/Tactician-s-Forge"
+    }
+
+    suspend fun resolveConfiguredToken(prefsStore: LocalPreferencesStore): String? {
+        val override = GitHubReleaseParser.normalizeGithubToken(prefsStore.getGithubTokenOverride())
+        if (override != null) return override
+        val fromResolvedBuildToken = GitHubReleaseParser.normalizeGithubToken(
+            runCatching { BuildConfig.RESOLVED_GITHUB_TOKEN }.getOrNull()
+        )
+        if (fromResolvedBuildToken != null) return fromResolvedBuildToken
+        val fromGithubToken = GitHubReleaseParser.normalizeGithubToken(
+            runCatching { BuildConfig.GITHUB_TOKEN }.getOrNull()
+        )
+        if (fromGithubToken != null) return fromGithubToken
+        return GitHubReleaseParser.normalizeGithubToken(
+            runCatching { BuildConfig.GH_RELEASE_TOKEN }.getOrNull()
+        )
     }
 
     suspend fun refreshSettingsSnapshot(context: Context) {
         val prefsStore = LocalPreferencesStore(context.applicationContext)
         val repo = resolveConfiguredRepo(prefsStore)
+        val token = resolveConfiguredToken(prefsStore)
         val alertsEnabled = prefsStore.isAppUpdateAlertsEnabled()
         val installed = currentInstalledInfo(context)
         _uiState.update { state ->
             state.copy(
                 configuredRepo = repo,
+                configuredToken = token,
+                hasGithubToken = !token.isNullOrBlank(),
                 installedVersionLabel = "v${installed.versionName} (Build ${installed.versionCode})",
                 installedCommitShort = installed.gitCommitSha.takeIf { it.isNotBlank() }?.take(7),
                 appUpdateAlertsEnabled = alertsEnabled,
@@ -351,10 +493,18 @@ object AppUpdateCoordinator {
         }
     }
 
-    suspend fun saveGithubRepoSlug(context: Context, rawInput: String): String? {
+    suspend fun saveGithubRepoSlug(
+        context: Context,
+        rawInput: String,
+        rawTokenInput: String? = null
+    ): String? {
         val normalized = GitHubReleaseParser.normalizeRepoSlug(rawInput)
         val prefsStore = LocalPreferencesStore(context.applicationContext)
         prefsStore.setGithubRepoOverride(normalized.orEmpty())
+        if (rawTokenInput != null) {
+            val cleanToken = GitHubReleaseParser.normalizeGithubToken(rawTokenInput).orEmpty()
+            prefsStore.setGithubTokenOverride(cleanToken)
+        }
         refreshSettingsSnapshot(context)
         return normalized
     }
@@ -388,6 +538,68 @@ object AppUpdateCoordinator {
         _uiState.update { it.copy(showPromptModal = false) }
     }
 
+    private data class ReleaseFetchOutcome(
+        val releases: List<GitHubReleaseInfo>,
+        val needsTokenOrPublicRepo: Boolean = false
+    )
+
+    private fun executeApiReleasesCall(
+        httpClient: OkHttpClient,
+        repoSlug: String,
+        versionName: String,
+        githubToken: String?
+    ): Response {
+        val reqBuilder = Request.Builder()
+            .url("https://api.github.com/repos/$repoSlug/releases?per_page=8")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "TacticiansForge-Android/$versionName")
+            .get()
+        if (!githubToken.isNullOrBlank()) {
+            reqBuilder.header("Authorization", "Bearer $githubToken")
+        }
+        return httpClient.newCall(reqBuilder.build()).execute()
+    }
+
+    private fun tryHtmlReleasesFallback(
+        httpClient: OkHttpClient,
+        repoSlug: String,
+        versionName: String,
+        isDebugBuild: Boolean
+    ): List<GitHubReleaseInfo>? {
+        return runCatching {
+            val mainReq = Request.Builder()
+                .url("https://github.com/$repoSlug/releases")
+                .header("Accept", "text/html,application/xhtml+xml")
+                .header("User-Agent", "TacticiansForge-Android/$versionName")
+                .get()
+                .build()
+            val releasesHtml = httpClient.newCall(mainReq).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                resp.body?.string().orEmpty()
+            }
+            val firstTag = GitHubReleaseParser.extractFirstReleaseTagFromHtml(releasesHtml) ?: "latest-apk"
+            val assetsReq = Request.Builder()
+                .url("https://github.com/$repoSlug/releases/expanded_assets/$firstTag")
+                .header("Accept", "text/html,application/xhtml+xml")
+                .header("User-Agent", "TacticiansForge-Android/$versionName")
+                .get()
+                .build()
+            val expandedHtml = runCatching {
+                httpClient.newCall(assetsReq).execute().use { resp ->
+                    if (resp.isSuccessful) resp.body?.string().orEmpty() else ""
+                }
+            }.getOrDefault("")
+
+            GitHubReleaseParser.parseGitHubHtmlReleasesFallback(
+                releasesHtml = releasesHtml,
+                expandedAssetsHtml = expandedHtml,
+                repoSlug = repoSlug,
+                isDebugBuild = isDebugBuild
+            )
+        }.getOrNull()
+    }
+
     suspend fun checkForUpdates(
         context: Context,
         userInitiated: Boolean = false,
@@ -410,6 +622,7 @@ object AppUpdateCoordinator {
 
         val prefsStore = LocalPreferencesStore(appContext)
         val repoSlug = resolveConfiguredRepo(prefsStore)
+        val githubToken = resolveConfiguredToken(prefsStore)
         val alertsEnabled = prefsStore.isAppUpdateAlertsEnabled()
         val installed = currentInstalledInfo(appContext)
         val installedLabel = "v${installed.versionName} (Build ${installed.versionCode})"
@@ -418,6 +631,8 @@ object AppUpdateCoordinator {
             _uiState.update {
                 it.copy(
                     configuredRepo = null,
+                    configuredToken = githubToken,
+                    hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
                     status = AppUpdateStatus.RepoNotConfigured
@@ -431,6 +646,8 @@ object AppUpdateCoordinator {
             _uiState.update {
                 it.copy(
                     configuredRepo = repoSlug,
+                    configuredToken = githubToken,
+                    hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
                     status = AppUpdateStatus.Checking
@@ -438,20 +655,54 @@ object AppUpdateCoordinator {
             }
         }
 
+        var needsTokenHint = false
         val releasesResult = withContext(Dispatchers.IO) {
             runCatching {
-                val req = Request.Builder()
-                    .url("https://api.github.com/repos/$repoSlug/releases?per_page=8")
-                    .header("Accept", "application/vnd.github+json")
-                    .header("User-Agent", "TacticiansForge-Android/${installed.versionName}")
-                    .get()
-                    .build()
-                httpClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        throw IllegalStateException("GitHub API returned HTTP ${resp.code}")
+                var response = executeApiReleasesCall(httpClient, repoSlug, installed.versionName, githubToken)
+                // If token was rejected with 401 on a potentially public repo, retry once without token
+                if (response.code == 401 && !githubToken.isNullOrBlank()) {
+                    response.close()
+                    response = executeApiReleasesCall(httpClient, repoSlug, installed.versionName, null)
+                }
+
+                response.use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string().orEmpty()
+                        return@runCatching GitHubReleaseParser.parseGitHubReleases(body, installed.isDebugBuild)
                     }
-                    val body = resp.body?.string().orEmpty()
-                    GitHubReleaseParser.parseGitHubReleases(body, installed.isDebugBuild)
+
+                    // Try HTML releases fallback in case api.github.com is rate-limited on a public repo
+                    val htmlFallback = tryHtmlReleasesFallback(
+                        httpClient = httpClient,
+                        repoSlug = repoSlug,
+                        versionName = installed.versionName,
+                        isDebugBuild = installed.isDebugBuild
+                    )
+                    if (htmlFallback != null) {
+                        return@runCatching htmlFallback
+                    }
+
+                    when (resp.code) {
+                        404 -> {
+                            needsTokenHint = true
+                            if (githubToken.isNullOrBlank()) {
+                                throw IllegalStateException(
+                                    "GitHub returned HTTP 404 for '$repoSlug'. Private GitHub repositories require a Personal Access Token (Contents: Read) — tap 'Add GitHub Token' below, or change '$repoSlug' visibility to Public in GitHub Settings."
+                                )
+                            } else {
+                                throw IllegalStateException(
+                                    "GitHub returned HTTP 404 for '$repoSlug' with the current token. Ensure your token has 'Contents: Read' permission for '$repoSlug' (or 'repo' scope)."
+                                )
+                            }
+                        }
+                        401, 403 -> {
+                            needsTokenHint = true
+                            throw IllegalStateException(
+                                "GitHub API returned HTTP ${resp.code} for '$repoSlug'. Add a GitHub Personal Access Token (Contents: Read) below to authenticate."
+                            )
+                        }
+                        else -> throw IllegalStateException("GitHub API returned HTTP ${resp.code}")
+                    }
                 }
             }
         }
@@ -460,10 +711,15 @@ object AppUpdateCoordinator {
             _uiState.update {
                 it.copy(
                     configuredRepo = repoSlug,
+                    configuredToken = githubToken,
+                    hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
-                    status = if (userInitiated) {
-                        AppUpdateStatus.Error(err.localizedMessage ?: "Failed to reach GitHub Releases")
+                    status = if (userInitiated || needsTokenHint) {
+                        AppUpdateStatus.Error(
+                            message = err.localizedMessage ?: "Failed to reach GitHub Releases",
+                            needsTokenOrPublicRepo = needsTokenHint
+                        )
                     } else if (activeStatus is AppUpdateStatus.UpdateAvailable) {
                         activeStatus
                     } else {
@@ -498,6 +754,8 @@ object AppUpdateCoordinator {
             _uiState.update {
                 it.copy(
                     configuredRepo = repoSlug,
+                    configuredToken = githubToken,
+                    hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
                     status = AppUpdateStatus.UpdateAvailable(candidate),
@@ -515,6 +773,8 @@ object AppUpdateCoordinator {
             _uiState.update {
                 it.copy(
                     configuredRepo = repoSlug,
+                    configuredToken = githubToken,
+                    hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
                     status = AppUpdateStatus.UpToDate(
@@ -553,6 +813,10 @@ object AppUpdateCoordinator {
         httpClient: OkHttpClient = RiotApiClientFactory.publicOkHttp
     ) = downloadMutex.withLock {
         val appContext = context.applicationContext
+        val prefsStore = LocalPreferencesStore(appContext)
+        val repoSlug = resolveConfiguredRepo(prefsStore)
+        val githubToken = resolveConfiguredToken(prefsStore)
+
         _uiState.update {
             it.copy(
                 status = AppUpdateStatus.Downloading(
@@ -574,13 +838,37 @@ object AppUpdateCoordinator {
                 val partFile = updatesDir.resolve("tacticians-forge-${release.apkAssetId}.apk.part")
                 val finalApk = updatesDir.resolve("tacticians-forge-${release.apkAssetId}.apk")
 
-                val request = Request.Builder()
-                    .url(release.apkDownloadUrl)
+                // Private GitHub repositories require downloading release assets via the GitHub API asset URL
+                // with Accept: application/octet-stream and Authorization: Bearer <token>.
+                val apiAssetEndpoint = release.apkApiAssetUrl.ifBlank {
+                    if (!repoSlug.isNullOrBlank() && release.apkAssetId > 0L) {
+                        "https://api.github.com/repos/$repoSlug/releases/assets/${release.apkAssetId}"
+                    } else ""
+                }
+
+                val useApiAssetStream = (!githubToken.isNullOrBlank() && apiAssetEndpoint.isNotBlank()) ||
+                    release.apkDownloadUrl.contains("api.github.com/repos/", ignoreCase = true)
+
+                val primaryUrl = if (useApiAssetStream && apiAssetEndpoint.isNotBlank()) {
+                    apiAssetEndpoint
+                } else {
+                    release.apkDownloadUrl
+                }
+
+                val reqBuilder = Request.Builder()
+                    .url(primaryUrl)
                     .header("User-Agent", "TacticiansForge-Android/${BuildConfig.VERSION_NAME}")
                     .get()
-                    .build()
 
-                httpClient.newCall(request).execute().use { response ->
+                if (useApiAssetStream) {
+                    reqBuilder.header("Accept", "application/octet-stream")
+                    reqBuilder.header("X-GitHub-Api-Version", "2022-11-28")
+                    if (!githubToken.isNullOrBlank()) {
+                        reqBuilder.header("Authorization", "Bearer $githubToken")
+                    }
+                }
+
+                httpClient.newCall(reqBuilder.build()).execute().use { response ->
                     if (!response.isSuccessful) {
                         throw IllegalStateException("Download failed with HTTP ${response.code}")
                     }

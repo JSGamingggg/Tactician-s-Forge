@@ -24,11 +24,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PersonSearch
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.MilitaryTech
 import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.PersonSearch
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
@@ -74,7 +72,6 @@ import com.example.data.model.ThemeMode
 import com.example.data.repository.FirestoreUserRepository
 import com.example.data.repository.LocalPreferencesStore
 import com.example.data.repository.MetaRepository
-import com.example.data.repository.RiotTftRepository
 import com.example.notifications.TftNotificationHelper
 import com.example.overlay.OverlayController
 import com.example.ui.auth.GoogleAuthHelper
@@ -84,10 +81,8 @@ import com.example.ui.screens.AuthWelcomeScreen
 import com.example.ui.screens.ChampionTierListScreen
 import com.example.ui.screens.MetaSnapshotsScreen
 import com.example.ui.screens.PatchAlertsScreen
-import com.example.ui.screens.PlayerStatsScreen
 import com.example.ui.theme.TacticiansForgeTheme
 import com.example.ui.viewmodel.MainViewModel
-import com.example.ui.viewmodel.PlayerViewModel
 import com.example.update.AppUpdateStatus
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
@@ -108,7 +103,6 @@ enum class AppTab(
 ) {
     META("meta", R.string.nav_meta, Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
     TIERS("tiers", R.string.nav_tiers, Icons.Filled.MilitaryTech, Icons.Outlined.MilitaryTech),
-    STATS("stats", R.string.nav_stats, Icons.Filled.PersonSearch, Icons.Outlined.PersonSearch),
     ALERTS("alerts", R.string.nav_alerts, Icons.Filled.Notifications, Icons.Outlined.Notifications)
 }
 
@@ -261,20 +255,6 @@ private fun AuthenticatedOrGuestWorkspace(
         }
     )
 
-    val playerViewModel: PlayerViewModel = viewModel(
-        key = "player_$sessionKey",
-        factory = viewModelFactory {
-            initializer {
-                val app = checkNotNull(this[APPLICATION_KEY])
-                PlayerViewModel(
-                    currentUserId = uid,
-                    riotRepo = RiotTftRepository(),
-                    localStore = LocalPreferencesStore(app),
-                    firestoreRepo = FirestoreUserRepository(app)
-                )
-            }
-        }
-    )
 
     val themeMode by mainViewModel.themeMode.collectAsStateWithLifecycle()
     val environment by mainViewModel.selectedEnvironment.collectAsStateWithLifecycle()
@@ -295,10 +275,6 @@ private fun AuthenticatedOrGuestWorkspace(
         appUpdateState.status is AppUpdateStatus.Downloading ||
         appUpdateState.status is AppUpdateStatus.ReadyToInstall
 
-    val lookupState by playerViewModel.lookupState.collectAsStateWithLifecycle()
-    val selectedPlatform by playerViewModel.selectedPlatform.collectAsStateWithLifecycle()
-    val trackedPlayers by playerViewModel.trackedPlayers.collectAsStateWithLifecycle()
-    val selectedMatch by playerViewModel.selectedMatch.collectAsStateWithLifecycle()
     val isOverlayRunning by OverlayController.isRunning.collectAsStateWithLifecycle()
 
     var currentTab by rememberSaveable {
@@ -536,20 +512,7 @@ private fun AuthenticatedOrGuestWorkspace(
                                         patches = patchFeed,
                                         modifier = contentModifier
                                     )
-                                    AppTab.STATS -> PlayerStatsScreen(
-                                        lookupState = lookupState,
-                                        selectedPlatform = selectedPlatform,
-                                        isApiKeyConfigured = playerViewModel.isApiKeyConfigured,
-                                        trackedPlayers = trackedPlayers,
-                                        selectedMatch = selectedMatch,
-                                        onSelectPlatform = playerViewModel::selectPlatform,
-                                        onSearchPlayer = playerViewModel::searchPlayer,
-                                        onBookmarkPlayer = playerViewModel::bookmarkCurrentPlayer,
-                                        onRemoveTrackedPlayer = playerViewModel::removeTrackedPlayer,
-                                        onOpenMatchAnalysis = playerViewModel::openMatchAnalysis,
-                                        onDismissMatchAnalysis = playerViewModel::closeMatchAnalysis,
-                                        modifier = contentModifier
-                                    )
+
                                     AppTab.ALERTS -> PatchAlertsScreen(
                                         environment = environment,
                                         onSelectEnvironment = mainViewModel::setEnvironment,

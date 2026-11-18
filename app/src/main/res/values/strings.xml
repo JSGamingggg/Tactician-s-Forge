@@ -3,14 +3,13 @@
     <string name="app_tagline">Set 18 Enchanted Wilds Tactical Companion</string>
     <string name="nav_meta">Meta</string>
     <string name="nav_tiers">Tiers</string>
-    <string name="nav_stats">Stats</string>
     <string name="nav_alerts">Alerts</string>
     <string name="env_live">LIVE</string>
     <string name="env_pbe">PBE</string>
     <string name="sign_in_google">Sign in with Google</string>
     <string name="explore_as_guest">Explore as Guest</string>
     <string name="sign_out">Sign out</string>
-    <string name="cloud_sync_prompt">Sync favorites &amp; Riot IDs across devices</string>
+    <string name="cloud_sync_prompt">Sync favorites &amp; pinned comps across devices</string>
     <string name="guest_mode_label">Guest Mode (Offline Cache Ready)</string>
     <string name="channel_patch_updates_name">Patch &amp; Balance Updates</string>
     <string name="channel_patch_updates_desc">Immediate alerts for new LIVE and PBE game patches and balance hotfixes.</string>

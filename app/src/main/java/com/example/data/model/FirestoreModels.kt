@@ -69,34 +69,6 @@ data class FavoriteCompDoc(
     )
 }
 
-@Keep
-@IgnoreExtraProperties
-data class TrackedPlayerDoc(
-    @DocumentId val id: String = "",
-    val userId: String = "",
-    val puuid: String = "",
-    val gameName: String = "",
-    val tagLine: String = "",
-    val region: String = "AMERICAS",
-    val platform: String = "NA1",
-    val lastTier: String = "UNRANKED",
-    val lastLp: Long = 0L,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
-) {
-    fun toCreateMap(uid: String): Map<String, Any> = mapOf(
-        "userId" to uid,
-        "puuid" to puuid.take(128),
-        "gameName" to gameName.trim().take(32),
-        "tagLine" to tagLine.trim().take(16),
-        "region" to RiotRegion.fromRaw(region).name,
-        "platform" to RiotPlatform.fromRaw(platform).code,
-        "lastTier" to lastTier.take(32),
-        "lastLp" to lastLp.coerceIn(0L, 5000L),
-        "createdAt" to FieldValue.serverTimestamp(),
-        "updatedAt" to FieldValue.serverTimestamp()
-    )
-}
 
 @Keep
 @IgnoreExtraProperties

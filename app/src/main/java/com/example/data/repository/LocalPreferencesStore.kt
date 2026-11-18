@@ -9,13 +9,9 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.FavoriteCompDoc
-import com.example.data.model.RiotPlatform
-import com.example.data.model.RiotRegion
 import com.example.data.model.TftEnvironment
 import com.example.data.model.ThemeMode
-import com.example.data.model.TrackedPlayerDoc
 import com.example.data.model.UserPreferencesDoc
-import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -25,7 +21,6 @@ import kotlinx.coroutines.flow.map
 
 private val Context.tftDataStore: DataStore<Preferences> by preferencesDataStore(name = "tacticians_forge_prefs")
 
-@JsonClass(generateAdapter = true)
 data class OverlayPinSnapshot(
     val compId: String,
     val environment: String,
@@ -38,7 +33,6 @@ data class OverlayPinSnapshot(
     val notes: String = ""
 )
 
-@JsonClass(generateAdapter = true)
 data class LocalFavoriteRecord(
     val compId: String,
     val environment: String,
@@ -50,18 +44,6 @@ data class LocalFavoriteRecord(
     val hexPositions: List<String>,
     val pinnedToOverlay: Boolean,
     val notes: String? = null
-)
-
-@JsonClass(generateAdapter = true)
-data class LocalTrackedPlayerRecord(
-    val playerId: String,
-    val puuid: String,
-    val gameName: String,
-    val tagLine: String,
-    val region: String,
-    val platform: String,
-    val lastTier: String,
-    val lastLp: Long
 )
 
 class LocalPreferencesStore(context: Context) {
@@ -84,6 +66,7 @@ class LocalPreferencesStore(context: Context) {
         val LOCAL_PLAYERS_JSON = stringPreferencesKey("local_players_json")
         val IS_GUEST_MODE = booleanPreferencesKey("is_guest_mode")
         val GITHUB_REPO_OVERRIDE = stringPreferencesKey("github_repo_override")
+        val GITHUB_TOKEN_OVERRIDE = stringPreferencesKey("github_token_override")
         val APP_UPDATE_ALERTS_ENABLED = booleanPreferencesKey("app_update_alerts_enabled")
         val LAST_NOTIFIED_APP_RELEASE_KEY = stringPreferencesKey("last_notified_app_release_key")
         val LAST_INSTALLED_APK_ASSET_ID = longPreferencesKey("last_installed_apk_asset_id")
@@ -136,23 +119,6 @@ class LocalPreferencesStore(context: Context) {
         }
     }
 
-    val localTrackedPlayersFlow: Flow<List<TrackedPlayerDoc>> = appContext.tftDataStore.data.map { prefs ->
-        val raw = prefs[Keys.LOCAL_PLAYERS_JSON] ?: return@map emptyList()
-        val parsed = runCatching { localPlayerAdapter.fromJson(raw) }.getOrNull().orEmpty()
-        parsed.map {
-            TrackedPlayerDoc(
-                id = it.playerId,
-                userId = "local",
-                puuid = it.puuid,
-                gameName = it.gameName,
-                tagLine = it.tagLine,
-                region = it.region,
-                platform = it.platform,
-                lastTier = it.lastTier,
-                lastLp = it.lastLp
-            )
-        }
-    }
 
     suspend fun updatePreferences(
         themeMode: ThemeMode? = null,
@@ -221,46 +187,6 @@ class LocalPreferencesStore(context: Context) {
         }
     }
 
-    suspend fun saveLocalTrackedPlayer(
-        playerId: String,
-        puuid: String,
-        gameName: String,
-        tagLine: String,
-        region: RiotRegion,
-        platform: RiotPlatform,
-        lastTier: String,
-        lastLp: Long
-    ) {
-        appContext.tftDataStore.edit { prefs ->
-            val current = prefs[Keys.LOCAL_PLAYERS_JSON]?.let {
-                runCatching { localPlayerAdapter.fromJson(it) }.getOrNull()
-            }.orEmpty().toMutableList()
-            current.removeAll { it.playerId == playerId }
-            current.add(
-                0,
-                LocalTrackedPlayerRecord(
-                    playerId = playerId,
-                    puuid = puuid,
-                    gameName = gameName,
-                    tagLine = tagLine,
-                    region = region.name,
-                    platform = platform.code,
-                    lastTier = lastTier,
-                    lastLp = lastLp
-                )
-            )
-            prefs[Keys.LOCAL_PLAYERS_JSON] = localPlayerAdapter.toJson(current)
-        }
-    }
-
-    suspend fun removeLocalTrackedPlayer(playerId: String) {
-        appContext.tftDataStore.edit { prefs ->
-            val current = prefs[Keys.LOCAL_PLAYERS_JSON]?.let {
-                runCatching { localPlayerAdapter.fromJson(it) }.getOrNull()
-            }.orEmpty().filterNot { it.playerId == playerId }
-            prefs[Keys.LOCAL_PLAYERS_JSON] = localPlayerAdapter.toJson(current)
-        }
-    }
 
     suspend fun getNotificationSnapshot(): UserPreferencesDoc = preferencesFlow.first()
 
@@ -306,6 +232,20 @@ class LocalPreferencesStore(context: Context) {
                 prefs.remove(Keys.GITHUB_REPO_OVERRIDE)
             } else {
                 prefs[Keys.GITHUB_REPO_OVERRIDE] = trimmed
+            }
+        }
+    }
+
+    suspend fun getGithubTokenOverride(): String? =
+        appContext.tftDataStore.data.first()[Keys.GITHUB_TOKEN_OVERRIDE]?.takeIf { it.isNotBlank() }
+
+    suspend fun setGithubTokenOverride(tokenOrEmpty: String) {
+        appContext.tftDataStore.edit { prefs ->
+            val trimmed = tokenOrEmpty.trim()
+            if (trimmed.isBlank()) {
+                prefs.remove(Keys.GITHUB_TOKEN_OVERRIDE)
+            } else {
+                prefs[Keys.GITHUB_TOKEN_OVERRIDE] = trimmed
             }
         }
     }
@@ -387,10 +327,6 @@ class LocalPreferencesStore(context: Context) {
         private val localFavAdapter by lazy {
             val type = Types.newParameterizedType(List::class.java, LocalFavoriteRecord::class.java)
             sharedMoshi.adapter<List<LocalFavoriteRecord>>(type)
-        }
-        private val localPlayerAdapter by lazy {
-            val type = Types.newParameterizedType(List::class.java, LocalTrackedPlayerRecord::class.java)
-            sharedMoshi.adapter<List<LocalTrackedPlayerRecord>>(type)
         }
     }
 }

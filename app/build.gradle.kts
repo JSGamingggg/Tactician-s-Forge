@@ -1,9 +1,10 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Properties
 
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
-  alias(libs.plugins.google.devtools.ksp)
+  // alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.secrets)
   alias(libs.plugins.google.services)
 }
@@ -23,6 +24,26 @@ android {
       .orEmpty()
     val ciBuildTimestampMs = (project.findProperty("BUILD_TIMESTAMP_MS") as String?)?.toLongOrNull() ?: 0L
 
+    val envProps = Properties().apply {
+      val envFile = rootProject.file(".env")
+      if (envFile.exists()) {
+        envFile.inputStream().use { load(it) }
+      }
+    }
+    fun resolveBuildSecret(vararg keys: String, fallback: String = ""): String {
+      for (k in keys) {
+        val fromProp = (project.findProperty(k) as String?)?.trim()?.removeSurrounding("\"")
+        if (!fromProp.isNullOrBlank() && !fromProp.startsWith("MY_")) return fromProp
+        val fromEnvFile = envProps.getProperty(k)?.trim()?.removeSurrounding("\"")
+        if (!fromEnvFile.isNullOrBlank() && !fromEnvFile.startsWith("MY_")) return fromEnvFile
+        val fromSysEnv = System.getenv(k)?.trim()?.removeSurrounding("\"")
+        if (!fromSysEnv.isNullOrBlank() && !fromSysEnv.startsWith("MY_")) return fromSysEnv
+      }
+      return fallback
+    }
+    val resolvedGithubRepo = resolveBuildSecret("GITHUB_REPO", "GITHUB_REPOSITORY", fallback = "JSGamingggg/Tactician-s-Forge")
+    val resolvedGithubToken = resolveBuildSecret("GITHUB_TOKEN", "GH_RELEASE_TOKEN", "GITHUB_PAT", "GH_TOKEN", "GITHUB_SECRET")
+
     applicationId = "com.aistudio.tftforge.kxmzpq"
     minSdk = 24
     targetSdk = 36
@@ -31,6 +52,8 @@ android {
 
     buildConfigField("String", "GIT_COMMIT_SHA", "\"$ciGitCommitSha\"")
     buildConfigField("long", "BUILD_TIMESTAMP_MS", "${ciBuildTimestampMs}L")
+    buildConfigField("String", "RESOLVED_GITHUB_REPO", "\"$resolvedGithubRepo\"")
+    buildConfigField("String", "RESOLVED_GITHUB_TOKEN", "\"$resolvedGithubToken\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -162,5 +185,5 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   // "ksp"(libs.androidx.room.compiler)
-  "ksp"(libs.moshi.kotlin.codegen)
+  // "ksp"(libs.moshi.kotlin.codegen)
 }

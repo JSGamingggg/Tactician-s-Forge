@@ -1257,6 +1257,21 @@ class ExampleRobolectricTest {
         // Equal buildCode but newer commit SHA must detect update
         val differentCommitSameCode = sameCommitInstalled.copy(gitCommitSha = "fedcba9876543210")
         assertTrue(com.example.update.GitHubReleaseParser.isRemoteReleaseNewer(latestDebug, differentCommitSameCode))
+
+        // Token normalization and API URL handling
+        assertEquals("JSGamingggg/Tactician-s-Forge", com.example.update.GitHubReleaseParser.normalizeRepoSlug("https://api.github.com/repos/JSGamingggg/Tactician-s-Forge/releases"))
+        assertEquals("ghp_secret123", com.example.update.GitHubReleaseParser.normalizeGithubToken("Bearer ghp_secret123"))
+        assertEquals(null, com.example.update.GitHubReleaseParser.normalizeGithubToken("MY_GITHUB_TOKEN"))
+
+        val htmlReleases = com.example.update.GitHubReleaseParser.parseGitHubHtmlReleasesFallback(
+            releasesHtml = "<div>Version: 1.0.18 BuildCode: 19 Commit: 7777777abcdef</div>",
+            expandedAssetsHtml = """<a href="/JSGamingggg/Tactician-s-Forge/releases/download/latest-apk/app-debug.apk">app-debug.apk</a>""",
+            repoSlug = "JSGamingggg/Tactician-s-Forge",
+            isDebugBuild = true
+        )
+        assertEquals(1, htmlReleases.size)
+        assertEquals(19, htmlReleases.first().parsedVersionCode)
+        assertEquals("https://github.com/JSGamingggg/Tactician-s-Forge/releases/download/latest-apk/app-debug.apk", htmlReleases.first().apkDownloadUrl)
     }
 
     @Test
@@ -1266,12 +1281,14 @@ class ExampleRobolectricTest {
 
         assertTrue(prefs.isAppUpdateAlertsEnabled())
         prefs.setGithubRepoOverride("my-org/tacticians-forge")
+        prefs.setGithubTokenOverride("github_pat_test_999")
         prefs.setAppUpdateAlertsEnabled(false)
         prefs.setLastNotifiedAppReleaseKey("201_9001_abcdef1")
         prefs.setLastInstalledApkAssetId(9001L)
         prefs.setDismissedAppReleaseKey("201_9001_abcdef1")
 
         assertEquals("my-org/tacticians-forge", prefs.getGithubRepoOverride())
+        assertEquals("github_pat_test_999", prefs.getGithubTokenOverride())
         assertFalse(prefs.isAppUpdateAlertsEnabled())
         assertEquals("201_9001_abcdef1", prefs.getLastNotifiedAppReleaseKey())
         assertEquals(9001L, prefs.getLastInstalledApkAssetId())

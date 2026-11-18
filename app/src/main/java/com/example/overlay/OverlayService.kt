@@ -2928,50 +2928,50 @@ private fun MiniOverlayHexGrid(
             val rows = 4
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
-            val radius = (widthPx / (cols * 2.2f)).coerceAtMost(heightPx / (rows * 2.1f))
-            val dx = radius * 1.95f
-            val dy = radius * 1.65f
+            val radius = (widthPx / (cols * 1.9f)).coerceAtMost(heightPx / (rows * 1.85f))
+            val dx = radius * 1.85f
+            val dy = radius * 1.55f
             val occupied = placements.associateBy { it.row to it.col }
 
             Canvas(modifier = Modifier.matchParentSize()) {
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {
                         val xOffset = if (r % 2 == 1) dx * 0.5f else 0f
-                        val cx = radius * 1.2f + c * dx + xOffset
-                        val cy = radius * 1.1f + r * dy
+                        val cx = radius * 1.15f + c * dx + xOffset
+                        val cy = radius * 1.05f + r * dy
                         val unit = occupied[r to c]
                         val path = Path().apply {
                             for (i in 0 until 6) {
                                 val angle = Math.toRadians((60 * i - 30).toDouble())
-                                val px = cx + radius * 0.88f * cos(angle).toFloat()
-                                val py = cy + radius * 0.88f * sin(angle).toFloat()
+                                val px = cx + radius * 0.92f * cos(angle).toFloat()
+                                val py = cy + radius * 0.92f * sin(angle).toFloat()
                                 if (i == 0) moveTo(px, py) else lineTo(px, py)
                             }
                             close()
                         }
                         when {
                             unit?.isCarry == true -> {
-                                drawPath(path, color = BrightGold.copy(alpha = 0.35f))
-                                drawPath(path, color = BrightGold, style = Stroke(width = 2f))
+                                drawPath(path, color = BrightGold.copy(alpha = 0.38f))
+                                drawPath(path, color = BrightGold, style = Stroke(width = 2.2f))
                             }
                             unit != null -> {
-                                drawPath(path, color = ArcaneCyan.copy(alpha = 0.25f))
-                                drawPath(path, color = ArcaneCyan, style = Stroke(width = 1.6f))
+                                drawPath(path, color = ArcaneCyan.copy(alpha = 0.28f))
+                                drawPath(path, color = ArcaneCyan, style = Stroke(width = 1.8f))
                             }
                             else -> {
-                                drawPath(path, color = SlateOutline.copy(alpha = 0.7f), style = Stroke(width = 1f))
+                                drawPath(path, color = SlateOutline.copy(alpha = 0.75f), style = Stroke(width = 1.1f))
                             }
                         }
                     }
                 }
             }
 
-            val boxPx = (radius * 1.7f).roundToInt().coerceAtLeast(18)
+            val boxPx = (radius * 1.85f).roundToInt().coerceAtLeast(22)
             val boxDp = with(density) { boxPx.toDp() }
             placements.forEach { unit ->
                 val xOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
-                val cx = radius * 1.2f + unit.col * dx + xOffset
-                val cy = radius * 1.1f + unit.row * dy
+                val cx = radius * 1.15f + unit.col * dx + xOffset
+                val cy = radius * 1.05f + unit.row * dy
                 Box(
                     modifier = Modifier
                         .offset {
@@ -2988,7 +2988,7 @@ private fun MiniOverlayHexGrid(
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = (boxDp - 4.dp).coerceIn(13.dp, 28.dp),
+                        size = boxDp.coerceIn(18.dp, 44.dp),
                         environment = environment
                     )
                 }

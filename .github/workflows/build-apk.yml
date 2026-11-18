@@ -90,7 +90,8 @@ jobs:
         run: gradle :app:assembleDebug --no-daemon
 
       - name: Run Unit Tests
-        run: gradle :app:testDebugUnitTest --no-daemon
+        timeout-minutes: 10
+        run: gradle :app:testDebugUnitTest --no-daemon --console=plain
 
       - name: Upload Debug APK Artifact (if quota available)
         continue-on-error: true

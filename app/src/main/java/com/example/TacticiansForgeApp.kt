@@ -62,16 +62,21 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
             .build()
     }
 
+    private fun isRobolectricRuntime(): Boolean =
+        Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+
     override fun onCreate() {
         super.onCreate()
         TftNotificationHelper.ensureChannels(this)
-        schedulePatchMonitor()
-        subscribeToFcmTopics()
-        preloadEverythingOnLaunch()
+        if (!isRobolectricRuntime()) {
+            schedulePatchMonitor()
+            subscribeToFcmTopics()
+            preloadEverythingOnLaunch()
+        }
     }
 
     private fun preloadEverythingOnLaunch() {
-        if (Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) return
+        if (isRobolectricRuntime()) return
         appScope.launch {
             // Immediately warm the shared in-memory bundle & icon maps off the main thread
             val repo = MetaRepository(applicationContext)

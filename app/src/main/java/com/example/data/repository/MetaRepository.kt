@@ -9,11 +9,13 @@ import com.example.data.model.MetaComp
 import com.example.data.model.MetaSyncResult
 import com.example.data.model.PatchUpdateRecord
 import com.example.data.model.TftEnvironment
+import com.example.data.network.DDragonApi
 import com.example.data.network.RiotApiClientFactory
 import com.example.data.network.TftAcademyCompsScraper
 import com.example.data.network.TftacticsCompsScraper
 import com.example.data.network.TftipsPatchScraper
 import com.example.ui.components.TftAssetIconResolver
+import okhttp3.OkHttpClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,7 +39,9 @@ class MetaRepository(
     private val cacheStore: OfflineMetaCacheStore,
     private val tftipsScraper: TftipsPatchScraper = TftipsPatchScraper(),
     private val tftAcademyScraper: TftAcademyCompsScraper = TftAcademyCompsScraper(),
-    private val tftacticsScraper: TftacticsCompsScraper = TftacticsCompsScraper()
+    private val tftacticsScraper: TftacticsCompsScraper = TftacticsCompsScraper(),
+    private val ddragonApi: DDragonApi = RiotApiClientFactory.ddragonApi,
+    private val publicClient: OkHttpClient = RiotApiClientFactory.publicOkHttp
 ) {
     constructor(context: Context) : this(
         cacheStore = OfflineMetaCacheStore(context.applicationContext)
@@ -95,7 +99,7 @@ class MetaRepository(
             // Run independent network scrapes concurrently so startup & sync are fast and snappy
             val tftipsDeferred = async { runCatching { tftipsScraper.fetchPatchesFromTftips() }.getOrNull() }
             val ddragonDeferred = async {
-                runCatching { RiotApiClientFactory.ddragonApi.getVersions() }.getOrNull()
+                runCatching { ddragonApi.getVersions() }.getOrNull()
             }
 
             val tftipsResult = tftipsDeferred.await()
@@ -142,22 +146,22 @@ class MetaRepository(
                         ddragonVersion = latestDdragon
                         if (versionChanged || ddragonChampJson.isNullOrBlank()) {
                             ddragonChampJson = runCatching {
-                                RiotApiClientFactory.ddragonApi.getTftChampionsJson(latestDdragon).body()?.string()
+                                ddragonApi.getTftChampionsJson(latestDdragon).body()?.string()
                             }.getOrNull() ?: ddragonChampJson
                         }
                         if (versionChanged || ddragonItemJson.isNullOrBlank()) {
                             ddragonItemJson = runCatching {
-                                RiotApiClientFactory.ddragonApi.getTftItemsJson(latestDdragon).body()?.string()
+                                ddragonApi.getTftItemsJson(latestDdragon).body()?.string()
                             }.getOrNull() ?: ddragonItemJson
                         }
                         if (versionChanged || ddragonAugmentJson.isNullOrBlank()) {
                             ddragonAugmentJson = runCatching {
-                                RiotApiClientFactory.ddragonApi.getTftAugmentsJson(latestDdragon).body()?.string()
+                                ddragonApi.getTftAugmentsJson(latestDdragon).body()?.string()
                             }.getOrNull() ?: ddragonAugmentJson
                         }
                         if (versionChanged || ddragonTraitJson.isNullOrBlank()) {
                             ddragonTraitJson = runCatching {
-                                RiotApiClientFactory.ddragonApi.getTftTraitsJson(latestDdragon).body()?.string()
+                                ddragonApi.getTftTraitsJson(latestDdragon).body()?.string()
                             }.getOrNull() ?: ddragonTraitJson
                         }
                         val parsedCatalog = TftAssetIconResolver.parseDdragonCatalogInBackground(
@@ -186,7 +190,7 @@ class MetaRepository(
                         .url("https://raw.communitydragon.org/pbe/content-metadata.json")
                         .head()
                         .build()
-                    RiotApiClientFactory.publicOkHttp.newCall(req).execute().use { resp ->
+                    publicClient.newCall(req).execute().use { resp ->
                         if (resp.isSuccessful) {
                             syncedFromNetwork = true
                             val etag = resp.header("etag")?.replace("\"", "")?.take(6)

@@ -67,16 +67,6 @@ class LocalPreferencesStore(context: Context) {
     private val appContext = context.applicationContext
     private val sharedPrefs = appContext.getSharedPreferences("overlay_bridge_prefs", Context.MODE_PRIVATE)
 
-    private val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
-    private val overlayListType = Types.newParameterizedType(List::class.java, OverlayPinSnapshot::class.java)
-    private val overlayAdapter = moshi.adapter<List<OverlayPinSnapshot>>(overlayListType)
-
-    private val localFavType = Types.newParameterizedType(List::class.java, LocalFavoriteRecord::class.java)
-    private val localFavAdapter = moshi.adapter<List<LocalFavoriteRecord>>(localFavType)
-
-    private val localPlayerType = Types.newParameterizedType(List::class.java, LocalTrackedPlayerRecord::class.java)
-    private val localPlayerAdapter = moshi.adapter<List<LocalTrackedPlayerRecord>>(localPlayerType)
-
     private object Keys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val ENVIRONMENT = stringPreferencesKey("selected_environment")
@@ -316,5 +306,23 @@ class LocalPreferencesStore(context: Context) {
     fun readOverlayPinnedComps(): List<OverlayPinSnapshot> {
         val raw = sharedPrefs.getString("pinned_comps_json", null) ?: return emptyList()
         return runCatching { overlayAdapter.fromJson(raw) }.getOrNull().orEmpty()
+    }
+
+    companion object {
+        private val sharedMoshi: Moshi by lazy {
+            Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+        }
+        private val overlayAdapter by lazy {
+            val type = Types.newParameterizedType(List::class.java, OverlayPinSnapshot::class.java)
+            sharedMoshi.adapter<List<OverlayPinSnapshot>>(type)
+        }
+        private val localFavAdapter by lazy {
+            val type = Types.newParameterizedType(List::class.java, LocalFavoriteRecord::class.java)
+            sharedMoshi.adapter<List<LocalFavoriteRecord>>(type)
+        }
+        private val localPlayerAdapter by lazy {
+            val type = Types.newParameterizedType(List::class.java, LocalTrackedPlayerRecord::class.java)
+            sharedMoshi.adapter<List<LocalTrackedPlayerRecord>>(type)
+        }
     }
 }

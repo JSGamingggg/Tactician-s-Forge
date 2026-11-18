@@ -334,9 +334,11 @@ class ExampleRobolectricTest {
 
         val levelUpUrl = resolver.resolveAugmentIconUrl("Level Up!")
         val floraUrl = resolver.resolveAugmentIconUrl("DA_18_FloraFatalisAugment")
+        val wandOverflowUrl = resolver.resolveAugmentIconUrl("DA_WandOverflow")
         val riftbeastTraitUrl = resolver.resolveTraitIconUrl("3 Riftbeast")
         assertTrue(levelUpUrl?.let { it.endsWith(".png") || it.endsWith(".webp") } == true)
-        assertTrue(floraUrl?.contains("DA_18_FloraFatalisAugment") == true)
+        assertTrue(floraUrl?.let { it.endsWith(".png") || it.endsWith(".webp") } == true)
+        assertTrue(wandOverflowUrl?.contains("WandOverflow") == true)
         assertTrue(riftbeastTraitUrl?.contains("Trait_Icon_18_Riftbeast") == true)
 
         val champJson = """
@@ -933,11 +935,19 @@ class ExampleRobolectricTest {
             .addInterceptor { throw java.io.IOException("Simulated airplane mode offline") }
             .build()
 
+        val offlineDdragonApi = retrofit2.Retrofit.Builder()
+            .baseUrl("https://ddragon.leagueoflegends.com/")
+            .client(offlineClient)
+            .build()
+            .create(com.example.data.network.DDragonApi::class.java)
+
         val offlineRepo = MetaRepository(
             cacheStore = OfflineMetaCacheStore(context),
             tftipsScraper = TftipsPatchScraper(offlineClient),
             tftAcademyScraper = TftAcademyCompsScraper(offlineClient),
-            tftacticsScraper = com.example.data.network.TftacticsCompsScraper(offlineClient)
+            tftacticsScraper = com.example.data.network.TftacticsCompsScraper(offlineClient),
+            ddragonApi = offlineDdragonApi,
+            publicClient = offlineClient
         )
 
         val syncResult = offlineRepo.refreshAndPersistMeta()

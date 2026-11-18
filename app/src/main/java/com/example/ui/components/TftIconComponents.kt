@@ -400,6 +400,7 @@ fun TftItemIcon(
     itemName: String,
     categoryOverride: ItemCategory? = null,
     size: Dp = 18.dp,
+    environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -409,10 +410,11 @@ fun TftItemIcon(
     val fallbackIcon = inferItemFallbackIcon(cleanName, category)
     val iconUrl = remember(
         itemName,
+        environment,
         TftAssetIconResolver.ddragonVersion,
         TftAssetIconResolver.catalogRevision
     ) {
-        TftAssetIconResolver.resolveItemIconUrl(itemName)
+        TftAssetIconResolver.resolveItemIconUrl(itemName, environment)
     }
 
     Box(
@@ -453,6 +455,7 @@ fun TftItemChip(
     itemName: String,
     categoryOverride: ItemCategory? = null,
     compact: Boolean = false,
+    environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val cleanName = formatRiotAssetLabel(itemName)
@@ -476,7 +479,8 @@ fun TftItemChip(
             TftItemIcon(
                 itemName = itemName,
                 categoryOverride = category,
-                size = if (compact) 15.dp else 20.dp
+                size = if (compact) 15.dp else 20.dp,
+                environment = environment
             )
             Text(
                 text = cleanName,
@@ -686,7 +690,11 @@ fun OfflineCacheStatusBanner(
                 }
                 Column {
                     Text(
-                        text = if (isGuestMode) "Pre-loaded • Instant Offline & Live Sync" else "Cloud Synced • Instant Cache Ready",
+                        text = when {
+                            cacheStatus.isOfflineFallback -> "Offline Mode • Cached Snapshots & Tiers"
+                            isGuestMode -> "Pre-loaded • Instant Offline & Live Sync"
+                            else -> "Cloud Synced • Instant Cache Ready"
+                        },
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.SemiBold,

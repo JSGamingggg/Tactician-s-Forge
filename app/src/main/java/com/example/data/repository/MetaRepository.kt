@@ -112,6 +112,11 @@ class MetaRepository(
                 .find(currentBundle.liveVersionInfo.liveSetName)
                 ?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: 18
+            val tftAcademyCatalogDeferred = async {
+                runCatching {
+                    tftAcademyScraper.fetchLiveItemsAndAugmentsTierlist(setNumber = liveSetHint)
+                }.getOrNull()
+            }
             val tftacticsDeferred = async {
                 runCatching {
                     tftacticsScraper.fetchPbeTeamComps(
@@ -196,19 +201,26 @@ class MetaRepository(
             }
 
             val tftAcademyResult = tftAcademyDeferred.await()
+            val tftAcademyCatalog = tftAcademyCatalogDeferred.await()
             val tftacticsResult = tftacticsDeferred.await()
-            if (tftAcademyResult?.fetchedFromNetwork == true || tftacticsResult?.fetchedFromNetwork == true) {
+            if (tftAcademyResult?.fetchedFromNetwork == true ||
+                tftAcademyCatalog?.fetchedFromNetwork == true ||
+                tftacticsResult?.fetchedFromNetwork == true
+            ) {
                 syncedFromNetwork = true
             }
             if (tftacticsResult != null &&
-                (tftacticsResult.pbeChampionIcons.isNotEmpty() || tftacticsResult.pbeTraitIcons.isNotEmpty())
+                (tftacticsResult.pbeChampionIcons.isNotEmpty() ||
+                    tftacticsResult.pbeTraitIcons.isNotEmpty() ||
+                    tftacticsResult.pbeItemIcons.isNotEmpty())
             ) {
                 withContext(Dispatchers.Main.immediate) {
                     TftAssetIconResolver.updatePbeSetCatalog(
                         championIcons = tftacticsResult.pbeChampionIcons,
                         championCosts = tftacticsResult.pbeChampionCosts,
                         championTraits = tftacticsResult.pbeChampionTraits,
-                        traitIcons = tftacticsResult.pbeTraitIcons
+                        traitIcons = tftacticsResult.pbeTraitIcons,
+                        itemIcons = tftacticsResult.pbeItemIcons
                     )
                 }
             }
@@ -248,6 +260,52 @@ class MetaRepository(
             } else {
                 currentBundle.pbeComps
             }
+            val resolvedLiveCatalog = if (syncedFromNetwork) {
+                MetaCatalogSyncHelper.refreshLiveCatalog(
+                    existingChampions = currentBundle.liveChampions,
+                    existingItems = currentBundle.liveItems,
+                    existingAugments = currentBundle.liveAugments,
+                    liveComps = resolvedLiveComps,
+                    liveSetNumber = liveSetHint,
+                    ddragonChampJson = ddragonChampJson,
+                    ddragonItemJson = ddragonItemJson,
+                    ddragonAugmentJson = ddragonAugmentJson,
+                    academyTiers = tftAcademyCatalog
+                )
+            } else {
+                null
+            }
+            val resolvedPbeChampions = if (tftacticsResult?.fetchedFromNetwork == true &&
+                tftacticsResult.pbeChampionTiers.isNotEmpty()
+            ) {
+                tftacticsResult.pbeChampionTiers
+            } else {
+                currentBundle.pbeChampions
+            }
+            val resolvedPbeItems = if (tftacticsResult?.fetchedFromNetwork == true &&
+                tftacticsResult.pbeItemTiers.isNotEmpty()
+            ) {
+                tftacticsResult.pbeItemTiers
+            } else {
+                currentBundle.pbeItems
+            }
+            val resolvedPbeAugments = if (tftacticsResult?.fetchedFromNetwork == true &&
+                tftacticsResult.pbeAugmentTiers.isNotEmpty()
+            ) {
+                tftacticsResult.pbeAugmentTiers
+            } else {
+                currentBundle.pbeAugments
+            }
+            val resolvedPbeChampIcons = tftacticsResult?.pbeChampionIcons?.takeIf { it.isNotEmpty() }
+                ?: currentBundle.pbeChampionIcons
+            val resolvedPbeTraitIcons = tftacticsResult?.pbeTraitIcons?.takeIf { it.isNotEmpty() }
+                ?: currentBundle.pbeTraitIcons
+            val resolvedPbeItemIcons = tftacticsResult?.pbeItemIcons?.takeIf { it.isNotEmpty() }
+                ?: currentBundle.pbeItemIcons
+            val resolvedPbeChampCosts = tftacticsResult?.pbeChampionCosts?.takeIf { it.isNotEmpty() }
+                ?: currentBundle.pbeChampionCosts
+            val resolvedPbeChampTraits = tftacticsResult?.pbeChampionTraits?.takeIf { it.isNotEmpty() }
+                ?: currentBundle.pbeChampionTraits
 
             val newSignature = TftAcademyCompsScraper.computeCompsSignature(resolvedLiveComps, resolvedPbeComps)
             val compsUpdated = newSignature != currentBundle.compsSignature &&
@@ -272,6 +330,12 @@ class MetaRepository(
                 liveVersionInfo = updatedVersionInfo,
                 liveComps = resolvedLiveComps,
                 pbeComps = resolvedPbeComps,
+                liveChampions = resolvedLiveCatalog?.champions ?: currentBundle.liveChampions,
+                liveItems = resolvedLiveCatalog?.items ?: currentBundle.liveItems,
+                liveAugments = resolvedLiveCatalog?.augments ?: currentBundle.liveAugments,
+                pbeChampions = resolvedPbeChampions,
+                pbeItems = resolvedPbeItems,
+                pbeAugments = resolvedPbeAugments,
                 compsSignature = newSignature,
                 livePatches = mergedLivePatches,
                 pbePatches = mergedPbePatches,
@@ -279,7 +343,12 @@ class MetaRepository(
                 ddragonChampionJson = ddragonChampJson,
                 ddragonItemJson = ddragonItemJson,
                 ddragonAugmentJson = ddragonAugmentJson,
-                ddragonTraitJson = ddragonTraitJson
+                ddragonTraitJson = ddragonTraitJson,
+                pbeChampionIcons = resolvedPbeChampIcons,
+                pbeTraitIcons = resolvedPbeTraitIcons,
+                pbeItemIcons = resolvedPbeItemIcons,
+                pbeChampionCosts = resolvedPbeChampCosts,
+                pbeChampionTraits = resolvedPbeChampTraits
             )
 
             if (syncedFromNetwork) {

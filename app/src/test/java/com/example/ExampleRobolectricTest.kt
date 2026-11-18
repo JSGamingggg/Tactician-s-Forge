@@ -88,13 +88,23 @@ class ExampleRobolectricTest {
         assertEquals(35, seeded.toCacheStatus(environment = TftEnvironment.LIVE).compsCount)
         assertEquals(23, seeded.toCacheStatus(environment = TftEnvironment.PBE).compsCount)
 
-        // Complete Set 18 catalog preloaded with traits, descriptions, and icons
+        // Complete Set 18 LIVE + Set 19 PBE catalogs preloaded cleanly for offline viewing
         assertEquals(74, seeded.liveChampions.size)
         assertTrue(seeded.liveChampions.all { it.traits.isNotEmpty() && it.abilityDescription.isNotBlank() })
-        assertTrue(seeded.liveItems.size >= 130)
+        assertEquals(94, seeded.pbeChampions.size)
+        assertTrue(seeded.pbeChampions.all { it.environment == TftEnvironment.PBE && it.traits.isNotEmpty() })
+        assertTrue(seeded.pbeChampions.count { it.abilityDescription.isNotBlank() } >= 80)
+        assertEquals(94, seeded.pbeChampionIcons.size)
+        assertTrue(seeded.pbeTraitIcons.size >= 40)
+        assertTrue(seeded.liveItems.size >= 140)
         assertTrue(seeded.liveItems.all { it.statsSummary.isNotBlank() })
-        assertTrue(seeded.liveAugments.size >= 240)
+        assertTrue(seeded.liveAugments.size >= 340)
         assertTrue(seeded.liveAugments.all { it.description.isNotBlank() })
+        assertTrue(seeded.pbeItems.size >= 80)
+        assertTrue(seeded.pbeItems.all { it.environment == TftEnvironment.PBE && it.statsSummary.isNotBlank() })
+        assertTrue(seeded.pbeAugments.size >= 240)
+        assertTrue(seeded.pbeAugments.all { it.environment == TftEnvironment.PBE && it.description.isNotBlank() })
+        assertTrue(seeded.pbeItemIcons.size >= 80)
 
         val academyLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
         val tftacticsPbe = sampleTftAcademyComp("tftactics_pbe_ionic_spark_hitmakers", "Ionic Spark Hitmakers", TftEnvironment.PBE, carry = "Jinx")
@@ -232,11 +242,12 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val cacheStore = OfflineMetaCacheStore(context)
         val academyLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
-        val academyPbe = sampleTftAcademyComp("tftacademy_pbe_vayne", "Cyber Vayne", TftEnvironment.PBE, carry = "Vayne")
+        val tftacticsPbe = sampleTftAcademyComp("tftactics_pbe_vayne", "Cyber Vayne", TftEnvironment.PBE, carry = "Vayne")
+            .copy(sourceUrl = com.example.data.network.TftacticsCompsScraper.TFTACTICS_COMPS_URL)
         cacheStore.writeBundle(
             OfflineMetaBundle(
                 liveComps = listOf(academyLive),
-                pbeComps = listOf(academyPbe)
+                pbeComps = listOf(tftacticsPbe)
             )
         )
         val localStore = LocalPreferencesStore(context)
@@ -888,6 +899,102 @@ class ExampleRobolectricTest {
             "https://sunderarmor.com/icons/ionicspark.png",
             result.pbeTraitIcons["Ionic Spark"]
         )
+        assertEquals(4, result.pbeChampionTiers.size)
+        assertEquals(TierRank.S, result.pbeChampionTiers.first { it.name == "Jinx" }.tier)
+    }
+
+    @Test
+    fun `meta repository serves cached snapshots and tier lists when completely offline`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheStore = OfflineMetaCacheStore(context)
+        val seeded = cacheStore.readOrSeedBundle()
+
+        // Mutate and persist an updated cached snapshot as if synced online earlier
+        val syncedComp = sampleTftAcademyComp(
+            id = "tftacademy_live_cached_offline",
+            title = "Cached Offline Live Comp",
+            environment = TftEnvironment.LIVE
+        )
+        val syncedPbeComp = sampleTftAcademyComp(
+            id = "tftactics_pbe_cached_offline",
+            title = "Cached Offline PBE Comp",
+            environment = TftEnvironment.PBE,
+            carry = "Jinx"
+        ).copy(sourceUrl = com.example.data.network.TftacticsCompsScraper.TFTACTICS_COMPS_URL)
+
+        val persisted = seeded.copy(
+            liveComps = listOf(syncedComp) + seeded.liveComps.take(5),
+            pbeComps = listOf(syncedPbeComp) + seeded.pbeComps.take(4)
+        )
+        assertTrue(cacheStore.writeBundle(persisted))
+
+        // Simulate offline failure on every scraper using an intercepting OkHttpClient that throws IOException
+        val offlineClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { throw java.io.IOException("Simulated airplane mode offline") }
+            .build()
+
+        val offlineRepo = MetaRepository(
+            cacheStore = OfflineMetaCacheStore(context),
+            tftipsScraper = TftipsPatchScraper(offlineClient),
+            tftAcademyScraper = TftAcademyCompsScraper(offlineClient),
+            tftacticsScraper = com.example.data.network.TftacticsCompsScraper(offlineClient)
+        )
+
+        val syncResult = offlineRepo.refreshAndPersistMeta()
+        assertFalse(syncResult.syncedFromNetwork)
+        assertTrue(syncResult.cacheStatus.isOfflineFallback)
+
+        // Fresh cold-store instance reading solely from local storage must preserve all comps, tier lists, and PBE catalogs
+        val reloadedStore = OfflineMetaCacheStore(context)
+        val reloaded = reloadedStore.readOrSeedBundle()
+        assertTrue(reloaded.liveComps.any { it.id == "tftacademy_live_cached_offline" })
+        assertTrue(reloaded.pbeComps.any { it.id == "tftactics_pbe_cached_offline" })
+        assertEquals(74, reloaded.liveChampions.size)
+        assertEquals(94, reloaded.pbeChampions.size)
+        assertTrue(reloaded.liveItems.size >= 140)
+        assertTrue(reloaded.liveAugments.size >= 340)
+        assertTrue(reloaded.pbeItems.size >= 80)
+        assertTrue(reloaded.pbeAugments.size >= 240)
+        assertEquals(
+            "https://sunderarmor.com/characters/Skin/19/Jinx.png",
+            com.example.ui.components.TftAssetIconResolver.resolveChampionIconUrl("Jinx", TftEnvironment.PBE)
+        )
+        assertEquals(
+            "https://sunderarmor.com/items/WarmogsArmor.png",
+            com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl("Warmog's Armor", TftEnvironment.PBE)
+        )
+    }
+
+    @Test
+    fun `live catalog sync updates tiers and merges newly released ddragon champions items and augments`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val seeded = OfflineMetaCacheStore(context).readOrSeedBundle()
+
+        val itemsApiJson = """{"items_tierlists":[{"type":"craftables","tier":{"S":["DA_WarmogsArmor","DA_18_NewLiveItem"]}}]}"""
+        val augsApiJson = """{"augments_tierlists":[{"augmenttier":3,"tier":{"S":["DA_LevelUp","DA_18_NewPrismaticAug"]}}]}"""
+        val academyTiers = TftAcademyCompsScraper().parseLiveItemsAndAugmentsJson(itemsApiJson, augsApiJson)
+
+        val ddragonChampJson = """{"data":{"TFT18_TestNewChamp":{"id":"TFT18_TestNewChamp","name":"Test New Champ","tier":5,"image":{"full":"TFT18_TestNewChamp.png","group":"tft-champion"}}}}"""
+        val ddragonItemJson = """{"data":{"TFT18_Item_NewLiveItem":{"id":"TFT18_Item_NewLiveItem","name":"New Live Item","image":{"full":"TFT18_Item_NewLiveItem.png","group":"tft-item"}}}}"""
+        val ddragonAugJson = """{"data":{"DA_18_NewPrismaticAug":{"id":"DA_18_NewPrismaticAug","name":"New Prismatic Aug","image":{"full":"DA_18_NewPrismaticAug.png","group":"tft-augment"}}}}"""
+
+        val refreshed = com.example.data.repository.MetaCatalogSyncHelper.refreshLiveCatalog(
+            existingChampions = seeded.liveChampions,
+            existingItems = seeded.liveItems,
+            existingAugments = seeded.liveAugments,
+            liveComps = seeded.liveComps,
+            liveSetNumber = 18,
+            ddragonChampJson = ddragonChampJson,
+            ddragonItemJson = ddragonItemJson,
+            ddragonAugmentJson = ddragonAugJson,
+            academyTiers = academyTiers
+        )
+
+        assertTrue(refreshed.champions.any { it.name == "Test New Champ" && it.cost == 5 })
+        assertTrue(refreshed.items.any { it.name == "New Live Item" })
+        assertEquals(TierRank.S, refreshed.items.first { it.name == "Warmog's Armor" }.tier)
+        assertTrue(refreshed.augments.any { it.name == "New Prismatic Aug" && it.tier == TierRank.S })
     }
 }
+
 

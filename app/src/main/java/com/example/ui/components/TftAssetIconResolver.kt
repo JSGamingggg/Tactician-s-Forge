@@ -42,6 +42,7 @@ object TftAssetIconResolver {
 
     private var pbeChampionImages: Map<String, String> = emptyMap()
     private var pbeTraitImages: Map<String, String> = emptyMap()
+    private var pbeItemImages: Map<String, String> = emptyMap()
     private var pbeChampionCosts: Map<String, Int> = emptyMap()
     private var pbeChampionTraits: Map<String, List<String>> = emptyMap()
 
@@ -79,9 +80,10 @@ object TftAssetIconResolver {
         championIcons: Map<String, String>,
         championCosts: Map<String, Int>,
         championTraits: Map<String, List<String>>,
-        traitIcons: Map<String, String>
+        traitIcons: Map<String, String>,
+        itemIcons: Map<String, String> = emptyMap()
     ) {
-        if (championIcons.isEmpty() && traitIcons.isEmpty()) return
+        if (championIcons.isEmpty() && traitIcons.isEmpty() && itemIcons.isEmpty()) return
         val normChamps = HashMap<String, String>(championIcons.size * 2)
         championIcons.forEach { (k, v) ->
             if (v.isNotBlank()) normChamps[normalizeLookupKey(k)] = v
@@ -89,6 +91,10 @@ object TftAssetIconResolver {
         val normTraits = HashMap<String, String>(traitIcons.size * 2)
         traitIcons.forEach { (k, v) ->
             if (v.isNotBlank()) normTraits[normalizeLookupKey(k)] = v
+        }
+        val normItems = HashMap<String, String>(itemIcons.size * 2)
+        itemIcons.forEach { (k, v) ->
+            if (v.isNotBlank()) normItems[normalizeLookupKey(k)] = v
         }
         val normCosts = HashMap<String, Int>(championCosts.size * 2)
         championCosts.forEach { (k, v) ->
@@ -98,10 +104,11 @@ object TftAssetIconResolver {
         championTraits.forEach { (k, v) ->
             if (v.isNotEmpty()) normChampTraits[normalizeLookupKey(k)] = v
         }
-        pbeChampionImages = normChamps
-        pbeTraitImages = normTraits
-        pbeChampionCosts = normCosts
-        pbeChampionTraits = normChampTraits
+        if (normChamps.isNotEmpty()) pbeChampionImages = normChamps
+        if (normTraits.isNotEmpty()) pbeTraitImages = normTraits
+        if (normItems.isNotEmpty()) pbeItemImages = normItems
+        if (normCosts.isNotEmpty()) pbeChampionCosts = normCosts
+        if (normChampTraits.isNotEmpty()) pbeChampionTraits = normChampTraits
         pbeCatalogLoaded = true
         catalogRevision += 1
     }
@@ -338,6 +345,7 @@ object TftAssetIconResolver {
         if (!preloaded.isNullOrBlank()) {
             return preloaded
         }
+        if (environment == TftEnvironment.LIVE) return null
         return pbeTraitImages[norm] ?: pbeTraitImages[rawNorm]
     }
 
@@ -369,32 +377,45 @@ object TftAssetIconResolver {
             return preloaded
         }
 
-        // 3. Fall back to PBE Set 19 catalog if caller did not pass environment (e.g. Set 19-exclusive units)
-        val pbeFallback = pbeChampionImages[norm] ?: pbeChampionImages[cleanNorm]
-        if (!pbeFallback.isNullOrBlank()) {
-            return pbeFallback
-        }
-
-        // 4. Skip invalid League CDN URL guesses for TFT-exclusive creatures/NPCs
+        // 3. Skip invalid League CDN URL guesses for TFT-exclusive creatures/NPCs
+        //    (and allow Set 19 PBE fallback for non-LoL units only when not strictly LIVE)
         if (NON_LOL_CHAMPION_KEYS.contains(cleanNorm) || NON_LOL_CHAMPION_KEYS.contains(norm)) {
+            if (environment != TftEnvironment.LIVE) {
+                val pbeOnlyUrl = pbeChampionImages[norm] ?: pbeChampionImages[cleanNorm]
+                if (!pbeOnlyUrl.isNullOrBlank()) return pbeOnlyUrl
+            }
             return null
         }
 
-        // 5. Fall back to standard League Data Dragon champion portrait URL
+        // 4. Fall back to standard League Data Dragon champion portrait URL
         val key = SPECIAL_CHAMPION_KEYS[cleanNorm]
             ?: SPECIAL_CHAMPION_KEYS[norm]
             ?: toChampionKey(cleanName)
-        if (key.isBlank()) return null
-        return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/champion/$key.png"
+        if (key.isNotBlank()) {
+            return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/champion/$key.png"
+        }
+
+        // 5. Final PBE fallback when environment is unspecified
+        return if (environment != TftEnvironment.LIVE) {
+            pbeChampionImages[norm] ?: pbeChampionImages[cleanNorm]
+        } else null
     }
 
-    fun resolveItemIconUrl(nameOrId: String): String? {
+    fun resolveItemIconUrl(nameOrId: String, environment: TftEnvironment? = null): String? {
         val raw = nameOrId.trim()
         if (raw.isEmpty()) return null
 
         val norm = normalizeLookupKey(raw)
         val cleanName = formatRiotAssetLabel(raw)
         val cleanNorm = normalizeLookupKey(cleanName)
+
+        // 0. For PBE items, prefer TFTactics Set 19 SunderArmor item icons
+        if (environment == TftEnvironment.PBE) {
+            val pbeUrl = pbeItemImages[norm] ?: pbeItemImages[cleanNorm]
+            if (!pbeUrl.isNullOrBlank()) {
+                return pbeUrl
+            }
+        }
 
         // 1. Check dynamically fetched Riot tft-item.json map
         val dynamicPath = dynamicItemImages[norm] ?: dynamicItemImages[cleanNorm]

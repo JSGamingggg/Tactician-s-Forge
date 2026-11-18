@@ -342,7 +342,7 @@ fun ChampionTierListScreen(
                         HextechEmptyState(
                             icon = Icons.Default.Build,
                             title = "No Items Match Filters",
-                            subtitle = "Clear category or tier filters to view all Set 18 items and recipes.",
+                            subtitle = "Clear category or tier filters to view all ${environment.label} items and recipes.",
                             modifier = Modifier.animateItem(
                                 fadeInSpec = tween(220),
                                 fadeOutSpec = tween(160),
@@ -423,7 +423,8 @@ private fun ChampionTierCard(
                         name = champ.name,
                         cost = champ.cost,
                         isCarry = champ.tier == TierRank.S,
-                        size = 40.dp
+                        size = 40.dp,
+                        environment = champ.environment
                     )
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -465,7 +466,7 @@ private fun ChampionTierCard(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 champ.traits.forEach { trait ->
-                    TftTraitChip(traitLabel = trait)
+                    TftTraitChip(traitLabel = trait, environment = champ.environment)
                 }
             }
 
@@ -556,7 +557,7 @@ private fun ChampionTierCard(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         champ.bestItems.forEach { item ->
-                            TftItemChip(itemName = item)
+                            TftItemChip(itemName = item, environment = champ.environment)
                         }
                     }
 
@@ -591,7 +592,8 @@ private fun ItemTierCard(
             ) {
                 TftItemChip(
                     itemName = item.name,
-                    categoryOverride = item.category
+                    categoryOverride = item.category,
+                    environment = item.environment
                 )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -614,7 +616,7 @@ private fun ItemTierCard(
                         modifier = Modifier.align(Alignment.CenterVertically)
                     )
                     item.components.forEach { compName ->
-                        TftItemChip(itemName = compName, compact = true)
+                        TftItemChip(itemName = compName, compact = true, environment = item.environment)
                     }
                 }
             }
@@ -671,8 +673,9 @@ private fun ItemTierCard(
                             ) {
                                 TftChampionAvatar(
                                     name = holder,
-                                    cost = TftAssetIconResolver.getChampionCost(holder) ?: 4,
-                                    size = 18.dp
+                                    cost = TftAssetIconResolver.getChampionCost(holder, item.environment) ?: 4,
+                                    size = 18.dp,
+                                    environment = item.environment
                                 )
                                 Text(
                                     text = holder,

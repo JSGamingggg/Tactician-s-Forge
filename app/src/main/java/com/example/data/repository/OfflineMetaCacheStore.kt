@@ -47,7 +47,12 @@ data class OfflineMetaBundle(
     val ddragonChampionJson: String? = null,
     val ddragonItemJson: String? = null,
     val ddragonAugmentJson: String? = null,
-    val ddragonTraitJson: String? = null
+    val ddragonTraitJson: String? = null,
+    val pbeChampionIcons: Map<String, String> = emptyMap(),
+    val pbeTraitIcons: Map<String, String> = emptyMap(),
+    val pbeItemIcons: Map<String, String> = emptyMap(),
+    val pbeChampionCosts: Map<String, Int> = emptyMap(),
+    val pbeChampionTraits: Map<String, List<String>> = emptyMap()
 ) {
     fun toCacheStatus(
         isOfflineFallback: Boolean = false,
@@ -85,7 +90,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 11
+        const val CURRENT_CACHE_VERSION = 13
     }
 }
 
@@ -120,12 +125,12 @@ class OfflineMetaCacheStore(context: Context) {
         )
         withContext(Dispatchers.Main.immediate) {
             TftAssetIconResolver.applyParsedDdragonCatalog(parsedAssets)
+            applyPersistedPbeCatalogIfPresent(bundle)
         }
         bundle
     }
 
-    @Synchronized
-    fun readOrSeedBundle(skipResolverSync: Boolean = false): OfflineMetaBundle {
+    fun readOrSeedBundle(skipResolverSync: Boolean = false): OfflineMetaBundle = synchronized(cacheIoLock) {
         ensurePreloadedIconCatalogInitialized()
 
         inMemoryBundle?.let { cached ->
@@ -137,6 +142,7 @@ class OfflineMetaCacheStore(context: Context) {
                     augmentJson = cached.ddragonAugmentJson,
                     traitJson = cached.ddragonTraitJson
                 )
+                applyPersistedPbeCatalogIfPresent(cached)
             }
             return cached
         }
@@ -158,7 +164,7 @@ class OfflineMetaCacheStore(context: Context) {
                     val cleanPbe = parsed.pbeComps.filter { pbe ->
                         pbe.sourceUrl.contains("tftactics.gg", ignoreCase = true) || pbe.id.startsWith("custom_")
                     }.ifEmpty {
-                        loadPreloadedTftacticsPbeComps(parsed.liveVersionInfo.pbePatchVersion)
+                        loadPreloadedTftacticsPbeData(parsed.liveVersionInfo.pbePatchVersion)?.pbeComps.orEmpty()
                     }
                     val sanitized = if (cleanLive.size != parsed.liveComps.size || cleanPbe.size != parsed.pbeComps.size) {
                         parsed.copy(
@@ -178,6 +184,7 @@ class OfflineMetaCacheStore(context: Context) {
                             augmentJson = sanitized.ddragonAugmentJson,
                             traitJson = sanitized.ddragonTraitJson
                         )
+                        applyPersistedPbeCatalogIfPresent(sanitized)
                     }
                     return sanitized
                 }
@@ -187,19 +194,34 @@ class OfflineMetaCacheStore(context: Context) {
         val baseSeed = OfflineMetaBundle()
         val preloadedCatalog = loadPreloadedSet18CatalogData()
         val preloadedLive = loadPreloadedTftAcademyComps(baseSeed.liveVersionInfo.livePatchVersion)
-        val preloadedPbe = loadPreloadedTftacticsPbeComps(baseSeed.liveVersionInfo.pbePatchVersion)
+        val preloadedPbeData = loadPreloadedTftacticsPbeData(baseSeed.liveVersionInfo.pbePatchVersion)
+        val preloadedPbeComps = preloadedPbeData?.pbeComps.orEmpty()
+        val preloadedPbeChamps = preloadedPbeData?.pbeChampionTiers.orEmpty()
+        val preloadedPbeItems = preloadedPbeData?.pbeItemTiers.orEmpty()
+        val preloadedPbeAugments = preloadedPbeData?.pbeAugmentTiers.orEmpty()
 
         val seeded = baseSeed.copy(
+            liveVersionInfo = baseSeed.liveVersionInfo.copy(
+                pbeSetName = preloadedPbeData?.detectedPbeSet ?: baseSeed.liveVersionInfo.pbeSetName
+            ),
             ddragonVersion = preloadedCatalog?.ddragonVersion ?: baseSeed.ddragonVersion,
             liveComps = preloadedLive.ifEmpty { baseSeed.liveComps },
-            pbeComps = preloadedPbe.ifEmpty { baseSeed.pbeComps },
+            pbeComps = preloadedPbeComps.ifEmpty { baseSeed.pbeComps },
             compsSignature = TftAcademyCompsScraper.computeCompsSignature(
                 preloadedLive.ifEmpty { baseSeed.liveComps },
-                preloadedPbe.ifEmpty { baseSeed.pbeComps }
+                preloadedPbeComps.ifEmpty { baseSeed.pbeComps }
             ),
             liveChampions = preloadedCatalog?.champions?.takeIf { it.isNotEmpty() } ?: baseSeed.liveChampions,
+            pbeChampions = preloadedPbeChamps.ifEmpty { baseSeed.pbeChampions },
             liveItems = preloadedCatalog?.items?.takeIf { it.isNotEmpty() } ?: baseSeed.liveItems,
-            liveAugments = preloadedCatalog?.augments?.takeIf { it.isNotEmpty() } ?: baseSeed.liveAugments
+            pbeItems = preloadedPbeItems.ifEmpty { baseSeed.pbeItems },
+            liveAugments = preloadedCatalog?.augments?.takeIf { it.isNotEmpty() } ?: baseSeed.liveAugments,
+            pbeAugments = preloadedPbeAugments.ifEmpty { baseSeed.pbeAugments },
+            pbeChampionIcons = preloadedPbeData?.pbeChampionIcons.orEmpty(),
+            pbeTraitIcons = preloadedPbeData?.pbeTraitIcons.orEmpty(),
+            pbeItemIcons = preloadedPbeData?.pbeItemIcons.orEmpty(),
+            pbeChampionCosts = preloadedPbeData?.pbeChampionCosts.orEmpty(),
+            pbeChampionTraits = preloadedPbeData?.pbeChampionTraits.orEmpty()
         )
         writeBundle(seeded)
         if (!skipResolverSync) {
@@ -210,8 +232,21 @@ class OfflineMetaCacheStore(context: Context) {
                 augmentJson = seeded.ddragonAugmentJson,
                 traitJson = seeded.ddragonTraitJson
             )
+            applyPersistedPbeCatalogIfPresent(seeded)
         }
-        return seeded
+        return@synchronized seeded
+    }
+
+    private fun applyPersistedPbeCatalogIfPresent(bundle: OfflineMetaBundle) {
+        if (bundle.pbeChampionIcons.isNotEmpty() || bundle.pbeTraitIcons.isNotEmpty() || bundle.pbeItemIcons.isNotEmpty()) {
+            TftAssetIconResolver.updatePbeSetCatalog(
+                championIcons = bundle.pbeChampionIcons,
+                championCosts = bundle.pbeChampionCosts,
+                championTraits = bundle.pbeChampionTraits,
+                traitIcons = bundle.pbeTraitIcons,
+                itemIcons = bundle.pbeItemIcons
+            )
+        }
     }
 
     private fun ensurePreloadedIconCatalogInitialized() {
@@ -235,7 +270,8 @@ class OfflineMetaCacheStore(context: Context) {
                     championIcons = parsedPbe.pbeChampionIcons,
                     championCosts = parsedPbe.pbeChampionCosts,
                     championTraits = parsedPbe.pbeChampionTraits,
-                    traitIcons = parsedPbe.pbeTraitIcons
+                    traitIcons = parsedPbe.pbeTraitIcons,
+                    itemIcons = parsedPbe.pbeItemIcons
                 )
             }
         }
@@ -345,7 +381,9 @@ class OfflineMetaCacheStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
-    private fun loadPreloadedTftacticsPbeComps(pbePatchVersion: String): List<MetaComp> {
+    private fun loadPreloadedTftacticsPbeData(
+        pbePatchVersion: String
+    ): com.example.data.network.TftacticsPbeFetchResult? {
         return runCatching {
             val rawJson = appContext.assets.open(PBE_PRELOAD_ASSET_FILE).bufferedReader(Charsets.UTF_8).use {
                 it.readText()
@@ -355,14 +393,14 @@ class OfflineMetaCacheStore(context: Context) {
                 championIcons = parsed.pbeChampionIcons,
                 championCosts = parsed.pbeChampionCosts,
                 championTraits = parsed.pbeChampionTraits,
-                traitIcons = parsed.pbeTraitIcons
+                traitIcons = parsed.pbeTraitIcons,
+                itemIcons = parsed.pbeItemIcons
             )
-            parsed.pbeComps
-        }.getOrDefault(emptyList())
+            parsed
+        }.getOrNull()
     }
 
-    @Synchronized
-    fun writeBundle(bundle: OfflineMetaBundle): Boolean {
+    fun writeBundle(bundle: OfflineMetaBundle): Boolean = synchronized(cacheIoLock) {
         val cleanLive = bundle.liveComps.filter {
             it.sourceUrl.contains("tftacademy.com", ignoreCase = true) || it.id.startsWith("custom_")
         }
@@ -378,23 +416,34 @@ class OfflineMetaCacheStore(context: Context) {
             }
         )
         inMemoryBundle = normalized
-        return runCatching {
-            val parent = cacheFile.parentFile
-            if (parent != null && !parent.exists()) {
+        var tmpFile: File? = null
+        return@synchronized runCatching {
+            val parent = cacheFile.parentFile ?: appContext.filesDir
+            if (!parent.exists()) {
                 parent.mkdirs()
             }
-            val tmpFile = File(appContext.filesDir, "$CACHE_FILE_NAME.tmp")
-            tmpFile.writeText(adapter.toJson(normalized), Charsets.UTF_8)
+            tmpFile = File.createTempFile("tft_meta_cache_", ".tmp", parent)
+            tmpFile!!.writeText(adapter.toJson(normalized), Charsets.UTF_8)
             if (cacheFile.exists()) {
                 cacheFile.delete()
             }
-            tmpFile.renameTo(cacheFile)
+            val renamed = tmpFile!!.renameTo(cacheFile)
+            if (!renamed) {
+                tmpFile!!.copyTo(cacheFile, overwrite = true)
+                tmpFile!!.delete()
+            }
+            cacheFile.exists() && cacheFile.length() > 0L
+        }.onFailure {
+            runCatching { tmpFile?.delete() }
         }.getOrDefault(false)
     }
 
-    fun hasPersistedCache(): Boolean = cacheFile.exists() && cacheFile.length() > 0L
+    fun hasPersistedCache(): Boolean = synchronized(cacheIoLock) {
+        cacheFile.exists() && cacheFile.length() > 0L
+    }
 
     companion object {
+        private val cacheIoLock = Any()
         private const val CACHE_FILE_NAME = "tft_offline_meta_cache_v2.json"
         private const val PRELOAD_ASSET_FILE = "tftacademy_preload.json"
         private const val PBE_PRELOAD_ASSET_FILE = "tftactics_pbe_preload.json"

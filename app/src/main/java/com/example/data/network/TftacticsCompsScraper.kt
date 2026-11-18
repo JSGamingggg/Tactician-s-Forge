@@ -1,6 +1,11 @@
 package com.example.data.network
 
+import com.example.data.model.AugmentTier
+import com.example.data.model.AugmentTierEntry
+import com.example.data.model.ChampionTierEntry
 import com.example.data.model.HexUnitPlacement
+import com.example.data.model.ItemCategory
+import com.example.data.model.ItemTierEntry
 import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
@@ -11,6 +16,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
+import kotlin.math.roundToInt
 
 data class TftacticsPbeFetchResult(
     val pbeComps: List<MetaComp>,
@@ -20,6 +26,10 @@ data class TftacticsPbeFetchResult(
     val pbeChampionCosts: Map<String, Int>,
     val pbeChampionTraits: Map<String, List<String>>,
     val pbeTraitIcons: Map<String, String>,
+    val pbeItemIcons: Map<String, String> = emptyMap(),
+    val pbeChampionTiers: List<ChampionTierEntry> = emptyList(),
+    val pbeItemTiers: List<ItemTierEntry> = emptyList(),
+    val pbeAugmentTiers: List<AugmentTierEntry> = emptyList(),
     val fetchedFromNetwork: Boolean
 )
 
@@ -119,6 +129,33 @@ class TftacticsCompsScraper(
             }
         }
 
+        val itemIcons = readStringMap(root.optJSONObject("itemIcons"))
+        val champDetailsObj = root.optJSONObject("championDetails")
+        val champExtraDetails = LinkedHashMap<String, PbeChampionExtra>().apply {
+            if (champDetailsObj != null) {
+                val keys = champDetailsObj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val obj = champDetailsObj.optJSONObject(k) ?: continue
+                    val itemsArr = obj.optJSONArray("items")
+                    val defaultItems = if (itemsArr != null) {
+                        (0 until itemsArr.length()).mapNotNull { idx ->
+                            cleanText(itemsArr.optString(idx)).takeIf { it.isNotBlank() }
+                        }
+                    } else emptyList()
+                    put(
+                        k,
+                        PbeChampionExtra(
+                            tierNum = obj.optInt("tier", 3),
+                            defaultItems = defaultItems,
+                            abilityName = cleanText(obj.optString("abilityName")),
+                            abilityDescription = cleanText(obj.optString("abilityDescription"))
+                        )
+                    )
+                }
+            }
+        }
+
         val compsArr = root.optJSONArray("comps") ?: JSONArray()
         val comps = parseTeamCompsArray(
             compsArr = compsArr,
@@ -126,6 +163,28 @@ class TftacticsCompsScraper(
             setLabel = setLabel,
             pbePatchVersion = pbePatchVersion,
             championCosts = champCosts
+        )
+
+        val champTiers = buildPbeChampionTierEntries(
+            comps = comps,
+            championCosts = champCosts,
+            championTraits = champTraits,
+            championIcons = champIcons,
+            championExtras = champExtraDetails
+        )
+
+        val itemsArr = root.optJSONArray("items") ?: JSONArray()
+        val itemTiers = buildPbeItemTierEntries(
+            itemsArr = itemsArr,
+            targetSetNumber = setNum,
+            comps = comps,
+            itemIconsOut = null
+        )
+
+        val augsArr = root.optJSONArray("augments") ?: JSONArray()
+        val augTiers = buildPbeAugmentTierEntries(
+            augsArr = augsArr,
+            comps = comps
         )
 
         return TftacticsPbeFetchResult(
@@ -136,6 +195,10 @@ class TftacticsCompsScraper(
             pbeChampionCosts = champCosts,
             pbeChampionTraits = champTraits,
             pbeTraitIcons = traitIcons,
+            pbeItemIcons = itemIcons,
+            pbeChampionTiers = champTiers,
+            pbeItemTiers = itemTiers,
+            pbeAugmentTiers = augTiers,
             fetchedFromNetwork = false
         )
     }
@@ -150,6 +213,8 @@ class TftacticsCompsScraper(
 
         var compsArr: JSONArray? = null
         var champsArr: JSONArray? = null
+        var itemsArr: JSONArray? = null
+        var augsArr: JSONArray? = null
         val traitArrays = mutableListOf<JSONArray>()
 
         for (arrText in jsonArrays) {
@@ -158,6 +223,10 @@ class TftacticsCompsScraper(
                 runCatching { JSONArray(arrText) }.getOrNull()?.let { compsArr = it }
             } else if (champsArr == null && head.contains("\"origin\"") && head.contains("\"cost\"") && head.contains("\"health\"")) {
                 runCatching { JSONArray(arrText) }.getOrNull()?.let { champsArr = it }
+            } else if (itemsArr == null && head.contains("\"shadow_name\"") && head.contains("\"into\"")) {
+                runCatching { JSONArray(arrText) }.getOrNull()?.let { itemsArr = it }
+            } else if (augsArr == null && head.contains("\"tierlist\"") && head.contains("\"bonus\"") && head.contains("\"DA_")) {
+                runCatching { JSONArray(arrText) }.getOrNull()?.let { augsArr = it }
             } else if ((head.contains("\"Origin\"") || head.contains("\"Class\"") || head.contains("\"bonus\"")) &&
                 head.contains("\"set\"") && !head.contains("\"characters\"") && !head.contains("\"tierlist\"")
             ) {
@@ -172,6 +241,7 @@ class TftacticsCompsScraper(
         val champIcons = LinkedHashMap<String, String>()
         val champCosts = LinkedHashMap<String, Int>()
         val champTraits = LinkedHashMap<String, List<String>>()
+        val champExtras = LinkedHashMap<String, PbeChampionExtra>()
 
         champsArr?.let { arr ->
             for (i in 0 until arr.length()) {
@@ -189,6 +259,16 @@ class TftacticsCompsScraper(
                 if (traits.isNotEmpty()) {
                     champTraits[name] = traits
                 }
+                val defaultItems = extractStringValues(obj.opt("items"))
+                val skillObj = obj.optJSONArray("skill")?.optJSONObject(0)
+                val abilityName = cleanText(skillObj?.optString("name").orEmpty())
+                val abilityDesc = cleanText(skillObj?.optString("description").orEmpty())
+                champExtras[name] = PbeChampionExtra(
+                    tierNum = obj.optInt("tier", 3),
+                    defaultItems = defaultItems,
+                    abilityName = abilityName,
+                    abilityDescription = abilityDesc
+                )
             }
         }
 
@@ -234,6 +314,26 @@ class TftacticsCompsScraper(
             parseHtmlTeamComps(html, pbePatchVersion, targetSet)
         }
 
+        val champTiers = buildPbeChampionTierEntries(
+            comps = resolvedComps,
+            championCosts = champCosts,
+            championTraits = champTraits,
+            championIcons = champIcons,
+            championExtras = champExtras
+        )
+
+        val itemIcons = LinkedHashMap<String, String>()
+        val itemTiers = buildPbeItemTierEntries(
+            itemsArr = itemsArr ?: JSONArray(),
+            targetSetNumber = targetSet,
+            comps = resolvedComps,
+            itemIconsOut = itemIcons
+        )
+        val augTiers = buildPbeAugmentTierEntries(
+            augsArr = augsArr ?: JSONArray(),
+            comps = resolvedComps
+        )
+
         return TftacticsPbeFetchResult(
             pbeComps = resolvedComps,
             detectedPbeSet = setLabel,
@@ -242,6 +342,10 @@ class TftacticsCompsScraper(
             pbeChampionCosts = champCosts,
             pbeChampionTraits = champTraits,
             pbeTraitIcons = traitIcons,
+            pbeItemIcons = itemIcons,
+            pbeChampionTiers = champTiers,
+            pbeItemTiers = itemTiers,
+            pbeAugmentTiers = augTiers,
             fetchedFromNetwork = true
         )
     }
@@ -292,7 +396,7 @@ class TftacticsCompsScraper(
                 val items = extractStringValues(ch.opt("items"))
                 val catalogCost = championCosts[name]
                     ?: championCosts.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
-                    ?: TftAssetIconResolver.getChampionCost(name)
+                    ?: TftAssetIconResolver.getChampionCost(name, TftEnvironment.PBE)
                     ?: 3
                 ParsedTftacticsUnit(
                     name = name,
@@ -499,6 +603,346 @@ class TftacticsCompsScraper(
         return out.distinctBy { it.id }
     }
 
+    private data class PbeChampionExtra(
+        val tierNum: Int = 3,
+        val defaultItems: List<String> = emptyList(),
+        val abilityName: String = "",
+        val abilityDescription: String = ""
+    )
+
+    private fun buildPbeChampionTierEntries(
+        comps: List<MetaComp>,
+        championCosts: Map<String, Int>,
+        championTraits: Map<String, List<String>>,
+        championIcons: Map<String, String>,
+        championExtras: Map<String, PbeChampionExtra> = emptyMap()
+    ): List<ChampionTierEntry> {
+        val allNames = LinkedHashSet<String>().apply {
+            addAll(championCosts.keys)
+            addAll(championIcons.keys)
+            comps.forEach { comp -> addAll(comp.coreUnits) }
+        }
+        if (allNames.isEmpty()) return emptyList()
+
+        return allNames.mapNotNull { name ->
+            val cleanName = name.trim()
+            if (cleanName.isBlank()) return@mapNotNull null
+
+            val matchingComps = comps.filter { comp ->
+                comp.coreUnits.any { it.equals(cleanName, ignoreCase = true) }
+            }
+            val cost = (championCosts[cleanName]
+                ?: championCosts.entries.firstOrNull { it.key.equals(cleanName, ignoreCase = true) }?.value
+                ?: 3).coerceIn(1, 7)
+            val traits = championTraits[cleanName]
+                ?: championTraits.entries.firstOrNull { it.key.equals(cleanName, ignoreCase = true) }?.value
+                ?: emptyList()
+            val extra = championExtras[cleanName]
+                ?: championExtras.entries.firstOrNull { it.key.equals(cleanName, ignoreCase = true) }?.value
+
+            val placements = matchingComps.flatMap { comp ->
+                comp.hexPlacements.filter { it.unitName.equals(cleanName, ignoreCase = true) }
+            }
+            val itemCounts = LinkedHashMap<String, Int>()
+            placements.forEach { p ->
+                p.items.forEach { item ->
+                    itemCounts[item] = (itemCounts[item] ?: 0) + 1
+                }
+            }
+            val compItems = itemCounts.entries
+                .sortedByDescending { it.value }
+                .take(3)
+                .map { it.key }
+            val bestItems = (compItems + extra?.defaultItems.orEmpty())
+                .distinct()
+                .take(3)
+
+            val isMainCarryCount = matchingComps.count { it.carryName.equals(cleanName, ignoreCase = true) }
+            val hasTankItems = bestItems.any { item ->
+                val low = item.lowercase(Locale.US)
+                low.contains("warmog") || low.contains("gargoyle") || low.contains("sunfire") ||
+                    low.contains("bramble") || low.contains("spirit visage") || low.contains("dragon")
+            }
+            val hasThreeStar = placements.any { it.stars >= 3 }
+
+            val role = when {
+                isMainCarryCount > 0 -> "Main Carry"
+                hasTankItems -> if (hasThreeStar) "3★ Tank" else "Frontline Tank"
+                bestItems.isNotEmpty() -> "Secondary Carry"
+                cost >= 5 -> "5-Cost Flex"
+                traits.isNotEmpty() -> "${traits.first()} Unit"
+                else -> "Synergy Unit"
+            }
+
+            val bestTier = when {
+                isMainCarryCount > 0 && matchingComps.any { it.tier == TierRank.S } -> TierRank.S
+                isMainCarryCount > 0 -> TierRank.S
+                matchingComps.size >= 3 -> TierRank.A
+                matchingComps.isNotEmpty() -> matchingComps.minBy { it.tier.sortOrder }.tier
+                extra?.tierNum == 1 -> TierRank.S
+                extra?.tierNum == 2 || cost >= 5 -> TierRank.A
+                cost == 4 -> TierRank.B
+                else -> TierRank.C
+            }
+
+            val rawAvg = if (matchingComps.isNotEmpty()) {
+                val baseAvg = matchingComps.map { it.avgPlacement }.average()
+                (baseAvg - if (isMainCarryCount > 0) 0.14 else 0.0).coerceIn(3.15, 4.75)
+            } else {
+                when {
+                    cost >= 5 -> 3.95
+                    cost == 4 -> 4.18
+                    else -> 4.42
+                }
+            }
+            val avgPlacement = (rawAvg * 100.0).roundToInt() / 100.0
+            val top4Rate = ((100.0 - (avgPlacement - 1.5) * 18.0).coerceIn(44.0, 74.0) * 10.0).roundToInt() / 10.0
+
+            val slug = cleanName.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+            ChampionTierEntry(
+                id = "pbe_champ_$slug",
+                name = cleanName,
+                cost = cost.coerceIn(1, 5),
+                tier = bestTier,
+                environment = TftEnvironment.PBE,
+                traits = traits,
+                role = role,
+                avgPlacement = avgPlacement,
+                top4Rate = top4Rate,
+                bestItems = bestItems,
+                synergyComps = matchingComps.map { it.title }.distinct().take(4),
+                abilityName = extra?.abilityName.orEmpty(),
+                abilityDescription = extra?.abilityDescription.orEmpty()
+            )
+        }.sortedWith(
+            compareBy<ChampionTierEntry> { it.tier.sortOrder }
+                .thenBy { it.avgPlacement }
+                .thenByDescending { it.cost }
+                .thenBy { it.name }
+        )
+    }
+
+    private fun buildPbeItemTierEntries(
+        itemsArr: JSONArray,
+        targetSetNumber: Int,
+        comps: List<MetaComp>,
+        itemIconsOut: MutableMap<String, String>?
+    ): List<ItemTierEntry> {
+        val holdersByItem = LinkedHashMap<String, MutableList<String>>()
+        comps.forEach { comp ->
+            comp.hexPlacements.forEach { p ->
+                p.items.forEach { itName ->
+                    val norm = itName.lowercase(Locale.US)
+                    holdersByItem.getOrPut(norm) { mutableListOf() }.add(p.unitName)
+                }
+            }
+        }
+
+        val entries = mutableListOf<ItemTierEntry>()
+        val seenNames = LinkedHashSet<String>()
+
+        for (i in 0 until itemsArr.length()) {
+            val obj = itemsArr.optJSONObject(i) ?: continue
+            val setArr = obj.optJSONArray("set")
+            if (setArr != null && setArr.length() > 0 && !containsSet(setArr, targetSetNumber)) continue
+
+            val name = cleanText(obj.optString("name"))
+            if (name.isBlank() || !seenNames.add(name.lowercase(Locale.US))) continue
+
+            val isShadow = obj.optBoolean("shadow", false)
+            val isRadiant = obj.optBoolean("radiant", false)
+            if (itemIconsOut != null) {
+                itemIconsOut[name] = buildSunderItemUrl(name, shadow = isShadow, radiant = isRadiant)
+            }
+
+            val combine = extractStringValues(obj.opt("combine"))
+            val bonusLines = extractStringValues(obj.opt("bonus"))
+            val statsArr = obj.optJSONArray("stats")
+            val statTokens = if (statsArr != null) {
+                (0 until statsArr.length()).mapNotNull { sIdx ->
+                    val st = statsArr.optJSONObject(sIdx) ?: return@mapNotNull null
+                    val sName = cleanText(st.optString("name")).uppercase(Locale.US)
+                    val sVal = cleanText(st.optString("value"))
+                    if (sName.isNotBlank() && sVal.isNotBlank()) "+$sVal $sName" else null
+                }
+            } else emptyList()
+
+            val statsSummary = buildList {
+                if (statTokens.isNotEmpty()) add(statTokens.joinToString(", "))
+                bonusLines.forEach { add(it) }
+            }.joinToString(" • ").ifBlank { "$name — Set $targetSetNumber PBE item." }
+
+            val holders = holdersByItem[name.lowercase(Locale.US)]?.distinct()?.take(4).orEmpty()
+            val tierNum = obj.optInt("tier", 3)
+            val tier = when {
+                tierNum <= 1 || holders.size >= 4 -> TierRank.S
+                tierNum == 2 || holders.size >= 2 -> TierRank.A
+                tierNum == 3 || holders.isNotEmpty() -> TierRank.B
+                else -> TierRank.C
+            }
+            val avgPlacement = when (tier) {
+                TierRank.S -> 3.52
+                TierRank.A -> 3.84
+                TierRank.B -> 4.18
+                TierRank.C -> 4.46
+                TierRank.X -> 4.30
+            }
+            val top4Rate = ((100.0 - (avgPlacement - 1.5) * 18.0) * 10.0).roundToInt() / 10.0
+            val slug = name.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+
+            entries.add(
+                ItemTierEntry(
+                    id = "pbe_item_$slug",
+                    name = name,
+                    tier = tier,
+                    environment = TftEnvironment.PBE,
+                    category = classifyPbeItemCategory(name, statsSummary),
+                    components = combine,
+                    statsSummary = statsSummary,
+                    avgPlacement = avgPlacement,
+                    top4Rate = top4Rate,
+                    bestHolders = holders
+                )
+            )
+        }
+
+        // Also add any Set 19 emblems/items appearing in PBE comps if absent from itemsArr
+        holdersByItem.keys.forEach { lowerName ->
+            if (!seenNames.add(lowerName)) return@forEach
+            val display = comps.asSequence()
+                .flatMap { it.hexPlacements.asSequence() }
+                .flatMap { it.items.asSequence() }
+                .firstOrNull { it.equals(lowerName, ignoreCase = true) } ?: return@forEach
+            itemIconsOut?.put(display, buildSunderItemUrl(display))
+            val holders = holdersByItem[lowerName]?.distinct()?.take(4).orEmpty()
+            val slug = display.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+            entries.add(
+                ItemTierEntry(
+                    id = "pbe_item_$slug",
+                    name = display,
+                    tier = if (holders.size >= 2) TierRank.A else TierRank.B,
+                    environment = TftEnvironment.PBE,
+                    category = classifyPbeItemCategory(display, ""),
+                    components = emptyList(),
+                    statsSummary = "$display — Set $targetSetNumber PBE comp equipment.",
+                    avgPlacement = 3.92,
+                    top4Rate = 56.4,
+                    bestHolders = holders
+                )
+            )
+        }
+
+        return entries.sortedWith(
+            compareBy<ItemTierEntry> { it.tier.sortOrder }
+                .thenBy { it.avgPlacement }
+                .thenBy { it.name }
+        )
+    }
+
+    private fun buildPbeAugmentTierEntries(
+        augsArr: JSONArray,
+        comps: List<MetaComp>
+    ): List<AugmentTierEntry> {
+        val entries = mutableListOf<AugmentTierEntry>()
+        val seenNames = LinkedHashSet<String>()
+
+        for (i in 0 until augsArr.length()) {
+            val obj = augsArr.optJSONObject(i) ?: continue
+            val name = cleanText(obj.optString("name"))
+            if (name.isBlank() || !seenNames.add(name.lowercase(Locale.US))) continue
+
+            val augTier = AugmentTier.fromRaw(obj.optString("tier"))
+            val desc = cleanText(obj.optString("bonus")).ifBlank { "$name — PBE augment." }
+            val tierListNum = obj.optInt("tierlist", 3)
+            val tier = when {
+                tierListNum <= 1 -> TierRank.S
+                tierListNum == 2 -> TierRank.A
+                tierListNum == 3 -> TierRank.B
+                else -> TierRank.C
+            }
+            val cat = when {
+                name.contains("Crown", true) || name.contains("Crest", true) || name.contains("Emblem", true) ||
+                    desc.contains("Emblem", true) -> "Trait / Emblem"
+                desc.contains("gold", true) || desc.contains("XP", false) || desc.contains("reroll", true) -> "Economy / XP"
+                else -> "Combat / Items"
+            }
+            val matchedComps = comps.filter { comp ->
+                comp.traits.any { tr ->
+                    val cleanTr = tr.replace(Regex("^\\d+\\s+"), "").trim()
+                    cleanTr.length >= 4 && (name.contains(cleanTr, true) || desc.contains(cleanTr, true))
+                }
+            }.map { it.title }.take(3)
+
+            val avgPlacement = when (tier) {
+                TierRank.S -> 3.48
+                TierRank.A -> 3.84
+                TierRank.B -> 4.18
+                TierRank.C -> 4.48
+                TierRank.X -> 4.32
+            }
+            val top4Rate = ((100.0 - (avgPlacement - 1.5) * 18.0) * 10.0).roundToInt() / 10.0
+            val slug = (obj.optString("id").ifBlank { name })
+                .lowercase(Locale.US)
+                .replace(Regex("[^a-z0-9]+"), "_")
+                .trim('_')
+
+            entries.add(
+                AugmentTierEntry(
+                    id = "pbe_aug_$slug",
+                    name = name,
+                    tier = tier,
+                    augmentTier = augTier,
+                    environment = TftEnvironment.PBE,
+                    category = cat,
+                    avgPlacement = avgPlacement,
+                    top4Rate = top4Rate,
+                    description = desc,
+                    synergyComps = matchedComps
+                )
+            )
+        }
+
+        return entries.sortedWith(
+            compareBy<AugmentTierEntry> { it.tier.sortOrder }
+                .thenBy { it.avgPlacement }
+                .thenBy { it.name }
+        )
+    }
+
+    private fun classifyPbeItemCategory(name: String, desc: String): ItemCategory {
+        val n = name.lowercase(Locale.US)
+        val d = desc.lowercase(Locale.US)
+        return when {
+            n.contains("guinsoo") || n.contains("nashor") || n.contains("red buff") ||
+                n.contains("kraken") || n.contains("statikk") || n.contains("recurve") ||
+                n.contains("flicker") || n.contains("rapid firecannon") || n.contains("wit's end") -> ItemCategory.ATTACK_SPEED
+            n.contains("warmog") || n.contains("gargoyle") || n.contains("bramble") ||
+                n.contains("dragon's claw") || n.contains("sunfire") || n.contains("spirit visage") ||
+                n.contains("steadfast") || n.contains("protector's vow") || n.contains("evenshroud") ||
+                n.contains("adaptive helm") || n.contains("quicksilver") || n.contains("vest") ||
+                n.contains("cloak") || n.contains("belt") || n.contains("hullcrusher") ||
+                n.contains("mogul") || n.contains("lightshield") || n.contains("eternal pact") -> ItemCategory.TANK
+            n.contains("blue buff") || n.contains("shojin") || n.contains("jeweled") ||
+                n.contains("rabadon") || n.contains("archangel") || n.contains("morello") ||
+                n.contains("ionic") || n.contains("crownguard") || n.contains("hextech") ||
+                n.contains("void staff") || n.contains("rod") || n.contains("tear") ||
+                n.contains("zhonya") || n.contains("lich bane") || n.contains("blighting") ||
+                n.contains("luden") || n.contains("dawncore") -> ItemCategory.AP
+            n.contains("infinity edge") || n.contains("last whisper") || n.contains("giant slayer") ||
+                n.contains("deathblade") || n.contains("striker") || n.contains("guardbreaker") ||
+                n.contains("runaan") || n.contains("b.f. sword") || n.contains("gold collector") ||
+                n.contains("prowler") || n.contains("fishbones") -> ItemCategory.AD
+            n.contains("bloodthirster") || n.contains("titan") || n.contains("sterak") ||
+                n.contains("hand of justice") || n.contains("edge of night") ||
+                n.contains("death's defiance") || n.contains("tactician") -> ItemCategory.FIGHTER
+            d.contains("ability power") || d.contains("mana") -> ItemCategory.AP
+            d.contains("attack speed") -> ItemCategory.ATTACK_SPEED
+            d.contains("armor") || d.contains("magic resist") || d.contains("health") -> ItemCategory.TANK
+            d.contains("attack damage") || d.contains("crit") -> ItemCategory.AD
+            else -> ItemCategory.FIGHTER
+        }
+    }
+
     private data class ParsedTftacticsUnit(
         val name: String,
         val cost: Int,
@@ -590,7 +1034,7 @@ class TftacticsCompsScraper(
             if (decoded != null) {
                 val (literalText, nextPos) = decoded
                 val trimmed = literalText.trim()
-                if (trimmed.startsWith("[") && trimmed.length > 500) {
+                if (trimmed.startsWith("[") && trimmed.length > 40) {
                     out.add(trimmed)
                 }
                 searchFrom = nextPos
@@ -798,6 +1242,23 @@ class TftacticsCompsScraper(
                 .replace(" ", "")
                 .lowercase(Locale.US)
             return "https://sunderarmor.com/icons/$clean.png"
+        }
+
+        fun buildSunderItemUrl(
+            itemName: String,
+            shadow: Boolean = false,
+            radiant: Boolean = false
+        ): String {
+            val clean = itemName
+                .replace(":", "")
+                .replace(" ", "")
+                .replace(".", "")
+                .replace("'", "")
+            val prefix = buildString {
+                if (shadow) append("Shadow/")
+                if (radiant) append("Radiant/")
+            }
+            return "https://sunderarmor.com/items/$prefix$clean.png"
         }
 
         private val MAIN_BUNDLE_REGEX = Regex(

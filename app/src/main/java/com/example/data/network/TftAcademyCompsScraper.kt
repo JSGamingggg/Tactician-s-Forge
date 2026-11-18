@@ -1,5 +1,6 @@
 package com.example.data.network
 
+import com.example.data.model.AugmentTier
 import com.example.data.model.HexUnitPlacement
 import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
@@ -19,6 +20,14 @@ data class TftAcademyCompsFetchResult(
     val pbeComps: List<MetaComp>,
     val detectedLiveSet: String?,
     val detectedPbeSet: String?,
+    val fetchedFromNetwork: Boolean
+)
+
+data class TftAcademyCatalogTiers(
+    val itemTiersByKey: Map<String, TierRank>,
+    val itemTypesByKey: Map<String, String>,
+    val augmentTiersByKey: Map<String, TierRank>,
+    val augmentRanksByKey: Map<String, AugmentTier>,
     val fetchedFromNetwork: Boolean
 )
 
@@ -166,6 +175,114 @@ class TftAcademyCompsScraper(
             fetchedFromNetwork = true
         )
     }
+
+    /**
+     * Fetches current LIVE Item & Augment tierlists from TFTAcademy's JSON APIs:
+     * - https://tftacademy.com/api/tierlist/items?set=<setNumber>
+     * - https://tftacademy.com/api/tierlist/augments?set=<setNumber>
+     */
+    fun fetchLiveItemsAndAugmentsTierlist(setNumber: Int = 18): TftAcademyCatalogTiers {
+        val itemsJson = fetchUrl("$TFTACADEMY_ORIGIN/api/tierlist/items?set=$setNumber")
+        val augmentsJson = fetchUrl("$TFTACADEMY_ORIGIN/api/tierlist/augments?set=$setNumber")
+        if (itemsJson.isNullOrBlank() && augmentsJson.isNullOrBlank()) {
+            return TftAcademyCatalogTiers(
+                itemTiersByKey = emptyMap(),
+                itemTypesByKey = emptyMap(),
+                augmentTiersByKey = emptyMap(),
+                augmentRanksByKey = emptyMap(),
+                fetchedFromNetwork = false
+            )
+        }
+        return parseLiveItemsAndAugmentsJson(itemsJson, augmentsJson)
+            .copy(fetchedFromNetwork = true)
+    }
+
+    internal fun parseLiveItemsAndAugmentsJson(
+        itemsJson: String?,
+        augmentsJson: String?
+    ): TftAcademyCatalogTiers {
+        val itemTiers = LinkedHashMap<String, TierRank>()
+        val itemTypes = LinkedHashMap<String, String>()
+        val augTiers = LinkedHashMap<String, TierRank>()
+        val augRanks = LinkedHashMap<String, AugmentTier>()
+
+        if (!itemsJson.isNullOrBlank()) {
+            runCatching {
+                val root = JSONObject(itemsJson)
+                val lists = root.optJSONArray("items_tierlists") ?: JSONArray()
+                for (i in 0 until lists.length()) {
+                    val grp = lists.optJSONObject(i) ?: continue
+                    val itemType = grp.optString("type").trim()
+                    val tierObj = grp.optJSONObject("tier") ?: continue
+                    val tierKeys = tierObj.keys()
+                    while (tierKeys.hasNext()) {
+                        val tierKey = tierKeys.next()
+                        val rank = TierRank.fromRaw(tierKey)
+                        val arr = tierObj.optJSONArray(tierKey) ?: continue
+                        for (j in 0 until arr.length()) {
+                            val rawId = arr.optString(j).trim()
+                            if (rawId.isBlank()) continue
+                            val normRaw = normalizeCatalogKey(rawId)
+                            val normLabel = normalizeCatalogKey(formatRiotAssetLabel(rawId))
+                            itemTiers[rawId] = rank
+                            if (normRaw.isNotBlank()) itemTiers[normRaw] = rank
+                            if (normLabel.isNotBlank()) itemTiers[normLabel] = rank
+                            if (itemType.isNotBlank()) {
+                                itemTypes[rawId] = itemType
+                                if (normRaw.isNotBlank()) itemTypes[normRaw] = itemType
+                                if (normLabel.isNotBlank()) itemTypes[normLabel] = itemType
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!augmentsJson.isNullOrBlank()) {
+            runCatching {
+                val root = JSONObject(augmentsJson)
+                val lists = root.optJSONArray("augments_tierlists") ?: JSONArray()
+                for (i in 0 until lists.length()) {
+                    val grp = lists.optJSONObject(i) ?: continue
+                    val augTier = when (grp.optInt("augmenttier", 2)) {
+                        1 -> AugmentTier.SILVER
+                        3 -> AugmentTier.PRISMATIC
+                        else -> AugmentTier.GOLD
+                    }
+                    val tierObj = grp.optJSONObject("tier") ?: continue
+                    val tierKeys = tierObj.keys()
+                    while (tierKeys.hasNext()) {
+                        val tierKey = tierKeys.next()
+                        val rank = TierRank.fromRaw(tierKey)
+                        val arr = tierObj.optJSONArray(tierKey) ?: continue
+                        for (j in 0 until arr.length()) {
+                            val rawId = arr.optString(j).trim()
+                            if (rawId.isBlank()) continue
+                            val normRaw = normalizeCatalogKey(rawId)
+                            val normLabel = normalizeCatalogKey(formatRiotAssetLabel(rawId))
+                            augTiers[rawId] = rank
+                            if (normRaw.isNotBlank()) augTiers[normRaw] = rank
+                            if (normLabel.isNotBlank()) augTiers[normLabel] = rank
+                            augRanks[rawId] = augTier
+                            if (normRaw.isNotBlank()) augRanks[normRaw] = augTier
+                            if (normLabel.isNotBlank()) augRanks[normLabel] = augTier
+                        }
+                    }
+                }
+            }
+        }
+
+        return TftAcademyCatalogTiers(
+            itemTiersByKey = itemTiers,
+            itemTypesByKey = itemTypes,
+            augmentTiersByKey = augTiers,
+            augmentRanksByKey = augRanks,
+            fetchedFromNetwork = false
+        )
+    }
+
+    private fun normalizeCatalogKey(raw: String): String =
+        raw.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")
 
     private fun patchPatchSafe(patchTag: String): String = patchTag
 

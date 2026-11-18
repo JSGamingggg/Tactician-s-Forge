@@ -1,0 +1,437 @@
+package com.example.data.repository
+
+import com.example.data.model.AugmentTier
+import com.example.data.model.AugmentTierEntry
+import com.example.data.model.ChampionTierEntry
+import com.example.data.model.ItemCategory
+import com.example.data.model.ItemTierEntry
+import com.example.data.model.MetaComp
+import com.example.data.model.TftEnvironment
+import com.example.data.model.TierRank
+import com.example.data.network.TftAcademyCatalogTiers
+import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.formatRiotAssetLabel
+import org.json.JSONObject
+import java.util.Locale
+import kotlin.math.roundToInt
+
+/**
+ * Keeps LIVE Set Champions, Items, and Augments synchronized with the latest
+ * Riot Data Dragon catalogs, TFTAcademy live tierlists, and active compositions.
+ */
+object MetaCatalogSyncHelper {
+
+    data class LiveCatalogRefreshResult(
+        val champions: List<ChampionTierEntry>,
+        val items: List<ItemTierEntry>,
+        val augments: List<AugmentTierEntry>
+    )
+
+    fun refreshLiveCatalog(
+        existingChampions: List<ChampionTierEntry>,
+        existingItems: List<ItemTierEntry>,
+        existingAugments: List<AugmentTierEntry>,
+        liveComps: List<MetaComp>,
+        liveSetNumber: Int,
+        ddragonChampJson: String?,
+        ddragonItemJson: String?,
+        ddragonAugmentJson: String?,
+        academyTiers: TftAcademyCatalogTiers?
+    ): LiveCatalogRefreshResult {
+        val updatedChampions = refreshLiveChampions(
+            existing = existingChampions,
+            liveComps = liveComps,
+            liveSetNumber = liveSetNumber,
+            ddragonChampJson = ddragonChampJson
+        )
+        val updatedItems = refreshLiveItems(
+            existing = existingItems,
+            liveComps = liveComps,
+            liveSetNumber = liveSetNumber,
+            ddragonItemJson = ddragonItemJson,
+            academyTiers = academyTiers
+        )
+        val updatedAugments = refreshLiveAugments(
+            existing = existingAugments,
+            liveComps = liveComps,
+            liveSetNumber = liveSetNumber,
+            ddragonAugmentJson = ddragonAugmentJson,
+            academyTiers = academyTiers
+        )
+        return LiveCatalogRefreshResult(
+            champions = updatedChampions,
+            items = updatedItems,
+            augments = updatedAugments
+        )
+    }
+
+    private fun refreshLiveChampions(
+        existing: List<ChampionTierEntry>,
+        liveComps: List<MetaComp>,
+        liveSetNumber: Int,
+        ddragonChampJson: String?
+    ): List<ChampionTierEntry> {
+        val compsByUnit = LinkedHashMap<String, MutableList<MetaComp>>()
+        val itemFreqByUnit = LinkedHashMap<String, MutableMap<String, Int>>()
+        liveComps.forEach { comp ->
+            comp.coreUnits.forEach { unit ->
+                val norm = normKey(unit)
+                compsByUnit.getOrPut(norm) { mutableListOf() }.add(comp)
+            }
+            comp.hexPlacements.forEach { p ->
+                val norm = normKey(p.unitName)
+                val counts = itemFreqByUnit.getOrPut(norm) { mutableMapOf() }
+                p.items.forEach { it ->
+                    val label = formatRiotAssetLabel(it)
+                    if (label.isNotBlank()) counts[label] = (counts[label] ?: 0) + 1
+                }
+            }
+        }
+
+        val byNormName = LinkedHashMap<String, ChampionTierEntry>()
+        existing.forEach { champ ->
+            val norm = normKey(champ.name)
+            val matchedComps = compsByUnit[norm].orEmpty()
+            val carryCount = matchedComps.count { normKey(it.carryName) == norm }
+            val topItems = itemFreqByUnit[norm]?.entries
+                ?.sortedByDescending { it.value }
+                ?.take(3)
+                ?.map { it.key }
+                .orEmpty()
+                .ifEmpty { champ.bestItems }
+
+            val updatedTier = when {
+                carryCount > 0 && matchedComps.any { it.tier == TierRank.S } -> TierRank.S
+                carryCount > 0 -> TierRank.S
+                matchedComps.isNotEmpty() -> matchedComps.minBy { it.tier.sortOrder }.tier
+                else -> champ.tier
+            }
+            val updatedAvg = if (matchedComps.isNotEmpty()) {
+                val base = matchedComps.map { it.avgPlacement }.average() - if (carryCount > 0) 0.12 else 0.0
+                (base.coerceIn(3.15, 4.75) * 100.0).roundToInt() / 100.0
+            } else {
+                champ.avgPlacement
+            }
+            val updatedTop4 = if (matchedComps.isNotEmpty()) {
+                ((100.0 - (updatedAvg - 1.5) * 18.0).coerceIn(44.0, 74.0) * 10.0).roundToInt() / 10.0
+            } else {
+                champ.top4Rate
+            }
+
+            byNormName[norm] = champ.copy(
+                tier = updatedTier,
+                avgPlacement = updatedAvg,
+                top4Rate = updatedTop4,
+                bestItems = topItems,
+                synergyComps = matchedComps.map { it.title }.distinct().take(4).ifEmpty { champ.synergyComps }
+            )
+        }
+
+        // Merge any newly added live-set champions from Data Dragon
+        if (!ddragonChampJson.isNullOrBlank()) {
+            val setToken = "TFT${liveSetNumber}_"
+            runCatching {
+                val data = JSONObject(ddragonChampJson).optJSONObject("data") ?: return@runCatching
+                val keys = data.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val obj = data.optJSONObject(key) ?: continue
+                    val id = obj.optString("id", key)
+                    val fullImg = obj.optJSONObject("image")?.optString("full").orEmpty()
+                    if (!id.startsWith(setToken, ignoreCase = true) && !fullImg.contains("TFT_Set$liveSetNumber", ignoreCase = true)) {
+                        continue
+                    }
+                    val name = obj.optString("name").trim()
+                    if (name.isBlank() || name.contains("null", ignoreCase = true)) continue
+                    val norm = normKey(name)
+                    if (byNormName.containsKey(norm)) continue
+                    val cost = obj.optInt("tier", obj.optInt("cost", 3)).coerceIn(1, 5)
+                    val traits = TftAssetIconResolver.getChampionTraits(name, TftEnvironment.LIVE)
+                    val matchedComps = compsByUnit[norm].orEmpty()
+                    byNormName[norm] = ChampionTierEntry(
+                        id = "live_$norm",
+                        name = name,
+                        cost = cost,
+                        tier = if (matchedComps.isNotEmpty()) matchedComps.minBy { it.tier.sortOrder }.tier else if (cost >= 4) TierRank.A else TierRank.B,
+                        environment = TftEnvironment.LIVE,
+                        traits = traits,
+                        role = if (cost >= 4) "Carry" else "Trait Unit",
+                        avgPlacement = if (cost >= 4) 3.92 else 4.22,
+                        top4Rate = if (cost >= 4) 56.4 else 51.0,
+                        bestItems = itemFreqByUnit[norm]?.keys?.take(3)?.toList().orEmpty(),
+                        synergyComps = matchedComps.map { it.title }.distinct().take(4)
+                    )
+                }
+            }
+        }
+
+        return byNormName.values.sortedWith(
+            compareBy<ChampionTierEntry> { it.tier.sortOrder }
+                .thenBy { it.avgPlacement }
+                .thenByDescending { it.cost }
+                .thenBy { it.name }
+        )
+    }
+
+    private fun refreshLiveItems(
+        existing: List<ItemTierEntry>,
+        liveComps: List<MetaComp>,
+        liveSetNumber: Int,
+        ddragonItemJson: String?,
+        academyTiers: TftAcademyCatalogTiers?
+    ): List<ItemTierEntry> {
+        val holdersByItem = LinkedHashMap<String, MutableList<String>>()
+        liveComps.forEach { comp ->
+            comp.hexPlacements.forEach { p ->
+                p.items.forEach { rawItem ->
+                    val label = formatRiotAssetLabel(rawItem)
+                    holdersByItem.getOrPut(normKey(rawItem)) { mutableListOf() }.add(p.unitName)
+                    holdersByItem.getOrPut(normKey(label)) { mutableListOf() }.add(p.unitName)
+                }
+            }
+        }
+
+        val byNormName = LinkedHashMap<String, ItemTierEntry>()
+        existing.forEach { item ->
+            val norm = normKey(item.name)
+            val apiTier = academyTiers?.itemTiersByKey?.get(norm)
+            val newTier = apiTier ?: item.tier
+            val newAvg = if (apiTier != null) tierToAvg(apiTier) else item.avgPlacement
+            val newTop4 = if (apiTier != null) avgToTop4(newAvg) else item.top4Rate
+            val holders = holdersByItem[norm]?.distinct()?.take(4).orEmpty().ifEmpty { item.bestHolders }
+            byNormName[norm] = item.copy(
+                tier = newTier,
+                avgPlacement = newAvg,
+                top4Rate = newTop4,
+                bestHolders = holders
+            )
+        }
+
+        // Merge any new active Set items from Data Dragon or TFTAcademy
+        if (!ddragonItemJson.isNullOrBlank()) {
+            val setPrefix = "TFT${liveSetNumber}_Item_"
+            runCatching {
+                val data = JSONObject(ddragonItemJson).optJSONObject("data") ?: return@runCatching
+                val keys = data.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (!key.startsWith(setPrefix, ignoreCase = true) && !key.startsWith("TFT_Item_", ignoreCase = true)) {
+                        continue
+                    }
+                    if (key.contains("Consumable", true) || key.contains("Debug", true) ||
+                        key.contains("Tutorial", true) || key.contains("Corrupted", true)
+                    ) {
+                        continue
+                    }
+                    val obj = data.optJSONObject(key) ?: continue
+                    val name = obj.optString("name").trim()
+                    if (name.isBlank() || name.contains("null", true)) continue
+                    val norm = normKey(name)
+                    if (byNormName.containsKey(norm)) continue
+
+                    // Skip obsolete Set emblems not in live TFTAcademy tierlist unless current set
+                    if (name.contains("Emblem", true) &&
+                        !key.startsWith(setPrefix, true) &&
+                        academyTiers?.itemTiersByKey?.containsKey(norm) != true
+                    ) {
+                        continue
+                    }
+
+                    val tier = academyTiers?.itemTiersByKey?.get(norm) ?: TierRank.B
+                    val avg = tierToAvg(tier)
+                    byNormName[norm] = ItemTierEntry(
+                        id = "live_item_$norm",
+                        name = name,
+                        tier = tier,
+                        environment = TftEnvironment.LIVE,
+                        category = classifyItemCategory(name),
+                        components = emptyList(),
+                        statsSummary = "$name — Set $liveSetNumber item.",
+                        avgPlacement = avg,
+                        top4Rate = avgToTop4(avg),
+                        bestHolders = holdersByItem[norm]?.distinct()?.take(4).orEmpty()
+                    )
+                }
+            }
+        }
+
+        // Guarantee any item listed in live TFTAcademy item tierlist is represented
+        academyTiers?.itemTiersByKey?.forEach { (rawOrNorm, rank) ->
+            val label = formatRiotAssetLabel(rawOrNorm)
+            val norm = normKey(label)
+            if (norm.isBlank() || byNormName.containsKey(norm)) return@forEach
+            if (rawOrNorm == norm) return@forEach // skip duplicate normalized keys; only iterate raw IDs
+            val avg = tierToAvg(rank)
+            byNormName[norm] = ItemTierEntry(
+                id = "live_item_$norm",
+                name = label,
+                tier = rank,
+                environment = TftEnvironment.LIVE,
+                category = classifyItemCategory(label),
+                components = emptyList(),
+                statsSummary = "$label — Set $liveSetNumber live item.",
+                avgPlacement = avg,
+                top4Rate = avgToTop4(avg),
+                bestHolders = holdersByItem[norm]?.distinct()?.take(4).orEmpty()
+            )
+        }
+
+        return byNormName.values.sortedWith(
+            compareBy<ItemTierEntry> { it.tier.sortOrder }
+                .thenBy { it.avgPlacement }
+                .thenBy { it.name }
+        )
+    }
+
+    private fun refreshLiveAugments(
+        existing: List<AugmentTierEntry>,
+        liveComps: List<MetaComp>,
+        liveSetNumber: Int,
+        ddragonAugmentJson: String?,
+        academyTiers: TftAcademyCatalogTiers?
+    ): List<AugmentTierEntry> {
+        val compsByAugment = LinkedHashMap<String, MutableList<String>>()
+        liveComps.forEach { comp ->
+            comp.augmentPriorities.forEach { aug ->
+                compsByAugment.getOrPut(normKey(aug)) { mutableListOf() }.add(comp.title)
+                compsByAugment.getOrPut(normKey(formatRiotAssetLabel(aug))) { mutableListOf() }.add(comp.title)
+            }
+        }
+
+        val byNormName = LinkedHashMap<String, AugmentTierEntry>()
+        existing.forEach { aug ->
+            val norm = normKey(aug.name)
+            val apiTier = academyTiers?.augmentTiersByKey?.get(norm)
+            val apiRank = academyTiers?.augmentRanksByKey?.get(norm)
+            val newTier = apiTier ?: aug.tier
+            val newAvg = if (apiTier != null) tierToAvg(apiTier) else aug.avgPlacement
+            val newTop4 = if (apiTier != null) avgToTop4(newAvg) else aug.top4Rate
+            val matchedComps = compsByAugment[norm]?.distinct()?.take(3).orEmpty().ifEmpty { aug.synergyComps }
+            byNormName[norm] = aug.copy(
+                tier = newTier,
+                augmentTier = apiRank ?: aug.augmentTier,
+                avgPlacement = newAvg,
+                top4Rate = newTop4,
+                synergyComps = matchedComps
+            )
+        }
+
+        // Merge any new active Set augments from Data Dragon
+        if (!ddragonAugmentJson.isNullOrBlank()) {
+            val setToken = "DA_${liveSetNumber}_"
+            val setAugToken = "TFT${liveSetNumber}_Augment_"
+            runCatching {
+                val data = JSONObject(ddragonAugmentJson).optJSONObject("data") ?: return@runCatching
+                val keys = data.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val obj = data.optJSONObject(key) ?: continue
+                    val fullImg = obj.optJSONObject("image")?.optString("full").orEmpty()
+                    if (fullImg.startsWith("Missing-", ignoreCase = true)) continue
+                    val name = obj.optString("name").trim()
+                    if (name.isBlank() || name.contains("null", true)) continue
+                    val norm = normKey(name)
+                    if (byNormName.containsKey(norm)) continue
+
+                    val isCurrentSet = key.startsWith(setToken, true) ||
+                        key.startsWith(setAugToken, true) ||
+                        academyTiers?.augmentTiersByKey?.containsKey(norm) == true
+                    if (!isCurrentSet) continue
+
+                    val tier = academyTiers?.augmentTiersByKey?.get(norm) ?: TierRank.B
+                    val rank = academyTiers?.augmentRanksByKey?.get(norm) ?: when {
+                        name.contains("Crown", true) || name.contains("Prismatic", true) -> AugmentTier.PRISMATIC
+                        name.endsWith(" I") -> AugmentTier.SILVER
+                        else -> AugmentTier.GOLD
+                    }
+                    val avg = tierToAvg(tier)
+                    byNormName[norm] = AugmentTierEntry(
+                        id = "live_aug_$norm",
+                        name = name,
+                        tier = tier,
+                        augmentTier = rank,
+                        environment = TftEnvironment.LIVE,
+                        category = if (name.contains("Emblem", true) || name.contains("Crest", true) || name.contains("Crown", true)) {
+                            "Trait / Emblem"
+                        } else {
+                            "Combat / Items"
+                        },
+                        avgPlacement = avg,
+                        top4Rate = avgToTop4(avg),
+                        description = "$name — Set $liveSetNumber augment.",
+                        synergyComps = compsByAugment[norm]?.distinct()?.take(3).orEmpty()
+                    )
+                }
+            }
+        }
+
+        // Guarantee any augment in live TFTAcademy augment tierlist is represented
+        academyTiers?.augmentTiersByKey?.forEach { (rawOrNorm, rank) ->
+            val label = formatRiotAssetLabel(rawOrNorm)
+            val norm = normKey(label)
+            if (norm.isBlank() || byNormName.containsKey(norm)) return@forEach
+            if (rawOrNorm == norm) return@forEach
+            val avg = tierToAvg(rank)
+            val augTier = academyTiers.augmentRanksByKey[rawOrNorm] ?: AugmentTier.GOLD
+            byNormName[norm] = AugmentTierEntry(
+                id = "live_aug_$norm",
+                name = label,
+                tier = rank,
+                augmentTier = augTier,
+                environment = TftEnvironment.LIVE,
+                category = if (label.contains("Emblem", true) || label.contains("Crest", true) || label.contains("Crown", true)) {
+                    "Trait / Emblem"
+                } else {
+                    "Combat / Items"
+                },
+                avgPlacement = avg,
+                top4Rate = avgToTop4(avg),
+                description = "$label — Set $liveSetNumber live augment.",
+                synergyComps = compsByAugment[norm]?.distinct()?.take(3).orEmpty()
+            )
+        }
+
+        return byNormName.values.sortedWith(
+            compareBy<AugmentTierEntry> { it.tier.sortOrder }
+                .thenBy { it.avgPlacement }
+                .thenBy { it.name }
+        )
+    }
+
+    private fun classifyItemCategory(name: String): ItemCategory {
+        val n = name.lowercase(Locale.US)
+        return when {
+            n.contains("guinsoo") || n.contains("nashor") || n.contains("red buff") ||
+                n.contains("kraken") || n.contains("statikk") || n.contains("recurve") ||
+                n.contains("flicker") || n.contains("rapid firecannon") -> ItemCategory.ATTACK_SPEED
+            n.contains("warmog") || n.contains("gargoyle") || n.contains("bramble") ||
+                n.contains("dragon's claw") || n.contains("sunfire") || n.contains("spirit visage") ||
+                n.contains("steadfast") || n.contains("protector's vow") || n.contains("evenshroud") ||
+                n.contains("adaptive helm") || n.contains("quicksilver") || n.contains("vest") ||
+                n.contains("cloak") || n.contains("belt") -> ItemCategory.TANK
+            n.contains("blue buff") || n.contains("shojin") || n.contains("jeweled") ||
+                n.contains("rabadon") || n.contains("archangel") || n.contains("morello") ||
+                n.contains("ionic") || n.contains("crownguard") || n.contains("hextech") ||
+                n.contains("void staff") || n.contains("rod") || n.contains("tear") ||
+                n.contains("dawncore") || n.contains("luden") -> ItemCategory.AP
+            n.contains("infinity edge") || n.contains("last whisper") || n.contains("giant slayer") ||
+                n.contains("deathblade") || n.contains("striker") || n.contains("guardbreaker") ||
+                n.contains("runaan") || n.contains("b.f. sword") || n.contains("collector") -> ItemCategory.AD
+            else -> ItemCategory.FIGHTER
+        }
+    }
+
+    private fun tierToAvg(tier: TierRank): Double = when (tier) {
+        TierRank.S -> 3.52
+        TierRank.A -> 3.84
+        TierRank.B -> 4.18
+        TierRank.C -> 4.46
+        TierRank.X -> 4.30
+    }
+
+    private fun avgToTop4(avg: Double): Double =
+        ((100.0 - (avg - 1.5) * 18.0).coerceIn(44.0, 74.0) * 10.0).roundToInt() / 10.0
+
+    private fun normKey(raw: String): String =
+        raw.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")
+}

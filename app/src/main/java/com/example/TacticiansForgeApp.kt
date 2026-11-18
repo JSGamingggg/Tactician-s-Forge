@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Application
+import android.os.Build
 import android.util.Log
 import androidx.work.Configuration
 import androidx.work.Constraints
@@ -15,6 +16,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import com.example.data.model.TftEnvironment
 import com.example.data.repository.MetaRepository
 import com.example.data.repository.OfflineMetaBundle
 import com.example.notifications.PatchMonitorWorker
@@ -65,6 +67,7 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
     }
 
     private fun preloadEverythingOnLaunch() {
+        if (Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) return
         appScope.launch {
             val repo = MetaRepository(applicationContext)
             val initialBundle = runCatching { repo.loadOfflineBundleAsync() }.getOrNull()
@@ -101,18 +104,27 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
             }
         }
         bundle.liveChampions.forEach { champ ->
-            TftAssetIconResolver.resolveChampionIconUrl(champ.name)?.let(urls::add)
+            TftAssetIconResolver.resolveChampionIconUrl(champ.name, TftEnvironment.LIVE)?.let(urls::add)
             champ.traits.forEach { trait ->
-                TftAssetIconResolver.resolveTraitIconUrl(trait)?.let(urls::add)
+                TftAssetIconResolver.resolveTraitIconUrl(trait, TftEnvironment.LIVE)?.let(urls::add)
             }
         }
-        bundle.liveItems.take(60).forEach { item ->
-            TftAssetIconResolver.resolveItemIconUrl(item.name)?.let(urls::add)
+        bundle.pbeChampions.forEach { champ ->
+            TftAssetIconResolver.resolveChampionIconUrl(champ.name, TftEnvironment.PBE)?.let(urls::add)
+            champ.traits.forEach { trait ->
+                TftAssetIconResolver.resolveTraitIconUrl(trait, TftEnvironment.PBE)?.let(urls::add)
+            }
         }
-        bundle.liveAugments.take(40).forEach { aug ->
+        bundle.liveItems.take(70).forEach { item ->
+            TftAssetIconResolver.resolveItemIconUrl(item.name, TftEnvironment.LIVE)?.let(urls::add)
+        }
+        bundle.pbeItems.take(60).forEach { item ->
+            TftAssetIconResolver.resolveItemIconUrl(item.name, TftEnvironment.PBE)?.let(urls::add)
+        }
+        bundle.liveAugments.take(50).forEach { aug ->
             TftAssetIconResolver.resolveAugmentIconUrl(aug.name)?.let(urls::add)
         }
-        urls.take(240).forEach { url ->
+        urls.take(440).forEach { url ->
             val request = ImageRequest.Builder(this)
                 .data(url)
                 .memoryCachePolicy(CachePolicy.ENABLED)

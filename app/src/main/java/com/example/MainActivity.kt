@@ -141,9 +141,12 @@ fun AppRoot(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val auth = remember(context) {
+    val isFirebaseConfigured = remember(context) {
+        GoogleAuthHelper.isFirebaseConfigured(context)
+    }
+    val auth = remember(context, isFirebaseConfigured) {
         runCatching {
-            if (FirebaseApp.getApps(context).isNotEmpty()) Firebase.auth else null
+            if (isFirebaseConfigured) Firebase.auth else null
         }.getOrNull()
     }
     val localStore = remember(context) { LocalPreferencesStore(context.applicationContext) }
@@ -153,8 +156,8 @@ fun AppRoot(
     val prefs by localStore.preferencesFlow.collectAsStateWithLifecycle(initialValue = null)
     var attemptedAutoSignIn by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(currentUser, isGuestMode) {
-        if (currentUser == null && isGuestMode == false && !attemptedAutoSignIn) {
+    LaunchedEffect(currentUser, isGuestMode, isFirebaseConfigured) {
+        if (isFirebaseConfigured && currentUser == null && isGuestMode == false && !attemptedAutoSignIn) {
             attemptedAutoSignIn = true
             val cm = CredentialManager.create(context)
             GoogleAuthHelper.attemptAutoSignIn(
@@ -168,7 +171,7 @@ fun AppRoot(
     }
 
     when {
-        currentUser == null && isGuestMode == null -> {
+        isFirebaseConfigured && currentUser == null && isGuestMode == null -> {
             TacticiansForgeTheme(themeMode = ThemeMode.fromRaw(prefs?.themeMode)) {
                 Box(
                     modifier = Modifier
@@ -177,12 +180,10 @@ fun AppRoot(
                 )
             }
         }
-        currentUser == null && isGuestMode == false -> {
-            val authSnackbarHostState = remember { SnackbarHostState() }
+        isFirebaseConfigured && currentUser == null && isGuestMode == false -> {
             TacticiansForgeTheme(themeMode = ThemeMode.fromRaw(prefs?.themeMode)) {
                 Scaffold(
-                    contentWindowInsets = WindowInsets.safeDrawing,
-                    snackbarHost = { SnackbarHost(hostState = authSnackbarHostState) }
+                    contentWindowInsets = WindowInsets.safeDrawing
                 ) { innerPadding ->
                     AuthWelcomeScreen(
                         onExploreAsGuest = {
@@ -191,9 +192,7 @@ fun AppRoot(
                         onAuthSuccess = {
                             scope.launch { localStore.setGuestModeChoice(false) }
                         },
-                        onAuthError = { msg ->
-                            scope.launch { authSnackbarHostState.showSnackbar(msg) }
-                        },
+                        onAuthError = {},
                         modifier = Modifier.padding(innerPadding)
                     )
                 }

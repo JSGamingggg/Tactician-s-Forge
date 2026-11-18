@@ -73,6 +73,7 @@ fun AuthWelcomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
+    val isCloudSyncAvailable = remember(context) { GoogleAuthHelper.isFirebaseConfigured(context) }
     var isSigningIn by remember { mutableStateOf(false) }
     var inlineAuthError by remember { mutableStateOf<String?>(null) }
 
@@ -139,6 +140,7 @@ fun AuthWelcomeScreen(
                         AuthInlineErrorBanner(message = err)
                     }
                     AuthActionsColumn(
+                        isCloudSyncAvailable = isCloudSyncAvailable,
                         isSigningIn = isSigningIn,
                         onExploreAsGuest = onExploreAsGuest,
                         onSignInClick = triggerSignIn
@@ -161,6 +163,7 @@ fun AuthWelcomeScreen(
                     AuthInlineErrorBanner(message = err)
                 }
                 AuthActionsColumn(
+                    isCloudSyncAvailable = isCloudSyncAvailable,
                     isSigningIn = isSigningIn,
                     onExploreAsGuest = onExploreAsGuest,
                     onSignInClick = triggerSignIn
@@ -285,6 +288,7 @@ private fun AuthFeaturesCard() {
 
 @Composable
 private fun AuthActionsColumn(
+    isCloudSyncAvailable: Boolean,
     isSigningIn: Boolean,
     onExploreAsGuest: () -> Unit,
     onSignInClick: () -> Unit
@@ -320,34 +324,36 @@ private fun AuthActionsColumn(
             )
         }
 
-        OutlinedButton(
-            onClick = onSignInClick,
-            enabled = !isSigningIn,
-            border = BorderStroke(1.dp, hextechColors.goldBorder),
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .testTag("auth_google_sign_in_button")
-        ) {
-            if (isSigningIn) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Signing in with Google...")
-            } else {
-                Icon(
-                    imageVector = Icons.Default.CloudSync,
-                    contentDescription = "Sign in with Google for Cloud Sync",
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "Sign in with Google (Cloud Sync)",
-                    style = MaterialTheme.typography.titleSmall
-                )
+        if (isCloudSyncAvailable) {
+            OutlinedButton(
+                onClick = onSignInClick,
+                enabled = !isSigningIn,
+                border = BorderStroke(1.dp, hextechColors.goldBorder),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .testTag("auth_google_sign_in_button")
+            ) {
+                if (isSigningIn) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Signing in with Google...")
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.CloudSync,
+                        contentDescription = "Sign in with Google for Cloud Sync",
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Sign in with Google (Cloud Sync)",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                }
             }
         }
 

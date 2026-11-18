@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Context
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.model.HexUnitPlacement
 import com.example.data.model.MetaComp
@@ -589,20 +590,69 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `overlay drawer dimensions adapt safely to both portrait and landscape viewports`() {
-        val portrait = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 411, screenHeightDp = 915)
-        assertFalse(portrait.isLandscape)
-        assertTrue(portrait.widthDp.value in 260f..360f)
-        assertTrue(portrait.maxHeightDp.value < 915f)
+    fun `overlay drawer dimensions adapt to full device width and enable side detail pane in landscape`() {
+        val portraitViewport = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 411, screenHeightDp = 915)
+        assertFalse(portraitViewport.isLandscape)
+        assertFalse(portraitViewport.useSideDetailPane)
+        assertEquals((411 - 16).dp, portraitViewport.widthDp)
+        assertTrue(portraitViewport.widthDp > portraitViewport.maxHeightDp)
+        assertTrue(portraitViewport.maxHeightDp.value < 915f)
 
         val landscapePhone = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 915, screenHeightDp = 411)
         assertTrue(landscapePhone.isLandscape)
-        assertTrue(landscapePhone.widthDp.value in 300f..440f)
-        assertTrue(landscapePhone.maxHeightDp.value <= 411f - 36f)
+        assertTrue(landscapePhone.useSideDetailPane)
+        assertTrue(landscapePhone.useTwoColumnCards)
+        assertEquals((915 - 16).dp, landscapePhone.widthDp)
+        assertTrue(landscapePhone.widthDp > landscapePhone.maxHeightDp)
+        assertTrue(landscapePhone.maxHeightDp.value <= 411f - 20f)
 
         val compactLandscape = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 640, screenHeightDp = 360)
         assertTrue(compactLandscape.isLandscape)
-        assertTrue(compactLandscape.maxHeightDp.value <= 360f - 36f)
+        assertTrue(compactLandscape.useSideDetailPane)
+        assertEquals((640 - 16).dp, compactLandscape.widthDp)
+        assertTrue(compactLandscape.widthDp > compactLandscape.maxHeightDp)
+        assertTrue(compactLandscape.maxHeightDp.value <= 360f - 20f)
+
+        val tabletLandscape = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 1280, screenHeightDp = 800)
+        assertTrue(tabletLandscape.isLandscape)
+        assertTrue(tabletLandscape.useSideDetailPane)
+        assertEquals((1280 - 16).dp, tabletLandscape.widthDp)
+        assertTrue(tabletLandscape.maxHeightDp <= 480.dp)
+    }
+
+    @Test
+    fun `overlay window requests sensor landscape when expanded and computes cutout safe bounds`() {
+        assertEquals(
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+            com.example.overlay.resolveOverlayWindowScreenOrientation(com.example.overlay.OverlayDisplayState.EXPANDED)
+        )
+        assertEquals(
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
+            com.example.overlay.resolveOverlayWindowScreenOrientation(com.example.overlay.OverlayDisplayState.BUBBLE)
+        )
+        assertEquals(
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
+            com.example.overlay.resolveOverlayWindowScreenOrientation(com.example.overlay.OverlayDisplayState.EDGE_COLLAPSED)
+        )
+
+        val landscapeBounds = com.example.overlay.OverlayWindowBounds(
+            widthPx = 2400,
+            heightPx = 1080,
+            safeLeftPx = 96,
+            safeTopPx = 48,
+            safeRightPx = 0,
+            safeBottomPx = 24,
+            density = 3f
+        )
+        assertEquals(2304, landscapeBounds.usableWidthPx)
+        assertEquals(1008, landscapeBounds.usableHeightPx)
+    }
+
+    @Test
+    fun `google auth helper safely reports unconfigured firebase in robolectric runtime`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val configured = com.example.ui.auth.GoogleAuthHelper.isFirebaseConfigured(context)
+        assertFalse(configured)
     }
 
     @Test
@@ -1005,6 +1055,39 @@ class ExampleRobolectricTest {
         assertEquals(TierRank.S, refreshed.items.first { it.name == "Warmog's Armor" }.tier)
         assertTrue(refreshed.augments.any { it.name == "New Prismatic Aug" && it.tier == TierRank.S })
     }
+
+    @Test
+    fun `overlay free resize bounds clamp width and height and preserve adaptive side pane threshold`() {
+        val defaultDims = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 915, screenHeightDp = 411)
+        val bounds = com.example.overlay.resolveOverlaySizeBounds(screenWidthDp = 915, screenHeightDp = 411)
+        assertEquals(280f, bounds.minWidthDp, 0.01f)
+        assertEquals(190f, bounds.minHeightDp, 0.01f)
+        assertEquals(899f, bounds.maxWidthDp, 0.01f)
+        assertEquals(395f, bounds.maxHeightDp, 0.01f)
+
+        // Default un-resized mode keeps custom height null (wrap content up to maxHeightDp)
+        val (defaultW, defaultH) = com.example.overlay.clampOverlayCustomSize(null, null, defaultDims, bounds)
+        assertEquals(defaultDims.widthDp, defaultW)
+        assertEquals(null, defaultH)
+
+        // Too small values clamp to minimum usable bounds
+        val (minW, minH) = com.example.overlay.clampOverlayCustomSize(120f, 90f, defaultDims, bounds)
+        assertEquals(280.dp, minW)
+        assertEquals(190.dp, minH)
+
+        // Oversized values clamp inside screen bounds minus safe margin
+        val (maxW, maxH) = com.example.overlay.clampOverlayCustomSize(1600f, 900f, defaultDims, bounds)
+        assertEquals(899.dp, maxW)
+        assertEquals(395.dp, maxH)
+
+        // Mid-range custom size preserves exact dp dimensions & updates adaptive side detail breakpoint
+        val (midW, midH) = com.example.overlay.clampOverlayCustomSize(540f, 320f, defaultDims, bounds)
+        assertEquals(540.dp, midW)
+        assertEquals(320.dp, midH)
+        assertTrue(midW >= 480.dp)
+
+        val (narrowW, _) = com.example.overlay.clampOverlayCustomSize(420f, 300f, defaultDims, bounds)
+        assertEquals(420.dp, narrowW)
+        assertFalse(narrowW >= 480.dp)
+    }
 }
-
-

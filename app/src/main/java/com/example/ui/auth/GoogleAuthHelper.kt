@@ -88,6 +88,10 @@ object GoogleAuthHelper {
             ?.takeIf { it.isNotBlank() }
     }
 
+    fun isFirebaseConfigured(context: Context): Boolean =
+        com.google.firebase.FirebaseApp.getApps(context).isNotEmpty() &&
+            resolveDefaultWebClientId(context) != null
+
     fun attemptAutoSignIn(
         context: Context,
         credentialManager: CredentialManager,
@@ -294,6 +298,7 @@ fun CloudSyncStatusCard(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             if (currentUser == null) {
+                val firebaseReady = remember(context) { GoogleAuthHelper.isFirebaseConfigured(context) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -305,54 +310,60 @@ fun CloudSyncStatusCard(
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = stringResource(R.string.guest_mode_label),
+                            text = if (firebaseReady) stringResource(R.string.guest_mode_label) else "Local Device Mode",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Favorites are saved on this device. Sign in optionally to sync comps & Riot IDs to Firestore.",
+                            text = if (firebaseReady) {
+                                "Favorites are saved on this device. Sign in optionally to sync comps & Riot IDs to Firestore."
+                            } else {
+                                "Favorites, offline meta snapshots, tier lists, and overlay pins are saved locally on this device."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        isLoading = true
-                        GoogleAuthHelper.onGoogleSignInClicked(
-                            context = context,
-                            credentialManager = credentialManager,
-                            scope = scope,
-                            onAuthSuccess = {
-                                isLoading = false
-                                onAuthSuccess()
-                            },
-                            onAuthError = { msg ->
-                                isLoading = false
-                                onAuthError(msg)
-                            },
-                            onAuthCancelled = { isLoading = false }
-                        )
-                    },
-                    enabled = !isLoading,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .testTag("google_sign_in_button")
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text(stringResource(R.string.sign_in_google))
+                if (firebaseReady) {
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            isLoading = true
+                            GoogleAuthHelper.onGoogleSignInClicked(
+                                context = context,
+                                credentialManager = credentialManager,
+                                scope = scope,
+                                onAuthSuccess = {
+                                    isLoading = false
+                                    onAuthSuccess()
+                                },
+                                onAuthError = { msg ->
+                                    isLoading = false
+                                    onAuthError(msg)
+                                },
+                                onAuthCancelled = { isLoading = false }
+                            )
+                        },
+                        enabled = !isLoading,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("google_sign_in_button")
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(stringResource(R.string.sign_in_google))
+                        }
                     }
                 }
             } else {

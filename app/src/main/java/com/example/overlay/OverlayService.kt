@@ -8,16 +8,23 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
+import android.content.res.Resources
 import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
+import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import androidx.compose.animation.AnimatedContent
@@ -45,6 +52,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -58,6 +66,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
@@ -65,8 +74,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Star
@@ -84,15 +95,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -232,10 +247,79 @@ internal fun computeEdgeSnapDecision(
     )
 }
 
+data class OverlayWindowBounds(
+    val widthPx: Int,
+    val heightPx: Int,
+    val safeLeftPx: Int = 0,
+    val safeTopPx: Int = 0,
+    val safeRightPx: Int = 0,
+    val safeBottomPx: Int = 0,
+    val density: Float = 1f
+) {
+    val usableWidthPx: Int get() = (widthPx - safeLeftPx - safeRightPx).coerceAtLeast(1)
+    val usableHeightPx: Int get() = (heightPx - safeTopPx - safeBottomPx).coerceAtLeast(1)
+}
+
+internal fun resolveOverlayWindowBounds(
+    windowManager: WindowManager?,
+    resources: Resources
+): OverlayWindowBounds {
+    val density = resources.displayMetrics.density.coerceAtLeast(1f)
+    if (windowManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val metrics = runCatching { windowManager.currentWindowMetrics }.getOrNull()
+        if (metrics != null) {
+            val bounds = metrics.bounds
+            val visibleInsets = metrics.windowInsets.getInsets(
+                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+            )
+            val cutoutInsets = metrics.windowInsets.getInsetsIgnoringVisibility(
+                WindowInsets.Type.displayCutout()
+            )
+            return OverlayWindowBounds(
+                widthPx = bounds.width().coerceAtLeast(1),
+                heightPx = bounds.height().coerceAtLeast(1),
+                safeLeftPx = maxOf(visibleInsets.left, cutoutInsets.left).coerceAtLeast(0),
+                safeTopPx = maxOf(visibleInsets.top, cutoutInsets.top).coerceAtLeast(0),
+                safeRightPx = maxOf(visibleInsets.right, cutoutInsets.right).coerceAtLeast(0),
+                safeBottomPx = maxOf(visibleInsets.bottom, cutoutInsets.bottom).coerceAtLeast(0),
+                density = density
+            )
+        }
+    }
+
+    if (windowManager != null) {
+        val realMetrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        val resolved = runCatching { windowManager.defaultDisplay?.getRealMetrics(realMetrics) }.isSuccess
+        if (resolved && realMetrics.widthPixels > 0 && realMetrics.heightPixels > 0) {
+            return OverlayWindowBounds(
+                widthPx = realMetrics.widthPixels.coerceAtLeast(1),
+                heightPx = realMetrics.heightPixels.coerceAtLeast(1),
+                density = realMetrics.density.coerceAtLeast(1f)
+            )
+        }
+    }
+
+    val dm = resources.displayMetrics
+    return OverlayWindowBounds(
+        widthPx = dm.widthPixels.coerceAtLeast(1),
+        heightPx = dm.heightPixels.coerceAtLeast(1),
+        density = density
+    )
+}
+
+internal fun resolveOverlayWindowScreenOrientation(state: OverlayDisplayState): Int = when (state) {
+    OverlayDisplayState.EXPANDED -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    OverlayDisplayState.BUBBLE,
+    OverlayDisplayState.EDGE_COLLAPSED -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+}
+
 data class OverlayDrawerDimensions(
     val widthDp: Dp,
     val maxHeightDp: Dp,
-    val isLandscape: Boolean
+    val isLandscape: Boolean,
+    val useSideDetailPane: Boolean = widthDp >= 480.dp,
+    val useTwoColumnCards: Boolean = widthDp >= 430.dp
 )
 
 internal fun computeOverlayDrawerDimensions(
@@ -246,25 +330,72 @@ internal fun computeOverlayDrawerDimensions(
     val safeH = screenHeightDp.coerceAtLeast(240)
     val isLandscape = safeW > safeH
     val widthDp = if (isLandscape) {
-        (safeW * 0.56f).coerceIn(300f, 440f).dp
+        // Adapt dynamically to take advantage of the full usable device width
+        (safeW - 16).coerceAtLeast(320).dp
     } else {
-        (safeW - 24).coerceIn(260, 360).dp
+        // Keep landscape card proportions (width > height) even if opened before display finishes rotating
+        (safeW - 16).coerceAtLeast(260).dp
     }
     val maxHeightDp = if (isLandscape) {
-        (safeH - 36).coerceIn(220, 390).dp
+        (safeH - 20).coerceIn(220, 480).dp
     } else {
-        (safeH - 72).coerceIn(320, 560).dp
+        (widthDp.value * 0.78f)
+            .roundToInt()
+            .coerceIn(220, 320)
+            .coerceAtMost((safeH - 48).coerceAtLeast(200))
+            .dp
     }
     return OverlayDrawerDimensions(
         widthDp = widthDp,
         maxHeightDp = maxHeightDp,
-        isLandscape = isLandscape
+        isLandscape = isLandscape,
+        useSideDetailPane = widthDp >= 480.dp,
+        useTwoColumnCards = widthDp >= 430.dp
     )
+}
+
+data class OverlaySizeBounds(
+    val minWidthDp: Float,
+    val minHeightDp: Float,
+    val maxWidthDp: Float,
+    val maxHeightDp: Float
+)
+
+internal fun resolveOverlaySizeBounds(
+    screenWidthDp: Int,
+    screenHeightDp: Int
+): OverlaySizeBounds {
+    val safeW = screenWidthDp.coerceAtLeast(240)
+    val safeH = screenHeightDp.coerceAtLeast(240)
+    val maxW = (safeW - 16).coerceAtLeast(240).toFloat()
+    val maxH = (safeH - 16).coerceAtLeast(190).toFloat()
+    val minW = 280f.coerceAtMost(maxW)
+    val minH = 190f.coerceAtMost(maxH)
+    return OverlaySizeBounds(
+        minWidthDp = minW,
+        minHeightDp = minH,
+        maxWidthDp = maxW,
+        maxHeightDp = maxH
+    )
+}
+
+internal fun clampOverlayCustomSize(
+    customWidthDp: Float?,
+    customHeightDp: Float?,
+    defaultDims: OverlayDrawerDimensions,
+    bounds: OverlaySizeBounds
+): Pair<Dp, Dp?> {
+    val activeWidth = (customWidthDp ?: defaultDims.widthDp.value)
+        .coerceIn(bounds.minWidthDp, bounds.maxWidthDp)
+        .dp
+    val activeHeight = customHeightDp?.coerceIn(bounds.minHeightDp, bounds.maxHeightDp)?.dp
+    return activeWidth to activeHeight
 }
 
 class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
     private lateinit var windowManager: WindowManager
+    private var displayManager: DisplayManager? = null
     private lateinit var prefsStore: LocalPreferencesStore
     private lateinit var metaRepository: MetaRepository
     private lateinit var firestoreRepo: FirestoreUserRepository
@@ -280,6 +411,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private val displayState = mutableStateOf(OverlayDisplayState.BUBBLE)
     private val dockEdgeState = mutableStateOf(OverlayDockEdge.LEFT)
     private val isDraggingState = mutableStateOf(false)
+    private val customWidthDpState = mutableStateOf<Float?>(null)
+    private val customHeightDpState = mutableStateOf<Float?>(null)
+    private var savedExpandedOriginPx: Pair<Int, Int>? = null
     private val configurationVersion = mutableIntStateOf(0)
     private var savedBubbleAnchorY = 220
     private val allCompsState = mutableStateOf<List<MetaComp>>(emptyList())
@@ -287,6 +421,15 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private var favoritesObserverJob: Job? = null
     private var activeOverlaySyncJob: Job? = null
     private var windowSnapAnimator: ValueAnimator? = null
+
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            configurationVersion.intValue += 1
+            clampOverlayPositionForCurrentBounds()
+        }
+    }
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
     override val viewModelStore: ViewModelStore get() = store
@@ -305,6 +448,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         metaRepository = MetaRepository(this)
         firestoreRepo = FirestoreUserRepository(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        displayManager = (getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)?.also { dm ->
+            dm.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
+        }
 
         reloadCompsFromCache()
         observeCacheAndFavorites()
@@ -476,17 +622,78 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         }
     }
 
-    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).roundToInt()
+    private fun currentWindowBounds(): OverlayWindowBounds =
+        resolveOverlayWindowBounds(windowManager = windowManager, resources = resources)
 
-    private fun screenWidthPx(): Int = resources.displayMetrics.widthPixels.coerceAtLeast(1)
+    private fun dpToPx(dp: Int): Int = (dp * currentWindowBounds().density).roundToInt()
 
-    private fun screenHeightPx(): Int = resources.displayMetrics.heightPixels.coerceAtLeast(1)
+    private fun currentSizeBounds(bounds: OverlayWindowBounds = currentWindowBounds()): OverlaySizeBounds {
+        val widthDp = (bounds.usableWidthPx / bounds.density).roundToInt()
+        val heightDp = (bounds.usableHeightPx / bounds.density).roundToInt()
+        return resolveOverlaySizeBounds(screenWidthDp = widthDp, screenHeightDp = heightDp)
+    }
 
-    private fun currentDrawerDimensions(): OverlayDrawerDimensions {
-        val density = resources.displayMetrics.density.coerceAtLeast(1f)
-        val widthDp = (screenWidthPx() / density).roundToInt()
-        val heightDp = (screenHeightPx() / density).roundToInt()
+    private fun currentDrawerDimensions(bounds: OverlayWindowBounds = currentWindowBounds()): OverlayDrawerDimensions {
+        val widthDp = (bounds.usableWidthPx / bounds.density).roundToInt()
+        val heightDp = (bounds.usableHeightPx / bounds.density).roundToInt()
         return computeOverlayDrawerDimensions(screenWidthDp = widthDp, screenHeightDp = heightDp)
+    }
+
+    private fun activeExpandedHeightDpValue(bounds: OverlayWindowBounds = currentWindowBounds()): Float {
+        customHeightDpState.value?.let { return it }
+        val measuredPx = overlayView?.height?.takeIf { it > 0 }
+        if (measuredPx != null) {
+            val sizeBounds = currentSizeBounds(bounds)
+            return (measuredPx / bounds.density).coerceIn(sizeBounds.minHeightDp, sizeBounds.maxHeightDp)
+        }
+        return currentDrawerDimensions(bounds).maxHeightDp.value
+    }
+
+    private fun applyExpandedBoundsToWindow(
+        widthDp: Float?,
+        heightDp: Float?,
+        targetX: Int? = null,
+        targetY: Int? = null
+    ) {
+        if (!::overlayLayoutParams.isInitialized) return
+        val bounds = currentWindowBounds()
+        val sizeBounds = currentSizeBounds(bounds)
+        val defaultDims = currentDrawerDimensions(bounds)
+        val (clampedW, clampedH) = clampOverlayCustomSize(widthDp, heightDp, defaultDims, sizeBounds)
+
+        customWidthDpState.value = widthDp?.let { clampedW.value }
+        customHeightDpState.value = clampedH?.value
+
+        val effectiveWpx = (clampedW.value * bounds.density).roundToInt()
+        val effectiveHpx = ((clampedH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
+        val minLeftX = bounds.safeLeftPx + dpToPx(8)
+        val maxLeftX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - dpToPx(8)).coerceAtLeast(minLeftX)
+        val minTopY = bounds.safeTopPx + dpToPx(8)
+        val maxTopY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - dpToPx(8)).coerceAtLeast(minTopY)
+
+        overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
+        val candidateX = targetX ?: savedExpandedOriginPx?.first ?: overlayLayoutParams.x
+        val candidateY = targetY ?: savedExpandedOriginPx?.second ?: overlayLayoutParams.y
+        val clampedX = candidateX.coerceIn(minLeftX, maxLeftX)
+        val clampedY = candidateY.coerceIn(minTopY, maxTopY)
+        overlayLayoutParams.x = clampedX
+        overlayLayoutParams.y = clampedY
+        if (savedExpandedOriginPx != null || targetX != null || targetY != null) {
+            savedExpandedOriginPx = clampedX to clampedY
+        }
+
+        overlayView?.let { view ->
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+            }
+        }
+    }
+
+    private fun resetExpandedSizeAndPosition() {
+        customWidthDpState.value = null
+        customHeightDpState.value = null
+        savedExpandedOriginPx = null
+        clampOverlayPositionForCurrentBounds()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -497,29 +704,49 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     private fun clampOverlayPositionForCurrentBounds() {
         if (!::overlayLayoutParams.isInitialized) return
-        val marginPx = dpToPx(12)
-        val minY = dpToPx(16)
-        val maxCompactY = (screenHeightPx() - dpToPx(104)).coerceAtLeast(minY)
-        val drawerDims = currentDrawerDimensions()
-        val maxExpandedY = (screenHeightPx() - dpToPx(drawerDims.maxHeightDp.value.roundToInt() + 20)).coerceAtLeast(minY)
+        val bounds = currentWindowBounds()
+        val expandedMarginPx = dpToPx(8)
+        val minY = bounds.safeTopPx + dpToPx(8)
+        val maxCompactY = (bounds.heightPx - bounds.safeBottomPx - dpToPx(88)).coerceAtLeast(minY)
+        val defaultDims = currentDrawerDimensions(bounds)
+        val sizeBounds = currentSizeBounds(bounds)
+        val (activeW, activeH) = clampOverlayCustomSize(
+            customWidthDpState.value,
+            customHeightDpState.value,
+            defaultDims,
+            sizeBounds
+        )
+        if (customWidthDpState.value != null) customWidthDpState.value = activeW.value
+        if (customHeightDpState.value != null) customHeightDpState.value = activeH?.value
+
+        val effectiveWpx = (activeW.value * bounds.density).roundToInt()
+        val effectiveHpx = ((activeH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
+        val minExpandedX = bounds.safeLeftPx + expandedMarginPx
+        val maxExpandedX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - expandedMarginPx).coerceAtLeast(minExpandedX)
+        val maxExpandedY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - expandedMarginPx).coerceAtLeast(minY)
 
         savedBubbleAnchorY = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
+        overlayLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(displayState.value)
+
         when (displayState.value) {
             OverlayDisplayState.EDGE_COLLAPSED -> {
                 val edgeGravity = if (dockEdgeState.value == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
                 overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = 0
+                overlayLayoutParams.x = if (dockEdgeState.value == OverlayDockEdge.LEFT) bounds.safeLeftPx else bounds.safeRightPx
                 overlayLayoutParams.y = savedBubbleAnchorY
             }
             OverlayDisplayState.BUBBLE -> {
-                overlayLayoutParams.x = overlayLayoutParams.x.coerceIn(0, (screenWidthPx() - dpToPx(72)).coerceAtLeast(0))
+                val minX = bounds.safeLeftPx
+                val maxX = (bounds.widthPx - bounds.safeRightPx - dpToPx(72)).coerceAtLeast(minX)
+                overlayLayoutParams.x = overlayLayoutParams.x.coerceIn(minX, maxX)
                 overlayLayoutParams.y = savedBubbleAnchorY
             }
             OverlayDisplayState.EXPANDED -> {
-                val edgeGravity = if (dockEdgeState.value == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
-                overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = marginPx
-                overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxExpandedY)
+                overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
+                val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
+                val preferredY = savedExpandedOriginPx?.second ?: savedBubbleAnchorY
+                overlayLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
+                overlayLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
             }
         }
         overlayView?.let { view ->
@@ -540,29 +767,46 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
         dockEdgeState.value = dockEdge
         displayState.value = targetState
+        overlayLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(targetState)
 
+        val bounds = currentWindowBounds()
         val edgeGravity = if (dockEdge == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
+        val edgeSafeMargin = if (dockEdge == OverlayDockEdge.LEFT) bounds.safeLeftPx else bounds.safeRightPx
         val marginPx = dpToPx(12)
-        val minY = dpToPx(16)
-        val maxCompactY = (screenHeightPx() - dpToPx(104)).coerceAtLeast(minY)
-        val drawerDims = currentDrawerDimensions()
-        val maxExpandedY = (screenHeightPx() - dpToPx(drawerDims.maxHeightDp.value.roundToInt() + 20)).coerceAtLeast(minY)
+        val expandedMarginPx = dpToPx(8)
+        val minY = bounds.safeTopPx + dpToPx(8)
+        val maxCompactY = (bounds.heightPx - bounds.safeBottomPx - dpToPx(88)).coerceAtLeast(minY)
+        val defaultDims = currentDrawerDimensions(bounds)
+        val sizeBounds = currentSizeBounds(bounds)
+        val (activeW, activeH) = clampOverlayCustomSize(
+            customWidthDpState.value,
+            customHeightDpState.value,
+            defaultDims,
+            sizeBounds
+        )
+        val effectiveWpx = (activeW.value * bounds.density).roundToInt()
+        val effectiveHpx = ((activeH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
+        val minExpandedX = bounds.safeLeftPx + expandedMarginPx
+        val maxExpandedX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - expandedMarginPx).coerceAtLeast(minExpandedX)
+        val maxExpandedY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - expandedMarginPx).coerceAtLeast(minY)
 
         when (targetState) {
             OverlayDisplayState.EDGE_COLLAPSED -> {
                 overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = 0
+                overlayLayoutParams.x = edgeSafeMargin
                 overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
             }
             OverlayDisplayState.BUBBLE -> {
                 overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = marginPx
+                overlayLayoutParams.x = edgeSafeMargin + marginPx
                 overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
             }
             OverlayDisplayState.EXPANDED -> {
-                overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = marginPx
-                overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxExpandedY)
+                overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
+                val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
+                val preferredY = savedExpandedOriginPx?.second ?: savedBubbleAnchorY
+                overlayLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
+                overlayLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
             }
         }
 
@@ -615,8 +859,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
+        val initialBounds = currentWindowBounds()
         val initialMarginPx = dpToPx(12)
-        savedBubbleAnchorY = dpToPx(88)
+        savedBubbleAnchorY = (initialBounds.safeTopPx + dpToPx(28))
+            .coerceIn(initialBounds.safeTopPx + dpToPx(8), (initialBounds.heightPx - initialBounds.safeBottomPx - dpToPx(88)).coerceAtLeast(initialBounds.safeTopPx + dpToPx(8)))
         overlayLayoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -625,8 +871,12 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = initialMarginPx
+            x = initialBounds.safeLeftPx + initialMarginPx
             y = savedBubbleAnchorY
+            screenOrientation = resolveOverlayWindowScreenOrientation(displayState.value)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
         }
 
         val composeView = ComposeView(this).apply {
@@ -649,9 +899,11 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                 if (activeState == OverlayDisplayState.EXPANDED) return@setOnTouchListener false
 
                 val viewW = view.width.takeIf { it > 0 } ?: dpToPx(60)
-                val screenW = screenWidthPx()
-                val minY = dpToPx(16)
-                val maxY = (screenHeightPx() - dpToPx(104)).coerceAtLeast(minY)
+                val bounds = currentWindowBounds()
+                val minLeftX = bounds.safeLeftPx
+                val maxLeftX = (bounds.widthPx - bounds.safeRightPx - viewW).coerceAtLeast(minLeftX)
+                val minY = bounds.safeTopPx + dpToPx(8)
+                val maxY = (bounds.heightPx - bounds.safeBottomPx - dpToPx(88)).coerceAtLeast(minY)
 
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -660,9 +912,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         velocityTracker = VelocityTracker.obtain().apply { addMovement(event) }
                         val isEndGravity = (overlayLayoutParams.gravity and Gravity.END) == Gravity.END
                         startLeftPx = if (isEndGravity) {
-                            (screenW - viewW - overlayLayoutParams.x).coerceAtLeast(0)
+                            (bounds.widthPx - viewW - overlayLayoutParams.x).coerceIn(minLeftX, maxLeftX)
                         } else {
-                            overlayLayoutParams.x
+                            overlayLayoutParams.x.coerceIn(minLeftX, maxLeftX)
                         }
                         initialY = overlayLayoutParams.y
                         initialTouchX = event.rawX
@@ -687,16 +939,16 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                                 if (pulledAway) {
                                     displayState.value = OverlayDisplayState.BUBBLE
                                     overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
-                                    overlayLayoutParams.x = (startLeftPx + dx).coerceIn(0, (screenW - viewW).coerceAtLeast(0))
+                                    overlayLayoutParams.x = (startLeftPx + dx).coerceIn(minLeftX, maxLeftX)
                                     overlayLayoutParams.y = clampedY
                                 } else {
-                                    // Stay flush to the docked screen edge while sliding vertically
-                                    overlayLayoutParams.x = 0
+                                    // Stay flush to the docked safe edge while sliding vertically
+                                    overlayLayoutParams.x = if (dockEdgeState.value == OverlayDockEdge.LEFT) bounds.safeLeftPx else bounds.safeRightPx
                                     overlayLayoutParams.y = clampedY
                                 }
                             } else {
                                 overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
-                                overlayLayoutParams.x = (startLeftPx + dx).coerceIn(0, (screenW - viewW).coerceAtLeast(0))
+                                overlayLayoutParams.x = (startLeftPx + dx).coerceIn(minLeftX, maxLeftX)
                                 overlayLayoutParams.y = clampedY
                             }
                             if (this.isAttachedToWindow) {
@@ -716,9 +968,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         if (moved && displayState.value == OverlayDisplayState.BUBBLE) {
                             val currentLeft = overlayLayoutParams.x
                             val decision = computeEdgeSnapDecision(
-                                leftEdgePx = currentLeft,
+                                leftEdgePx = (currentLeft - bounds.safeLeftPx).coerceAtLeast(0),
                                 viewWidthPx = viewW,
-                                screenWidthPx = screenW,
+                                screenWidthPx = bounds.usableWidthPx,
                                 snapThresholdPx = edgeSnapThresholdPx
                             )
                             val flungLeft = vx < -900f
@@ -730,7 +982,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                             }
                             dockEdgeState.value = resolvedDock
                             if (decision.shouldCollapseToEdge || flungLeft || flungRight) {
-                                val targetLeft = if (resolvedDock == OverlayDockEdge.LEFT) 0 else (screenW - viewW).coerceAtLeast(0)
+                                val targetLeft = if (resolvedDock == OverlayDockEdge.LEFT) minLeftX else maxLeftX
                                 animateOverlayXTo(this, fromX = currentLeft, toX = targetLeft) {
                                     transitionDisplayState(
                                         targetState = OverlayDisplayState.EDGE_COLLAPSED,
@@ -738,10 +990,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                                     )
                                 }
                             } else {
-                                // Smooth magnetic nudge away from top corners without sudden jumps
-                                val safeMarginLeft = dpToPx(12)
-                                val safeMarginRight = (screenW - viewW - dpToPx(12)).coerceAtLeast(0)
-                                val clampedTarget = currentLeft.coerceIn(safeMarginLeft, safeMarginRight.coerceAtLeast(safeMarginLeft))
+                                // Smooth magnetic nudge away from safe edges without sudden jumps
+                                val safeMarginLeft = minLeftX + dpToPx(12)
+                                val safeMarginRight = (maxLeftX - dpToPx(12)).coerceAtLeast(safeMarginLeft)
+                                val clampedTarget = currentLeft.coerceIn(safeMarginLeft, safeMarginRight)
                                 if (clampedTarget != currentLeft) {
                                     animateOverlayXTo(this, fromX = currentLeft, toX = clampedTarget)
                                 }
@@ -760,8 +1012,33 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         dockEdge = dockEdgeState.value,
                         isDragging = isDraggingState.value,
                         configVersion = configurationVersion.intValue,
+                        customWidthDp = customWidthDpState.value,
+                        customHeightDp = customHeightDpState.value,
                         allComps = allCompsState.value,
                         favoriteDocs = favoriteDocsState.value,
+                        windowOriginProvider = { overlayLayoutParams.x to overlayLayoutParams.y },
+                        windowSizeProvider = {
+                            val b = currentWindowBounds()
+                            val activeW = customWidthDpState.value ?: currentDrawerDimensions(b).widthDp.value
+                            val activeH = activeExpandedHeightDpValue(b)
+                            activeW to activeH
+                        },
+                        densityProvider = { currentWindowBounds().density },
+                        onMoveExpandedWindow = { nextX, nextY ->
+                            applyExpandedBoundsToWindow(
+                                widthDp = customWidthDpState.value,
+                                heightDp = customHeightDpState.value,
+                                targetX = nextX,
+                                targetY = nextY
+                            )
+                        },
+                        onResizeExpandedWindow = { nextW, nextH ->
+                            applyExpandedBoundsToWindow(
+                                widthDp = nextW,
+                                heightDp = nextH
+                            )
+                        },
+                        onResetExpandedSize = ::resetExpandedSizeAndPosition,
                         onExpandDrawer = {
                             windowSnapAnimator?.cancel()
                             transitionDisplayState(OverlayDisplayState.EXPANDED)
@@ -792,6 +1069,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     override fun onDestroy() {
         super.onDestroy()
+        displayManager?.unregisterDisplayListener(displayListener)
+        displayManager = null
         windowSnapAnimator?.cancel()
         serviceScope.cancel()
         OverlayController.setRunning(false)
@@ -820,15 +1099,23 @@ private enum class OverlayBrowseMode {
     FAVORITES
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun OverlayRootContent(
     displayState: OverlayDisplayState,
     dockEdge: OverlayDockEdge,
     isDragging: Boolean,
     configVersion: Int,
+    customWidthDp: Float?,
+    customHeightDp: Float?,
     allComps: List<MetaComp>,
     favoriteDocs: List<FavoriteCompDoc>,
+    windowOriginProvider: () -> Pair<Int, Int>,
+    windowSizeProvider: () -> Pair<Float, Float>,
+    densityProvider: () -> Float,
+    onMoveExpandedWindow: (Int, Int) -> Unit,
+    onResizeExpandedWindow: (Float?, Float?) -> Unit,
+    onResetExpandedSize: () -> Unit,
     onExpandDrawer: () -> Unit,
     onMinimizeToBubble: () -> Unit,
     onCollapseToEdge: () -> Unit,
@@ -838,13 +1125,33 @@ private fun OverlayRootContent(
 ) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
-    val drawerDims = remember(configVersion, configuration.screenWidthDp, configuration.screenHeightDp, configuration.orientation) {
-        val metrics = context.resources.displayMetrics
-        val densityVal = metrics.density.coerceAtLeast(1f)
-        val wDp = (metrics.widthPixels / densityVal).roundToInt().takeIf { it > 0 } ?: configuration.screenWidthDp
-        val hDp = (metrics.heightPixels / densityVal).roundToInt().takeIf { it > 0 } ?: configuration.screenHeightDp
-        computeOverlayDrawerDimensions(screenWidthDp = wDp, screenHeightDp = hDp)
+    val (defaultDrawerDims, sizeBounds) = remember(
+        configVersion,
+        configuration.screenWidthDp,
+        configuration.screenHeightDp,
+        configuration.orientation
+    ) {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        val bounds = resolveOverlayWindowBounds(windowManager = wm, resources = context.resources)
+        val wDp = (bounds.usableWidthPx / bounds.density).roundToInt().takeIf { it > 0 } ?: configuration.screenWidthDp
+        val hDp = (bounds.usableHeightPx / bounds.density).roundToInt().takeIf { it > 0 } ?: configuration.screenHeightDp
+        computeOverlayDrawerDimensions(screenWidthDp = wDp, screenHeightDp = hDp) to
+            resolveOverlaySizeBounds(screenWidthDp = wDp, screenHeightDp = hDp)
     }
+    val (activeWidthDp, activeHeightDp) = clampOverlayCustomSize(
+        customWidthDp = customWidthDp,
+        customHeightDp = customHeightDp,
+        defaultDims = defaultDrawerDims,
+        bounds = sizeBounds
+    )
+    val drawerDims = OverlayDrawerDimensions(
+        widthDp = activeWidthDp,
+        maxHeightDp = activeHeightDp ?: defaultDrawerDims.maxHeightDp,
+        isLandscape = defaultDrawerDims.isLandscape,
+        useSideDetailPane = activeWidthDp >= 480.dp,
+        useTwoColumnCards = activeWidthDp >= 430.dp
+    )
+    val isCustomResized = customWidthDp != null || customHeightDp != null
     val favoriteIds = remember(favoriteDocs) {
         favoriteDocs.map { it.compId.ifBlank { it.id } }.toSet()
     }
@@ -1055,7 +1362,7 @@ private fun OverlayRootContent(
                 var browseMode by remember { mutableStateOf(OverlayBrowseMode.ALL_COMPS) }
                 var envFilter by remember { mutableStateOf(TftEnvironment.LIVE) }
                 var tierFilter by remember { mutableStateOf<TierRank?>(null) }
-                var selectedHexCompId by remember { mutableStateOf<String?>(null) }
+                var selectedCompId by remember { mutableStateOf<String?>(null) }
                 val collapseArrow = if (dockEdge == OverlayDockEdge.LEFT) {
                     Icons.AutoMirrored.Filled.KeyboardArrowLeft
                 } else {
@@ -1088,9 +1395,28 @@ private fun OverlayRootContent(
                 val displayedByTier = remember(displayed) {
                     groupCompsByTier(displayed)
                 }
+                val selectedComp = remember(displayed, selectedCompId) {
+                    displayed.firstOrNull { it.id == selectedCompId }
+                }
+                val showingSideDetail = selectedComp != null && drawerDims.useSideDetailPane
                 // All tier sub-headers in the Live Match Drawer start closed until opened
                 var expandedOverlayTiers by remember(browseMode, envFilter) {
                     mutableStateOf(emptySet<TierRank>())
+                }
+
+                var moveStartOrigin by remember { mutableStateOf(0 to 0) }
+                var moveStartRaw by remember { mutableStateOf(0f to 0f) }
+                var resizeStartSize by remember { mutableStateOf(drawerDims.widthDp.value to drawerDims.maxHeightDp.value) }
+                var resizeStartRaw by remember { mutableStateOf(0f to 0f) }
+
+                val surfaceSizeModifier = if (activeHeightDp != null) {
+                    Modifier
+                        .width(activeWidthDp)
+                        .height(activeHeightDp)
+                } else {
+                    Modifier
+                        .width(activeWidthDp)
+                        .heightIn(max = drawerDims.maxHeightDp)
                 }
 
                 Surface(
@@ -1101,104 +1427,174 @@ private fun OverlayRootContent(
                         brush = Brush.linearGradient(listOf(BrightGold, ArcaneCyan))
                     ),
                     shadowElevation = 16.dp,
-                    modifier = Modifier
-                        .width(drawerDims.widthDp)
-                        .heightIn(max = drawerDims.maxHeightDp)
-                        .testTag("overlay_expanded_drawer")
+                    modifier = surfaceSizeModifier.testTag("overlay_expanded_drawer")
                 ) {
-                    Column(
-                        modifier = Modifier.padding(
-                            horizontal = 12.dp,
-                            vertical = if (drawerDims.isLandscape) 8.dp else 12.dp
-                        )
+                    Box(
+                        modifier = if (activeHeightDp != null) {
+                            Modifier.fillMaxWidth().fillMaxHeight()
+                        } else {
+                            Modifier.fillMaxWidth()
+                        }
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        Column(
+                            modifier = (if (activeHeightDp != null) {
+                                Modifier.fillMaxWidth().fillMaxHeight()
+                            } else {
+                                Modifier.fillMaxWidth()
+                            })
+                                .padding(
+                                    start = 12.dp,
+                                    end = 14.dp,
+                                    top = 8.dp,
+                                    bottom = 12.dp
+                                )
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = BrightGold,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = "LIVE MATCH DRAWER",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = BrightGold,
-                                    fontWeight = FontWeight.Bold
-                                )
+                            val inlineBrowseChips = drawerDims.widthDp >= 430.dp
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .pointerInteropFilter { event ->
+                                                when (event.actionMasked) {
+                                                    MotionEvent.ACTION_DOWN -> {
+                                                        moveStartOrigin = windowOriginProvider()
+                                                        moveStartRaw = event.rawX to event.rawY
+                                                        true
+                                                    }
+                                                    MotionEvent.ACTION_MOVE -> {
+                                                        val dx = (event.rawX - moveStartRaw.first).roundToInt()
+                                                        val dy = (event.rawY - moveStartRaw.second).roundToInt()
+                                                        onMoveExpandedWindow(
+                                                            moveStartOrigin.first + dx,
+                                                            moveStartOrigin.second + dy
+                                                        )
+                                                        true
+                                                    }
+                                                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                                                    else -> false
+                                                }
+                                            }
+                                            .testTag("overlay_drag_move_header")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DragIndicator,
+                                            contentDescription = "Drag to move overlay",
+                                            tint = Color(0xFF93A1B8),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = BrightGold,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            text = "LIVE MATCH",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = BrightGold,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1
+                                        )
+                                    }
+                                    if (inlineBrowseChips) {
+                                        OverlayEnvChip(
+                                            label = "${envFilter.label} ($envScopedCompsCount)",
+                                            selected = browseMode == OverlayBrowseMode.ALL_COMPS,
+                                            icon = Icons.AutoMirrored.Filled.FormatListBulleted,
+                                            onClick = { browseMode = OverlayBrowseMode.ALL_COMPS }
+                                        )
+                                        OverlayEnvChip(
+                                            label = "Favs ($envScopedFavoritesCount)",
+                                            selected = browseMode == OverlayBrowseMode.FAVORITES,
+                                            icon = Icons.Filled.Star,
+                                            onClick = { browseMode = OverlayBrowseMode.FAVORITES }
+                                        )
+                                    }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isCustomResized) {
+                                        IconButton(
+                                            onClick = onResetExpandedSize,
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .testTag("overlay_reset_size_button")
+                                        ) {
+                                            Icon(
+                                                Icons.Default.OpenInFull,
+                                                contentDescription = "Reset overlay to full screen width",
+                                                tint = BrightGold,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = onRefresh,
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .testTag("overlay_refresh_button")
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh comps & favorites", tint = ArcaneCyan, modifier = Modifier.size(16.dp))
+                                    }
+                                    IconButton(
+                                        onClick = onCollapseToEdge,
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .testTag("overlay_collapse_edge_button")
+                                    ) {
+                                        Icon(collapseArrow, contentDescription = "Collapse to screen edge", tint = BrightGold, modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = onMinimizeToBubble,
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .testTag("overlay_minimize_bubble_button")
+                                    ) {
+                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize to floating bubble", tint = Color.White, modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = onCloseOverlay,
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .testTag("overlay_close_button")
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Stop overlay", tint = Color(0xFFE74C3C), modifier = Modifier.size(16.dp))
+                                    }
+                                }
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = onRefresh,
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .testTag("overlay_refresh_button")
-                                ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = "Refresh comps & favorites", tint = ArcaneCyan, modifier = Modifier.size(17.dp))
-                                }
-                                IconButton(
-                                    onClick = onCollapseToEdge,
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .testTag("overlay_collapse_edge_button")
-                                ) {
-                                    Icon(collapseArrow, contentDescription = "Collapse to screen edge", tint = BrightGold, modifier = Modifier.size(19.dp))
-                                }
-                                IconButton(
-                                    onClick = onMinimizeToBubble,
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .testTag("overlay_minimize_bubble_button")
-                                ) {
-                                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize to floating bubble", tint = Color.White, modifier = Modifier.size(19.dp))
-                                }
-                                IconButton(
-                                    onClick = onCloseOverlay,
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .testTag("overlay_close_button")
-                                ) {
-                                    Icon(Icons.Default.Close, contentDescription = "Stop overlay", tint = Color(0xFFE74C3C), modifier = Modifier.size(17.dp))
-                                }
-                            }
-                        }
 
-                        // Comps vs Favorites + LIVE/PBE/S-Tier controls (scrollable horizontally if narrow)
+                        // Compact single landscape filter strip: optional browse pills + LIVE/PBE/Tier/Open All
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .horizontalScroll(rememberScrollState())
-                                .padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            OverlayEnvChip(
-                                label = "${envFilter.label} Comps ($envScopedCompsCount)",
-                                selected = browseMode == OverlayBrowseMode.ALL_COMPS,
-                                icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                                onClick = { browseMode = OverlayBrowseMode.ALL_COMPS }
-                            )
-                            OverlayEnvChip(
-                                label = "Favorites ($envScopedFavoritesCount)",
-                                selected = browseMode == OverlayBrowseMode.FAVORITES,
-                                icon = Icons.Filled.Star,
-                                onClick = { browseMode = OverlayBrowseMode.FAVORITES }
-                            )
-                        }
-
-                        // LIVE | PBE | All/Tier quick filter pills + Open/Close all control
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .padding(vertical = 6.dp),
+                                .padding(top = 4.dp, bottom = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            if (!inlineBrowseChips) {
+                                OverlayEnvChip(
+                                    label = "${envFilter.label} Comps ($envScopedCompsCount)",
+                                    selected = browseMode == OverlayBrowseMode.ALL_COMPS,
+                                    icon = Icons.AutoMirrored.Filled.FormatListBulleted,
+                                    onClick = { browseMode = OverlayBrowseMode.ALL_COMPS }
+                                )
+                                OverlayEnvChip(
+                                    label = "Favorites ($envScopedFavoritesCount)",
+                                    selected = browseMode == OverlayBrowseMode.FAVORITES,
+                                    icon = Icons.Filled.Star,
+                                    onClick = { browseMode = OverlayBrowseMode.FAVORITES }
+                                )
+                            }
                             OverlayEnvChip("LIVE", envFilter == TftEnvironment.LIVE, Icons.Default.Bolt) { envFilter = TftEnvironment.LIVE }
                             OverlayEnvChip("PBE", envFilter == TftEnvironment.PBE, Icons.Default.Science) { envFilter = TftEnvironment.PBE }
                             TierRank.entries.forEach { t ->
@@ -1237,7 +1633,7 @@ private fun OverlayRootContent(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .weight(1f, fill = false)
+                                .weight(1f, fill = activeHeightDp != null)
                         ) {
                             AnimatedContent(
                                 targetState = Triple(browseMode, envFilter, tierFilter),
@@ -1265,59 +1661,137 @@ private fun OverlayRootContent(
                                     }
                                 } else {
                                     val listState = rememberLazyListState()
-                                    LazyColumn(
-                                        state = listState,
+                                    val useFullWidthTwoColGrid = !showingSideDetail &&
+                                        drawerDims.useSideDetailPane &&
+                                        drawerDims.widthDp >= 700.dp
+
+                                    Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.Top
                                     ) {
-                                        displayedByTier.forEach { (tier, tierComps) ->
-                                            val isTierOpen = expandedOverlayTiers.contains(tier)
-                                            item(
-                                                key = "overlay_tier_header_${activeMode}_${activeEnv}_${tier.name}",
-                                                contentType = "overlay_tier_header"
-                                            ) {
-                                                OverlayTierSubHeader(
-                                                    tier = tier,
-                                                    comps = tierComps,
-                                                    expanded = isTierOpen,
-                                                    onClick = {
-                                                        expandedOverlayTiers = if (isTierOpen) {
-                                                            expandedOverlayTiers - tier
-                                                        } else {
-                                                            expandedOverlayTiers + tier
-                                                        }
-                                                    },
-                                                    modifier = Modifier.animateItem(
-                                                        fadeInSpec = tween(180),
-                                                        fadeOutSpec = tween(120),
-                                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                                    )
+                                        LazyColumn(
+                                            state = listState,
+                                            modifier = Modifier
+                                                .weight(
+                                                    if (showingSideDetail) {
+                                                        if (drawerDims.widthDp >= 820.dp) 0.41f else 0.45f
+                                                    } else {
+                                                        1f
+                                                    }
                                                 )
-                                            }
-                                            if (isTierOpen) {
-                                                items(
-                                                    items = tierComps,
-                                                    key = { "${tier.name}_${it.id}" },
-                                                    contentType = { "overlay_comp" }
-                                                ) { comp ->
-                                                    val showHex = selectedHexCompId == comp.id
-                                                    val isFav = favoriteIds.contains(comp.id)
-                                                    OverlayCompCard(
-                                                        comp = comp,
-                                                        isFavorite = isFav,
-                                                        expanded = showHex,
-                                                        onCardClick = {
-                                                            selectedHexCompId = if (showHex) null else comp.id
+                                                .then(
+                                                    if (showingSideDetail) Modifier.fillMaxHeight() else Modifier
+                                                ),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            displayedByTier.forEach { (tier, tierComps) ->
+                                                val isTierOpen = expandedOverlayTiers.contains(tier)
+                                                item(
+                                                    key = "overlay_tier_header_${activeMode}_${activeEnv}_${tier.name}",
+                                                    contentType = "overlay_tier_header"
+                                                ) {
+                                                    OverlayTierSubHeader(
+                                                        tier = tier,
+                                                        comps = tierComps,
+                                                        expanded = isTierOpen,
+                                                        onClick = {
+                                                            expandedOverlayTiers = if (isTierOpen) {
+                                                                expandedOverlayTiers - tier
+                                                            } else {
+                                                                expandedOverlayTiers + tier
+                                                            }
                                                         },
-                                                        onToggleFavorite = { onToggleFavorite(comp) },
                                                         modifier = Modifier.animateItem(
                                                             fadeInSpec = tween(180),
-                                                            fadeOutSpec = tween(130),
+                                                            fadeOutSpec = tween(120),
                                                             placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
                                                         )
                                                     )
                                                 }
+                                                if (isTierOpen) {
+                                                    if (useFullWidthTwoColGrid) {
+                                                        val rows = tierComps.chunked(2)
+                                                        items(
+                                                            items = rows,
+                                                            key = { pair -> "${tier.name}_row_${pair.joinToString("_") { it.id }}" },
+                                                            contentType = { "overlay_comp_row" }
+                                                        ) { rowComps ->
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .animateItem(
+                                                                        fadeInSpec = tween(180),
+                                                                        fadeOutSpec = tween(130),
+                                                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                                                    ),
+                                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                            ) {
+                                                                rowComps.forEach { comp ->
+                                                                    val isSelected = selectedCompId == comp.id
+                                                                    val isFav = favoriteIds.contains(comp.id)
+                                                                    OverlayCompCard(
+                                                                        comp = comp,
+                                                                        isFavorite = isFav,
+                                                                        selected = isSelected,
+                                                                        expanded = false,
+                                                                        opensInSidePane = true,
+                                                                        useTwoColumnLayout = false,
+                                                                        onCardClick = {
+                                                                            selectedCompId = if (isSelected) null else comp.id
+                                                                        },
+                                                                        onToggleFavorite = { onToggleFavorite(comp) },
+                                                                        modifier = Modifier.weight(1f)
+                                                                    )
+                                                                }
+                                                                if (rowComps.size == 1) {
+                                                                    Spacer(Modifier.weight(1f))
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        items(
+                                                            items = tierComps,
+                                                            key = { "${tier.name}_${it.id}" },
+                                                            contentType = { "overlay_comp" }
+                                                        ) { comp ->
+                                                            val isSelected = selectedCompId == comp.id
+                                                            val showInlineExpanded = !drawerDims.useSideDetailPane && isSelected
+                                                            val isFav = favoriteIds.contains(comp.id)
+                                                            OverlayCompCard(
+                                                                comp = comp,
+                                                                isFavorite = isFav,
+                                                                selected = isSelected,
+                                                                expanded = showInlineExpanded,
+                                                                opensInSidePane = drawerDims.useSideDetailPane,
+                                                                useTwoColumnLayout = drawerDims.useTwoColumnCards,
+                                                                onCardClick = {
+                                                                    selectedCompId = if (isSelected) null else comp.id
+                                                                },
+                                                                onToggleFavorite = { onToggleFavorite(comp) },
+                                                                modifier = Modifier.animateItem(
+                                                                    fadeInSpec = tween(180),
+                                                                    fadeOutSpec = tween(130),
+                                                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                                                )
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             }
+                                        }
+
+                                        if (drawerDims.useSideDetailPane && selectedComp != null) {
+                                            OverlayCompSideDetailPane(
+                                                comp = selectedComp,
+                                                isFavorite = favoriteIds.contains(selectedComp.id),
+                                                wideSidePane = drawerDims.widthDp >= 840.dp,
+                                                onToggleFavorite = { onToggleFavorite(selectedComp) },
+                                                onCloseDetail = { selectedCompId = null },
+                                                modifier = Modifier
+                                                    .weight(if (drawerDims.widthDp >= 820.dp) 0.59f else 0.55f)
+                                                    .fillMaxHeight()
+                                            )
                                         }
                                     }
                                 }
@@ -1341,10 +1815,134 @@ private fun OverlayRootContent(
                                 color = BrightGold
                             )
                             Text(
-                                text = "Auto-sync 1m • Live + PBE",
+                                text = "Drag edge/corner to resize • ${drawerDims.widthDp.value.roundToInt()}×${drawerDims.maxHeightDp.value.roundToInt()}dp",
                                 fontSize = 9.sp,
-                                color = Color(0xFF93A1B8)
+                                color = Color(0xFF93A1B8),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
+                        }
+                        }
+
+                        // Right-edge horizontal resize grip
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .width(14.dp)
+                                .height(76.dp)
+                                .pointerInteropFilter { event ->
+                                    when (event.actionMasked) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            resizeStartSize = windowSizeProvider()
+                                            resizeStartRaw = event.rawX to event.rawY
+                                            true
+                                        }
+                                        MotionEvent.ACTION_MOVE -> {
+                                            val d = densityProvider().coerceAtLeast(1f)
+                                            val nextW = resizeStartSize.first + (event.rawX - resizeStartRaw.first) / d
+                                            onResizeExpandedWindow(nextW, customHeightDp)
+                                            true
+                                        }
+                                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                                        else -> false
+                                    }
+                                }
+                                .testTag("overlay_resize_right_handle"),
+                            contentAlignment = Alignment.CenterEnd
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 3.dp)
+                                    .width(3.dp)
+                                    .height(34.dp)
+                                    .background(BrushedGold.copy(alpha = 0.72f), RoundedCornerShape(2.dp))
+                            )
+                        }
+
+                        // Bottom-edge vertical resize grip
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(12.dp)
+                                .padding(horizontal = 44.dp)
+                                .pointerInteropFilter { event ->
+                                    when (event.actionMasked) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            resizeStartSize = windowSizeProvider()
+                                            resizeStartRaw = event.rawX to event.rawY
+                                            true
+                                        }
+                                        MotionEvent.ACTION_MOVE -> {
+                                            val d = densityProvider().coerceAtLeast(1f)
+                                            val nextH = resizeStartSize.second + (event.rawY - resizeStartRaw.second) / d
+                                            onResizeExpandedWindow(customWidthDp, nextH)
+                                            true
+                                        }
+                                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                                        else -> false
+                                    }
+                                }
+                                .testTag("overlay_resize_bottom_handle"),
+                            contentAlignment = Alignment.BottomCenter
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(bottom = 3.dp)
+                                    .width(42.dp)
+                                    .height(3.dp)
+                                    .background(BrushedGold.copy(alpha = 0.72f), RoundedCornerShape(2.dp))
+                            )
+                        }
+
+                        // Bottom-right corner diagonal resize grip (width + height freely)
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .size(30.dp)
+                                .pointerInteropFilter { event ->
+                                    when (event.actionMasked) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            resizeStartSize = windowSizeProvider()
+                                            resizeStartRaw = event.rawX to event.rawY
+                                            true
+                                        }
+                                        MotionEvent.ACTION_MOVE -> {
+                                            val d = densityProvider().coerceAtLeast(1f)
+                                            val nextW = resizeStartSize.first + (event.rawX - resizeStartRaw.first) / d
+                                            val nextH = resizeStartSize.second + (event.rawY - resizeStartRaw.second) / d
+                                            onResizeExpandedWindow(nextW, nextH)
+                                            true
+                                        }
+                                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                                        else -> false
+                                    }
+                                }
+                                .testTag("overlay_resize_corner_handle"),
+                            contentAlignment = Alignment.BottomEnd
+                        ) {
+                            Canvas(
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .padding(end = 4.dp, bottom = 4.dp)
+                            ) {
+                                val w = size.width
+                                val h = size.height
+                                drawLine(
+                                    color = ArcaneCyan,
+                                    start = Offset(w * 0.25f, h),
+                                    end = Offset(w, h * 0.25f),
+                                    strokeWidth = 2.4f,
+                                    cap = StrokeCap.Round
+                                )
+                                drawLine(
+                                    color = BrightGold,
+                                    start = Offset(w * 0.62f, h),
+                                    end = Offset(w, h * 0.62f),
+                                    strokeWidth = 2.4f,
+                                    cap = StrokeCap.Round
+                                )
+                            }
                         }
                     }
                 }
@@ -1466,10 +2064,265 @@ private fun OverlayTierSubHeader(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun OverlayCompSideDetailPane(
+    comp: MetaComp,
+    isFavorite: Boolean,
+    wideSidePane: Boolean,
+    onToggleFavorite: () -> Unit,
+    onCloseDetail: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val unitCosts = remember(comp.hexPlacements) {
+        comp.hexPlacements.associate { it.unitName to it.cost }
+    }
+    val carryBis = remember(comp.hexPlacements) {
+        comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
+    }
+    val secondaryItemized = remember(comp.hexPlacements) {
+        comp.hexPlacements.filter { it.items.isNotEmpty() && !it.isCarry }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = DeepSlate,
+        border = BorderStroke(
+            width = 1.4.dp,
+            brush = Brush.linearGradient(listOf(ArcaneCyan, BrightGold))
+        ),
+        modifier = modifier.testTag("overlay_side_detail_pane")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    TierBadge(tier = comp.tier)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = comp.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${comp.environment.label} • ${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)} • ${comp.setName}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (comp.environment == TftEnvironment.PBE) PbePurple else ArcaneCyan,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onToggleFavorite,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("overlay_detail_fav_${comp.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                            contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
+                            tint = if (isFavorite) BrightGold else Color(0xFF93A1B8),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onCloseDetail,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("overlay_detail_close_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close selected composition side panel",
+                            tint = Color(0xFFB7C4D8),
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
+            }
+
+            if (comp.traits.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    comp.traits.take(6).forEach { trait ->
+                        TftTraitChip(traitLabel = trait, environment = comp.environment)
+                    }
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                comp.coreUnits.take(10).forEach { unit ->
+                    val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier
+                            .background(
+                                if (isCarryUnit) BrushedGold.copy(alpha = 0.25f) else SlateElevated,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        TftChampionAvatar(
+                            name = unit,
+                            cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
+                            isCarry = isCarryUnit,
+                            size = 16.dp,
+                            environment = comp.environment
+                        )
+                        Text(
+                            text = unit,
+                            fontSize = 10.sp,
+                            color = if (isCarryUnit) BrightGold else Color(0xFFE6ECF5)
+                        )
+                    }
+                }
+            }
+
+            if (wideSidePane && comp.hexPlacements.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        OverlayCompSideBuildDetails(
+                            comp = comp,
+                            carryBis = carryBis,
+                            secondaryItemized = secondaryItemized
+                        )
+                    }
+                    Box(modifier = Modifier.weight(1.05f)) {
+                        MiniOverlayHexGrid(
+                            placements = comp.hexPlacements,
+                            environment = comp.environment,
+                            gridHeight = 132.dp
+                        )
+                    }
+                }
+            } else {
+                if (comp.hexPlacements.isNotEmpty()) {
+                    MiniOverlayHexGrid(
+                        placements = comp.hexPlacements,
+                        environment = comp.environment,
+                        gridHeight = 120.dp
+                    )
+                }
+                OverlayCompSideBuildDetails(
+                    comp = comp,
+                    carryBis = carryBis,
+                    secondaryItemized = secondaryItemized
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OverlayCompSideBuildDetails(
+    comp: MetaComp,
+    carryBis: List<String>,
+    secondaryItemized: List<HexUnitPlacement>
+) {
+    if (carryBis.isNotEmpty()) {
+        Text(
+            text = "Carry BIS (${comp.carryName})",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = BrightGold
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            carryBis.forEach { itemName ->
+                TftItemChip(itemName = itemName, compact = true)
+            }
+        }
+    }
+    if (secondaryItemized.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            secondaryItemized.take(4).forEach { unit ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    TftChampionAvatar(
+                        name = unit.unitName,
+                        cost = unit.cost,
+                        isCarry = false,
+                        stars = unit.stars,
+                        size = 18.dp,
+                        environment = comp.environment
+                    )
+                    Text(
+                        text = "${unit.unitName}:",
+                        fontSize = 10.sp,
+                        color = Color(0xFFB7C4D8),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    unit.items.take(3).forEach { item ->
+                        TftItemIcon(itemName = item, size = 16.dp)
+                    }
+                }
+            }
+        }
+    }
+    if (comp.augmentPriorities.isNotEmpty()) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            comp.augmentPriorities.take(3).forEach { aug ->
+                TftAugmentChip(augmentName = aug, compact = true)
+            }
+        }
+    }
+    if (comp.levelingGuide.isNotBlank()) {
+        Text(
+            text = comp.levelingGuide,
+            fontSize = 10.sp,
+            color = Color(0xFFB7C4D8)
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun OverlayCompCard(
     comp: MetaComp,
     isFavorite: Boolean,
+    selected: Boolean = false,
     expanded: Boolean,
+    opensInSidePane: Boolean = false,
+    useTwoColumnLayout: Boolean = false,
     onCardClick: () -> Unit,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
@@ -1479,10 +2332,14 @@ private fun OverlayCompCard(
     }
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = DeepSlate,
+        color = if (selected) SlateElevated else DeepSlate,
         border = BorderStroke(
-            width = if (isFavorite) 1.3.dp else 1.dp,
-            color = if (isFavorite) BrushedGold.copy(alpha = 0.85f) else SlateOutline
+            width = if (selected) 1.6.dp else if (isFavorite) 1.3.dp else 1.dp,
+            color = when {
+                selected -> ArcaneCyan
+                isFavorite -> BrushedGold.copy(alpha = 0.85f)
+                else -> SlateOutline
+            }
         ),
         modifier = modifier
             .fillMaxWidth()
@@ -1608,75 +2465,165 @@ private fun OverlayCompCard(
                 val itemizedUnits = remember(comp.hexPlacements) {
                     comp.hexPlacements.filter { it.items.isNotEmpty() }
                 }
-                if (carryBis.isNotEmpty()) {
+                val secondaryItemized = remember(itemizedUnits) {
+                    itemizedUnits.filterNot { it.isCarry }
+                }
+                val hasLeftDetails = carryBis.isNotEmpty() ||
+                    secondaryItemized.isNotEmpty() ||
+                    comp.augmentPriorities.isNotEmpty() ||
+                    comp.levelingGuide.isNotBlank()
+
+                if (useTwoColumnLayout && comp.hexPlacements.isNotEmpty() && hasLeftDetails) {
                     Spacer(Modifier.height(7.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top
                     ) {
-                        carryBis.forEach { itemName ->
-                            TftItemChip(itemName = itemName, compact = true)
+                        Column(
+                            modifier = Modifier.weight(1.05f),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            if (carryBis.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    carryBis.forEach { itemName ->
+                                        TftItemChip(itemName = itemName, compact = true)
+                                    }
+                                }
+                            }
+                            if (secondaryItemized.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    secondaryItemized.take(3).forEach { unit ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            TftChampionAvatar(
+                                                name = unit.unitName,
+                                                cost = unit.cost,
+                                                isCarry = false,
+                                                stars = unit.stars,
+                                                size = 18.dp,
+                                                environment = comp.environment
+                                            )
+                                            Text(
+                                                text = "${unit.unitName}:",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFFB7C4D8),
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            unit.items.take(3).forEach { item ->
+                                                TftItemIcon(itemName = item, size = 16.dp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (comp.augmentPriorities.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    comp.augmentPriorities.take(3).forEach { aug ->
+                                        TftAugmentChip(augmentName = aug, compact = true)
+                                    }
+                                }
+                            }
+                            if (comp.levelingGuide.isNotBlank()) {
+                                Text(
+                                    text = comp.levelingGuide,
+                                    fontSize = 10.sp,
+                                    color = Color(0xFFB7C4D8)
+                                )
+                            }
+                        }
+                        Box(modifier = Modifier.weight(0.95f)) {
+                            MiniOverlayHexGrid(
+                                placements = comp.hexPlacements,
+                                environment = comp.environment,
+                                gridHeight = 116.dp
+                            )
                         }
                     }
-                }
-                val secondaryItemized = itemizedUnits.filterNot { it.isCarry }
-                if (secondaryItemized.isNotEmpty()) {
-                    Spacer(Modifier.height(5.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        secondaryItemized.take(3).forEach { unit ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                TftChampionAvatar(
-                                    name = unit.unitName,
-                                    cost = unit.cost,
-                                    isCarry = false,
-                                    stars = unit.stars,
-                                    size = 18.dp,
-                                    environment = comp.environment
-                                )
-                                Text(
-                                    text = "${unit.unitName}:",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFFB7C4D8),
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                unit.items.take(3).forEach { item ->
-                                    TftItemIcon(itemName = item, size = 16.dp)
+                } else {
+                    if (carryBis.isNotEmpty()) {
+                        Spacer(Modifier.height(7.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            carryBis.forEach { itemName ->
+                                TftItemChip(itemName = itemName, compact = true)
+                            }
+                        }
+                    }
+                    if (secondaryItemized.isNotEmpty()) {
+                        Spacer(Modifier.height(5.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            secondaryItemized.take(3).forEach { unit ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    TftChampionAvatar(
+                                        name = unit.unitName,
+                                        cost = unit.cost,
+                                        isCarry = false,
+                                        stars = unit.stars,
+                                        size = 18.dp,
+                                        environment = comp.environment
+                                    )
+                                    Text(
+                                        text = "${unit.unitName}:",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFFB7C4D8),
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    unit.items.take(3).forEach { item ->
+                                        TftItemIcon(itemName = item, size = 16.dp)
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                if (comp.hexPlacements.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    MiniOverlayHexGrid(comp.hexPlacements, environment = comp.environment)
-                }
-                if (comp.augmentPriorities.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        comp.augmentPriorities.take(3).forEach { aug ->
-                            TftAugmentChip(augmentName = aug, compact = true)
+                    if (comp.hexPlacements.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        MiniOverlayHexGrid(comp.hexPlacements, environment = comp.environment)
+                    }
+                    if (comp.augmentPriorities.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            comp.augmentPriorities.take(3).forEach { aug ->
+                                TftAugmentChip(augmentName = aug, compact = true)
+                            }
                         }
                     }
-                }
-                if (comp.levelingGuide.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = comp.levelingGuide,
-                        fontSize = 10.sp,
-                        color = Color(0xFFB7C4D8)
-                    )
+                    if (comp.levelingGuide.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = comp.levelingGuide,
+                            fontSize = 10.sp,
+                            color = Color(0xFFB7C4D8)
+                        )
+                    }
                 }
             } else {
                 Text(
-                    text = "Tap card for BIS items, 4×7 hex board & augments",
+                    text = when {
+                        opensInSidePane && selected -> "Loaded on side panel • Tap again to close"
+                        opensInSidePane -> "Tap card to open board & BIS on side →"
+                        else -> "Tap card for BIS items, 4×7 hex board & augments"
+                    },
                     fontSize = 9.sp,
-                    color = Color(0xFF7D8DA6),
+                    color = if (opensInSidePane && selected) ArcaneCyan else Color(0xFF7D8DA6),
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
@@ -1725,7 +2672,8 @@ private fun OverlayEnvChip(
 @Composable
 private fun MiniOverlayHexGrid(
     placements: List<HexUnitPlacement>,
-    environment: TftEnvironment? = null
+    environment: TftEnvironment? = null,
+    gridHeight: Dp = 106.dp
 ) {
     val density = LocalDensity.current
     Column(
@@ -1746,7 +2694,7 @@ private fun MiniOverlayHexGrid(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(106.dp)
+                .height(gridHeight)
         ) {
             val cols = 7
             val rows = 4

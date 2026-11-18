@@ -1023,35 +1023,13 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
                         if (moved && displayState.value == OverlayDisplayState.BUBBLE) {
                             val currentLeft = overlayLayoutParams.x
-                            val decision = computeEdgeSnapDecision(
-                                leftEdgePx = (currentLeft - bounds.safeLeftPx).coerceAtLeast(0),
-                                viewWidthPx = viewW,
-                                screenWidthPx = bounds.usableWidthPx,
-                                snapThresholdPx = edgeSnapThresholdPx
-                            )
-                            val flungLeft = vx < -900f
-                            val flungRight = vx > 900f
-                            val resolvedDock = when {
-                                flungLeft -> OverlayDockEdge.LEFT
-                                flungRight -> OverlayDockEdge.RIGHT
-                                else -> decision.dockEdge
-                            }
-                            dockEdgeState.value = resolvedDock
-                            if (decision.shouldCollapseToEdge || flungLeft || flungRight) {
-                                val targetLeft = if (resolvedDock == OverlayDockEdge.LEFT) minLeftX else maxLeftX
-                                animateOverlayXTo(this, fromX = currentLeft, toX = targetLeft) {
-                                    transitionDisplayState(
-                                        targetState = OverlayDisplayState.EDGE_COLLAPSED,
-                                        dockEdge = resolvedDock
-                                    )
-                                }
-                            } else {
-                                // Smooth magnetic nudge away from safe edges without sudden jumps
-                                val safeMarginLeft = minLeftX + dpToPx(12)
-                                val safeMarginRight = (maxLeftX - dpToPx(12)).coerceAtLeast(safeMarginLeft)
-                                val clampedTarget = currentLeft.coerceIn(safeMarginLeft, safeMarginRight)
-                                if (clampedTarget != currentLeft) {
-                                    animateOverlayXTo(this, fromX = currentLeft, toX = clampedTarget)
+                            val safeMarginLeft = minLeftX
+                            val safeMarginRight = maxLeftX
+                            val clampedTarget = currentLeft.coerceIn(safeMarginLeft, safeMarginRight)
+                            if (clampedTarget != currentLeft) {
+                                overlayLayoutParams.x = clampedTarget
+                                if (this.isAttachedToWindow) {
+                                    runCatching { windowManager.updateViewLayout(this, overlayLayoutParams) }
                                 }
                             }
                         }
@@ -2870,7 +2848,7 @@ private fun OverlayEnvChip(
 private fun MiniOverlayHexGrid(
     placements: List<HexUnitPlacement>,
     environment: TftEnvironment? = null,
-    gridHeight: Dp = 106.dp
+    gridHeight: Dp = 126.dp
 ) {
     val density = LocalDensity.current
     Column(
@@ -2897,9 +2875,9 @@ private fun MiniOverlayHexGrid(
             val rows = 4
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
-            val radius = (widthPx / (cols * 1.9f)).coerceAtMost(heightPx / (rows * 1.85f))
-            val dx = radius * 1.85f
-            val dy = radius * 1.55f
+            val radius = (widthPx / (cols * 1.85f)).coerceAtMost(heightPx / (rows * 2.05f))
+            val dx = radius * 1.82f
+            val dy = radius * 1.75f
             val occupied = placements.associateBy { it.row to it.col }
 
             Canvas(modifier = Modifier.matchParentSize()) {
@@ -2935,7 +2913,7 @@ private fun MiniOverlayHexGrid(
                 }
             }
 
-            val boxPx = (radius * 1.85f).roundToInt().coerceAtLeast(22)
+            val boxPx = (radius * 1.6f).roundToInt().coerceAtLeast(20)
             val boxDp = with(density) { boxPx.toDp() }
             placements.forEach { unit ->
                 val xOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
@@ -2945,19 +2923,20 @@ private fun MiniOverlayHexGrid(
                     modifier = Modifier
                         .offset {
                             IntOffset(
-                                (cx - boxPx / 2f).roundToInt(),
+                                (cx - (boxDp + 20.dp).toPx() / 2f).roundToInt(),
                                 (cy - boxPx / 2f).roundToInt()
                             )
                         }
-                        .size(boxDp),
-                    contentAlignment = Alignment.Center
+                        .width(boxDp + 20.dp)
+                        .height(boxDp + 22.dp),
+                    contentAlignment = Alignment.TopCenter
                 ) {
-                    TftChampionAvatar(
+                    TftChampionTile(
                         name = unit.unitName,
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = boxDp.coerceIn(18.dp, 44.dp),
+                        size = boxDp.coerceIn(16.dp, 30.dp),
                         environment = environment
                     )
                 }

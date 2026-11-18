@@ -58,6 +58,7 @@ import com.example.data.model.ItemCategory
 import com.example.data.model.ItemTierEntry
 import com.example.data.model.LiveVersionInfo
 import com.example.data.model.OfflineCacheStatus
+import com.example.data.model.PatchUpdateRecord
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.ui.components.DeltaBadge
@@ -65,6 +66,8 @@ import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
 import com.example.ui.components.HextechPanelCard
 import com.example.ui.components.OfflineCacheStatusBanner
+import com.example.ui.components.PatchTierAlertBanner
+import com.example.ui.components.PatchTierDetailsDialog
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemChip
@@ -95,6 +98,7 @@ fun ChampionTierListScreen(
     isGuestMode: Boolean,
     onRefreshSync: () -> Unit,
     onSignInRequested: () -> Unit,
+    patches: List<PatchUpdateRecord> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     var activeSubTab by rememberSaveable { mutableStateOf(TierCatalogTab.CHAMPIONS) }
@@ -104,50 +108,63 @@ fun ChampionTierListScreen(
     var selectedItemCategory by remember { mutableStateOf<ItemCategory?>(null) }
     var selectedAugmentTier by remember { mutableStateOf<AugmentTier?>(null) }
     var expandedId by remember { mutableStateOf<String?>(null) }
+    var showPatchDetailsDialog by remember { mutableStateOf(false) }
+    val latestPatch = remember(patches, environment) {
+        patches.firstOrNull { it.environment == environment } ?: patches.firstOrNull()
+    }
 
     val filteredChampions = remember(activeSubTab, champions, searchQuery, selectedCost, selectedTier) {
-        if (activeSubTab != TierCatalogTab.CHAMPIONS) return@remember emptyList()
-        champions
-            .filter { champ ->
-                val matchesSearch = searchQuery.isBlank() ||
-                    champ.name.contains(searchQuery, ignoreCase = true) ||
-                    champ.traits.any { it.contains(searchQuery, ignoreCase = true) } ||
-                    champ.bestItems.any { it.contains(searchQuery, ignoreCase = true) }
-                val matchesCost = selectedCost == null || champ.cost == selectedCost
-                val matchesTier = selectedTier == null || champ.tier == selectedTier
-                matchesSearch && matchesCost && matchesTier
-            }
-            .sortedWith(compareBy<ChampionTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        if (activeSubTab != TierCatalogTab.CHAMPIONS) {
+            emptyList()
+        } else {
+            champions
+                .filter { champ ->
+                    val matchesSearch = searchQuery.isBlank() ||
+                        champ.name.contains(searchQuery, ignoreCase = true) ||
+                        champ.traits.any { it.contains(searchQuery, ignoreCase = true) } ||
+                        champ.bestItems.any { it.contains(searchQuery, ignoreCase = true) }
+                    val matchesCost = selectedCost == null || champ.cost == selectedCost
+                    val matchesTier = selectedTier == null || champ.tier == selectedTier
+                    matchesSearch && matchesCost && matchesTier
+                }
+                .sortedWith(compareBy<ChampionTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        }
     }
 
     val filteredItems = remember(activeSubTab, items, searchQuery, selectedTier, selectedItemCategory) {
-        if (activeSubTab != TierCatalogTab.ITEMS) return@remember emptyList()
-        items
-            .filter { item ->
-                val matchesSearch = searchQuery.isBlank() ||
-                    item.name.contains(searchQuery, ignoreCase = true) ||
-                    item.components.any { it.contains(searchQuery, ignoreCase = true) } ||
-                    item.bestHolders.any { it.contains(searchQuery, ignoreCase = true) }
-                val matchesTier = selectedTier == null || item.tier == selectedTier
-                val matchesCat = selectedItemCategory == null || item.category == selectedItemCategory
-                matchesSearch && matchesTier && matchesCat
-            }
-            .sortedWith(compareBy<ItemTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        if (activeSubTab != TierCatalogTab.ITEMS) {
+            emptyList()
+        } else {
+            items
+                .filter { item ->
+                    val matchesSearch = searchQuery.isBlank() ||
+                        item.name.contains(searchQuery, ignoreCase = true) ||
+                        item.components.any { it.contains(searchQuery, ignoreCase = true) } ||
+                        item.bestHolders.any { it.contains(searchQuery, ignoreCase = true) }
+                    val matchesTier = selectedTier == null || item.tier == selectedTier
+                    val matchesCat = selectedItemCategory == null || item.category == selectedItemCategory
+                    matchesSearch && matchesTier && matchesCat
+                }
+                .sortedWith(compareBy<ItemTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        }
     }
 
     val filteredAugments = remember(activeSubTab, augments, searchQuery, selectedTier, selectedAugmentTier) {
-        if (activeSubTab != TierCatalogTab.AUGMENTS) return@remember emptyList()
-        augments
-            .filter { aug ->
-                val matchesSearch = searchQuery.isBlank() ||
-                    aug.name.contains(searchQuery, ignoreCase = true) ||
-                    aug.description.contains(searchQuery, ignoreCase = true) ||
-                    aug.category.contains(searchQuery, ignoreCase = true)
-                val matchesTier = selectedTier == null || aug.tier == selectedTier
-                val matchesRank = selectedAugmentTier == null || aug.augmentTier == selectedAugmentTier
-                matchesSearch && matchesTier && matchesRank
-            }
-            .sortedWith(compareBy<AugmentTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        if (activeSubTab != TierCatalogTab.AUGMENTS) {
+            emptyList()
+        } else {
+            augments
+                .filter { aug ->
+                    val matchesSearch = searchQuery.isBlank() ||
+                        aug.name.contains(searchQuery, ignoreCase = true) ||
+                        aug.description.contains(searchQuery, ignoreCase = true) ||
+                        aug.category.contains(searchQuery, ignoreCase = true)
+                    val matchesTier = selectedTier == null || aug.tier == selectedTier
+                    val matchesRank = selectedAugmentTier == null || aug.augmentTier == selectedAugmentTier
+                    matchesSearch && matchesTier && matchesRank
+                }
+                .sortedWith(compareBy<AugmentTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+        }
     }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
@@ -155,6 +172,13 @@ fun ChampionTierListScreen(
             maxWidth >= 1040.dp -> 3
             maxWidth >= 660.dp -> 2
             else -> 1
+        }
+
+        if (showPatchDetailsDialog) {
+            PatchTierDetailsDialog(
+                patch = latestPatch,
+                onDismiss = { showPatchDetailsDialog = false }
+            )
         }
 
         LazyColumn(
@@ -180,6 +204,16 @@ fun ChampionTierListScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+        }
+
+        if (latestPatch != null) {
+            item {
+                PatchTierAlertBanner(
+                    latestPatch = latestPatch,
+                    environment = environment,
+                    onOpenDetails = { showPatchDetailsDialog = true }
+                )
             }
         }
 

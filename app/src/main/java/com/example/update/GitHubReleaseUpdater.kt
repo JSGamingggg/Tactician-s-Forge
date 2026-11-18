@@ -326,7 +326,9 @@ object AppUpdateCoordinator {
     suspend fun resolveConfiguredRepo(prefsStore: LocalPreferencesStore): String? {
         val override = GitHubReleaseParser.normalizeRepoSlug(prefsStore.getGithubRepoOverride())
         if (override != null) return override
-        return GitHubReleaseParser.normalizeRepoSlug(BuildConfig.GITHUB_REPO)
+        val defaultSlug = GitHubReleaseParser.normalizeRepoSlug(BuildConfig.GITHUB_REPO)
+        if (defaultSlug != null) return defaultSlug
+        return "js96-mk/tacticians-forge"
     }
 
     suspend fun refreshSettingsSnapshot(context: Context) {

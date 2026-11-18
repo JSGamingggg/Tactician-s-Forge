@@ -502,7 +502,7 @@ private fun AuthenticatedOrGuestWorkspace(
                         ) { tab ->
                             tabStateHolder.SaveableStateProvider(tab.key) {
                                 when (tab) {
-                                    AppTab.META -> MetaSnapshotsScreen(
+                                     AppTab.META -> MetaSnapshotsScreen(
                                         environment = environment,
                                         onSelectEnvironment = mainViewModel::setEnvironment,
                                         comps = metaComps,
@@ -518,6 +518,7 @@ private fun AuthenticatedOrGuestWorkspace(
                                         onToggleFavorite = mainViewModel::toggleFavorite,
                                         onTogglePin = mainViewModel::toggleOverlayPin,
                                         onCreateCustomComp = mainViewModel::saveCustomFavorite,
+                                        patches = patchFeed,
                                         modifier = contentModifier
                                     )
                                     AppTab.TIERS -> ChampionTierListScreen(
@@ -532,6 +533,7 @@ private fun AuthenticatedOrGuestWorkspace(
                                         isGuestMode = currentUser == null,
                                         onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
                                         onSignInRequested = triggerGoogleSignIn,
+                                        patches = patchFeed,
                                         modifier = contentModifier
                                     )
                                     AppTab.STATS -> PlayerStatsScreen(

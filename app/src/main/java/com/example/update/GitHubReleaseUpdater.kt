@@ -86,7 +86,9 @@ sealed interface AppUpdateStatus {
     data class ReadyToInstall(
         val release: GitHubReleaseInfo,
         val apkFilePath: String,
-        val needsInstallPermission: Boolean
+        val needsInstallPermission: Boolean,
+        val signatureMismatchDetected: Boolean = false,
+        val savedDownloadsFileName: String? = null
     ) : AppUpdateStatus
     data class Error(
         val message: String,
@@ -936,18 +938,26 @@ object AppUpdateCoordinator {
         }
 
         val hasInstallPerm = canRequestPackageInstalls(appContext)
+        val sigMismatch = withContext(Dispatchers.IO) {
+            hasSigningCertificateMismatch(appContext, apkFile)
+        }
+        val exportedFileName = withContext(Dispatchers.IO) {
+            exportApkToPublicDownloads(appContext, apkFile, release)
+        }
         _uiState.update {
             it.copy(
                 status = AppUpdateStatus.ReadyToInstall(
                     release = release,
                     apkFilePath = apkFile.absolutePath,
-                    needsInstallPermission = !hasInstallPerm
+                    needsInstallPermission = !hasInstallPerm,
+                    signatureMismatchDetected = sigMismatch,
+                    savedDownloadsFileName = exportedFileName
                 ),
-                pendingAutoInstallAfterPermission = !hasInstallPerm
+                pendingAutoInstallAfterPermission = !hasInstallPerm && !sigMismatch
             )
         }
 
-        if (hasInstallPerm) {
+        if (hasInstallPerm && !sigMismatch) {
             launchPackageInstaller(appContext, apkFile, release)
         }
     }
@@ -976,13 +986,13 @@ object AppUpdateCoordinator {
         return launchPackageInstaller(context, apkFile, status.release)
     }
 
+    @Suppress("DEPRECATION")
     suspend fun launchPackageInstaller(
         context: Context,
         apkFile: File,
         release: GitHubReleaseInfo
     ): Boolean {
         if (!apkFile.exists()) return false
-        LocalPreferencesStore(context.applicationContext).setLastInstalledApkAssetId(release.apkAssetId)
         val uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
@@ -990,6 +1000,8 @@ object AppUpdateCoordinator {
         )
         val installIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
+            putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+            putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, context.packageName)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         return runCatching {
@@ -1007,12 +1019,95 @@ object AppUpdateCoordinator {
         }.getOrDefault(false)
     }
 
+    fun launchUninstallCurrentPackage(context: Context) {
+        val uninstallIntent = Intent(
+            Intent.ACTION_DELETE,
+            Uri.parse("package:${context.packageName}")
+        ).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(uninstallIntent) }
+    }
+
+    @Suppress("DEPRECATION")
+    internal fun hasSigningCertificateMismatch(context: Context, apkFile: File): Boolean {
+        return runCatching {
+            val pm = context.packageManager
+            val installedBytes: ByteArray? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val info = pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+                    ?: info.signingInfo?.signingCertificateHistory?.firstOrNull()?.toByteArray()
+            } else {
+                val info = pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNATURES)
+                info.signatures?.firstOrNull()?.toByteArray()
+            }
+
+            val archiveBytes: ByteArray? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val info = pm.getPackageArchiveInfo(apkFile.absolutePath, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                info?.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+                    ?: info?.signingInfo?.signingCertificateHistory?.firstOrNull()?.toByteArray()
+            } else {
+                val info = pm.getPackageArchiveInfo(apkFile.absolutePath, android.content.pm.PackageManager.GET_SIGNATURES)
+                info?.signatures?.firstOrNull()?.toByteArray()
+            }
+
+            if (installedBytes == null || archiveBytes == null) {
+                false
+            } else {
+                !installedBytes.contentEquals(archiveBytes)
+            }
+        }.getOrDefault(false)
+    }
+
+    internal fun exportApkToPublicDownloads(
+        context: Context,
+        apkFile: File,
+        release: GitHubReleaseInfo
+    ): String? {
+        if (!apkFile.exists()) return null
+        val versionPart = (release.parsedVersionName ?: release.tagName.ifBlank { "latest" })
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val fileName = "TacticiansForge-v$versionPart.apk"
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val itemUri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: return@runCatching null
+                resolver.openOutputStream(itemUri)?.use { out ->
+                    apkFile.inputStream().use { input -> input.copyTo(out) }
+                }
+                val doneValues = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                resolver.update(itemUri, doneValues, null, null)
+                fileName
+            } else {
+                null
+            }
+        }.getOrNull()
+    }
+
     internal fun isValidApkZipHeader(file: File): Boolean {
         if (!file.exists() || file.length() < 1024L) return false
         return runCatching {
-            file.inputStream().use { stream ->
+            val hasMagic = file.inputStream().use { stream ->
                 val header = ByteArray(2)
                 stream.read(header) == 2 && header[0] == 0x50.toByte() && header[1] == 0x4B.toByte()
+            }
+            if (!hasMagic) return@runCatching false
+            // If file is a real full-size APK (> 64 KB), also verify its ZIP central directory has AndroidManifest.xml
+            if (file.length() > 65_536L) {
+                java.util.zip.ZipFile(file).use { zip ->
+                    zip.getEntry("AndroidManifest.xml") != null
+                }
+            } else {
+                true
             }
         }.getOrDefault(false)
     }

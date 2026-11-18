@@ -344,15 +344,26 @@ fun AppUpdatePromptDialog(
                     }
 
                     is AppUpdateStatus.ReadyToInstall -> {
-                        Text(
-                            text = if (status.needsInstallPermission) {
-                                "Tap 'Allow & Install' and enable 'Allow from this source' once so Android can apply the update in-place."
-                            } else {
-                                "Package verified! Tap 'Install Update' to apply without uninstalling."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
+                        val downloadsInfo = status.savedDownloadsFileName?.let {
+                            "\nSaved copy to Downloads/$it"
+                        }.orEmpty()
+                        if (status.signatureMismatchDetected) {
+                            Text(
+                                text = "One-Time Key Upgrade Needed: Your currently installed build was signed with an older temporary CI key, whereas ${release.displayVersionLabel} uses the permanent Google Sign-In key. Android requires uninstalling the old-key build once before installing the new APK from your Downloads folder.$downloadsInfo",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            Text(
+                                text = if (status.needsInstallPermission) {
+                                    "Tap 'Allow & Install' and enable 'Allow from this source' once so Android can apply the update in-place.$downloadsInfo"
+                                } else {
+                                    "Package verified! Tap 'Install Update' to apply without uninstalling.$downloadsInfo"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
                     }
 
                     is AppUpdateStatus.Error -> {
@@ -381,21 +392,34 @@ fun AppUpdatePromptDialog(
                 }
 
                 is AppUpdateStatus.ReadyToInstall -> {
-                    Button(
-                        onClick = {
-                            if (status.needsInstallPermission) {
-                                installPermissionLauncher.launch(
-                                    AppUpdateCoordinator.buildInstallPermissionSettingsIntent(context)
-                                )
-                            } else {
-                                onInstallReadyApk(File(status.apkFilePath), status.release)
-                            }
-                        },
-                        modifier = Modifier.testTag("dialog_install_update_button")
-                    ) {
-                        Icon(Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (status.needsInstallPermission) "Allow & Install" else "Install Update")
+                    if (status.signatureMismatchDetected) {
+                        Button(
+                            onClick = {
+                                AppUpdateCoordinator.launchUninstallCurrentPackage(context)
+                            },
+                            modifier = Modifier.testTag("dialog_uninstall_old_key_button")
+                        ) {
+                            Icon(Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Uninstall Old Build (APK in Downloads)")
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                if (status.needsInstallPermission) {
+                                    installPermissionLauncher.launch(
+                                        AppUpdateCoordinator.buildInstallPermissionSettingsIntent(context)
+                                    )
+                                } else {
+                                    onInstallReadyApk(File(status.apkFilePath), status.release)
+                                }
+                            },
+                            modifier = Modifier.testTag("dialog_install_update_button")
+                        ) {
+                            Icon(Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (status.needsInstallPermission) "Allow & Install" else "Install Update")
+                        }
                     }
                 }
 

@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,6 +73,7 @@ import com.example.data.model.TftEnvironment
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 fun championCostColor(cost: Int): Color = when (cost) {
     5 -> Color(0xFFF0B949)
@@ -92,6 +94,21 @@ fun championMonogram(name: String): String {
     }
 }
 
+private val REGEX_PREFIX_TFT = Regex("^(?:DA|TFT\\d*)_(?:\\d+_)?(?:Item|Augment|Trait|Champion|Artifact|Component)?_?", RegexOption.IGNORE_CASE)
+private val REGEX_PREFIX_SET = Regex("^Set\\d+_", RegexOption.IGNORE_CASE)
+private val REGEX_SUFFIX_ROLE = Regex("_(?:AD|AP|Tank|Carry)$", RegexOption.IGNORE_CASE)
+private val REGEX_SUFFIX_SMALL = Regex("(Small)$")
+private val REGEX_SUFFIX_DIGITS = Regex("(\\D)\\d{2}$")
+private val REGEX_CAMEL = Regex("([a-z])([A-Z])")
+private val REGEX_ALPHA_DIGIT = Regex("([A-Za-z])(\\d)")
+private val REGEX_ROMAN = Regex("\\s+(II|III)$")
+private val REGEX_TRAIT_COUNT = Regex("^(\\d+)\\s+(.+)$")
+
+private val formattedLabelCache = ConcurrentHashMap<String, String>(512)
+
+@Volatile
+private var formattedLabelCacheRevision: Int = -1
+
 /**
  * Formats raw Riot Data/API identifiers (e.g. "TFT18_Item_JeweledGauntlet",
  * "TFT18_Augment_ElderwoodCrest", "Set18_Elderwood") into readable display labels.
@@ -99,22 +116,40 @@ fun championMonogram(name: String): String {
 fun formatRiotAssetLabel(rawId: String): String {
     val trimmed = rawId.trim()
     if (trimmed.isEmpty()) return ""
-    TftAssetIconResolver.resolveDisplayName(trimmed)?.let { return it }
-    if (!trimmed.contains("_") && trimmed.any { it == ' ' }) return trimmed
+    // Fast path for ordinary human-readable names like "Jeweled Gauntlet" or "Ahri"
+    if (!trimmed.contains('_') && !trimmed.startsWith("DA") && !trimmed.startsWith("TFT") && !trimmed.startsWith("Set")) {
+        return trimmed
+    }
+    val rev = TftAssetIconResolver.catalogRevision
+    if (formattedLabelCacheRevision != rev) {
+        formattedLabelCache.clear()
+        formattedLabelCacheRevision = rev
+    } else {
+        formattedLabelCache[trimmed]?.let { return it }
+    }
+
+    TftAssetIconResolver.resolveDisplayName(trimmed)?.let { resolved ->
+        if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = resolved
+        return resolved
+    }
+    if (!trimmed.contains("_") && trimmed.any { it == ' ' }) {
+        if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = trimmed
+        return trimmed
+    }
     var stripped = trimmed
-        .replace(Regex("^(?:DA|TFT\\d*)_(?:\\d+_)?(?:Item|Augment|Trait|Champion|Artifact|Component)?_?", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^Set\\d+_", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("_(?:AD|AP|Tank|Carry)$", RegexOption.IGNORE_CASE), "")
+        .replace(REGEX_PREFIX_TFT, "")
+        .replace(REGEX_PREFIX_SET, "")
+        .replace(REGEX_SUFFIX_ROLE, "")
         .substringAfterLast("_")
-        .replace(Regex("(Small)$"), "")
-        .replace(Regex("(\\D)\\d{2}$"), "$1")
+        .replace(REGEX_SUFFIX_SMALL, "")
+        .replace(REGEX_SUFFIX_DIGITS, "$1")
     if (stripped.startsWith("Emblem") && stripped.length > 6) {
         stripped = stripped.removePrefix("Emblem") + "Emblem"
     }
-    return stripped
-        .replace(Regex("([a-z])([A-Z])"), "$1 $2")
-        .replace(Regex("([A-Za-z])(\\d)"), "$1 $2")
-        .replace(Regex("\\s+(II|III)$"), " $1")
+    val formatted = stripped
+        .replace(REGEX_CAMEL, "$1 $2")
+        .replace(REGEX_ALPHA_DIGIT, "$1 $2")
+        .replace(REGEX_ROMAN, " $1")
         .replace("Guinsoos", "Guinsoo's")
         .replace("Dragons", "Dragon's")
         .replace("Thiefs", "Thief's")
@@ -140,6 +175,10 @@ fun formatRiotAssetLabel(rawId: String): String {
         .replace("K Sante", "K'Sante")
         .trim()
         .ifBlank { trimmed }
+    if (formattedLabelCache.size < 1200) {
+        formattedLabelCache[trimmed] = formatted
+    }
+    return formatted
 }
 
 @Composable
@@ -153,15 +192,12 @@ fun TftChampionAvatar(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val cleanName = formatRiotAssetLabel(name)
-    val iconUrl = remember(
-        name,
-        environment,
-        TftAssetIconResolver.ddragonVersion,
-        TftAssetIconResolver.catalogRevision
-    ) {
+    val rev = TftAssetIconResolver.catalogRevision
+    val cleanName = remember(name, rev) { formatRiotAssetLabel(name) }
+    val iconUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
         TftAssetIconResolver.resolveChampionIconUrl(name, environment)
     }
+    val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(48) }
     val color = championCostColor(cost)
     val borderColor = if (isCarry) MaterialTheme.colorScheme.primary else color
 
@@ -181,10 +217,11 @@ fun TftChampionAvatar(
         ) {
             ChampionMonogramFallback(cleanName, isCarry, color, size)
             if (iconUrl != null) {
-                val request = remember(iconUrl, context) {
+                val request = remember(iconUrl, targetPx, context) {
                     ImageRequest.Builder(context)
                         .data(iconUrl)
-                        .crossfade(70)
+                        .size(targetPx)
+                        .crossfade(false)
                         .build()
                 }
                 AsyncImage(
@@ -274,19 +311,17 @@ fun TftTraitChip(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val formatted = formatRiotAssetLabel(traitLabel)
-    val countMatch = Regex("^(\\d+)\\s+(.+)$").find(formatted)
-    val count = countMatch?.groupValues?.getOrNull(1)
-    val name = countMatch?.groupValues?.getOrNull(2) ?: formatted
-    val (fallbackIcon, tint) = traitVisual(name)
-    val iconUrl = remember(
-        name,
-        environment,
-        TftAssetIconResolver.ddragonVersion,
-        TftAssetIconResolver.catalogRevision
-    ) {
+    val rev = TftAssetIconResolver.catalogRevision
+    val (count, name) = remember(traitLabel, rev) {
+        val formatted = formatRiotAssetLabel(traitLabel)
+        val countMatch = REGEX_TRAIT_COUNT.find(formatted)
+        countMatch?.groupValues?.getOrNull(1) to (countMatch?.groupValues?.getOrNull(2) ?: formatted)
+    }
+    val (fallbackIcon, tint) = remember(name) { traitVisual(name) }
+    val iconUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
         TftAssetIconResolver.resolveTraitIconUrl(name, environment)
     }
+    val targetPx = with(LocalDensity.current) { 20.dp.roundToPx() }
 
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -310,10 +345,11 @@ fun TftTraitChip(
                     modifier = Modifier.size(14.dp)
                 )
                 if (iconUrl != null) {
-                    val request = remember(iconUrl, context) {
+                    val request = remember(iconUrl, targetPx, context) {
                         ImageRequest.Builder(context)
                             .data(iconUrl)
-                            .crossfade(70)
+                            .size(targetPx)
+                            .crossfade(false)
                             .build()
                     }
                     AsyncImage(
@@ -404,18 +440,15 @@ fun TftItemIcon(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val cleanName = formatRiotAssetLabel(itemName)
-    val category = categoryOverride ?: inferItemCategory(cleanName)
+    val rev = TftAssetIconResolver.catalogRevision
+    val cleanName = remember(itemName, rev) { formatRiotAssetLabel(itemName) }
+    val category = remember(cleanName, categoryOverride) { categoryOverride ?: inferItemCategory(cleanName) }
     val tint = itemCategoryColor(category)
-    val fallbackIcon = inferItemFallbackIcon(cleanName, category)
-    val iconUrl = remember(
-        itemName,
-        environment,
-        TftAssetIconResolver.ddragonVersion,
-        TftAssetIconResolver.catalogRevision
-    ) {
+    val fallbackIcon = remember(cleanName, category) { inferItemFallbackIcon(cleanName, category) }
+    val iconUrl = remember(itemName, environment, TftAssetIconResolver.ddragonVersion, rev) {
         TftAssetIconResolver.resolveItemIconUrl(itemName, environment)
     }
+    val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(36) }
 
     Box(
         modifier = modifier
@@ -432,10 +465,11 @@ fun TftItemIcon(
             modifier = Modifier.size(size * 0.72f)
         )
         if (iconUrl != null) {
-            val request = remember(iconUrl, context) {
+            val request = remember(iconUrl, targetPx, context) {
                 ImageRequest.Builder(context)
                     .data(iconUrl)
-                    .crossfade(120)
+                    .size(targetPx)
+                    .crossfade(false)
                     .build()
             }
             AsyncImage(
@@ -458,8 +492,9 @@ fun TftItemChip(
     environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
-    val cleanName = formatRiotAssetLabel(itemName)
-    val category = categoryOverride ?: inferItemCategory(cleanName)
+    val rev = TftAssetIconResolver.catalogRevision
+    val cleanName = remember(itemName, rev) { formatRiotAssetLabel(itemName) }
+    val category = remember(cleanName, categoryOverride) { categoryOverride ?: inferItemCategory(cleanName) }
     val tint = itemCategoryColor(category)
 
     Surface(
@@ -532,16 +567,14 @@ fun TftAugmentIcon(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val cleanName = formatRiotAssetLabel(augmentName)
-    val augTier = augmentTierOverride ?: inferAugmentTier(cleanName)
-    val (fallbackIcon, tint) = augmentVisual(cleanName, augTier)
-    val iconUrl = remember(
-        augmentName,
-        TftAssetIconResolver.ddragonVersion,
-        TftAssetIconResolver.catalogRevision
-    ) {
+    val rev = TftAssetIconResolver.catalogRevision
+    val cleanName = remember(augmentName, rev) { formatRiotAssetLabel(augmentName) }
+    val augTier = remember(cleanName, augmentTierOverride) { augmentTierOverride ?: inferAugmentTier(cleanName) }
+    val (fallbackIcon, tint) = remember(cleanName, augTier) { augmentVisual(cleanName, augTier) }
+    val iconUrl = remember(augmentName, TftAssetIconResolver.ddragonVersion, rev) {
         TftAssetIconResolver.resolveAugmentIconUrl(augmentName)
     }
+    val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(36) }
 
     Box(
         modifier = modifier
@@ -558,10 +591,11 @@ fun TftAugmentIcon(
             modifier = Modifier.size(size * 0.72f)
         )
         if (iconUrl != null) {
-            val request = remember(iconUrl, context) {
+            val request = remember(iconUrl, targetPx, context) {
                 ImageRequest.Builder(context)
                     .data(iconUrl)
-                    .crossfade(120)
+                    .size(targetPx)
+                    .crossfade(false)
                     .build()
             }
             AsyncImage(
@@ -583,9 +617,10 @@ fun TftAugmentChip(
     compact: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val cleanName = formatRiotAssetLabel(augmentName)
-    val augTier = augmentTierOverride ?: inferAugmentTier(cleanName)
-    val (_, tint) = augmentVisual(cleanName, augTier)
+    val rev = TftAssetIconResolver.catalogRevision
+    val cleanName = remember(augmentName, rev) { formatRiotAssetLabel(augmentName) }
+    val augTier = remember(cleanName, augmentTierOverride) { augmentTierOverride ?: inferAugmentTier(cleanName) }
+    val (_, tint) = remember(cleanName, augTier) { augmentVisual(cleanName, augTier) }
 
     Surface(
         shape = RoundedCornerShape(8.dp),

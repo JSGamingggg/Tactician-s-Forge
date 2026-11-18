@@ -626,12 +626,7 @@ fun MetaSnapshotsScreen(
                             } else {
                                 expandedTierNames + tier.name
                             }
-                        },
-                        modifier = Modifier.animateItem(
-                            fadeInSpec = tween(200),
-                            fadeOutSpec = tween(150),
-                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                        )
+                        }
                     )
                 }
 
@@ -652,12 +647,7 @@ fun MetaSnapshotsScreen(
                             onTogglePin = {
                                 if (!isFav) onToggleFavorite(comp)
                                 else onTogglePin(comp.id, !isPinned)
-                            },
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(220),
-                                fadeOutSpec = tween(160),
-                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                            )
+                            }
                         )
                     }
                 }
@@ -892,7 +882,7 @@ private fun MetaCompCard(
                     verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     carryItems.forEach { item ->
-                        TftItemChip(itemName = item, compact = true)
+                        TftItemChip(itemName = item, compact = true, environment = comp.environment)
                     }
                     comp.augmentPriorities.take(2).forEach { aug ->
                         TftAugmentChip(augmentName = aug, compact = true)
@@ -1035,7 +1025,7 @@ private fun CompDetailSheetContent(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 carryItems.forEach { item ->
-                    TftItemChip(itemName = item)
+                    TftItemChip(itemName = item, environment = comp.environment)
                 }
             }
         }

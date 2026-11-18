@@ -242,10 +242,17 @@ class MainViewModel(
         viewModelScope.launch {
             MetaCacheUpdates.lastCacheWriteMillis.collect { ts ->
                 if (ts > 0L) {
-                    val fresh = metaRepository.loadOfflineBundleAsync()
-                    _metaBundle.value = fresh
-                    _liveVersionInfo.value = fresh.liveVersionInfo
-                    _isOfflineFallback.value = false
+                    val fresh = metaRepository.peekOfflineBundle()
+                    if (fresh !== _metaBundle.value && fresh.liveComps.isNotEmpty()) {
+                        _metaBundle.value = fresh
+                        _liveVersionInfo.value = fresh.liveVersionInfo
+                        _isOfflineFallback.value = false
+                    } else if (fresh.liveComps.isEmpty()) {
+                        val loaded = metaRepository.loadOfflineBundleAsync()
+                        _metaBundle.value = loaded
+                        _liveVersionInfo.value = loaded.liveVersionInfo
+                        _isOfflineFallback.value = false
+                    }
                 }
             }
         }

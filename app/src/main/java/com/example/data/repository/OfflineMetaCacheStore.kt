@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 data class OfflineMetaBundle(
     val cacheVersion: Int = CURRENT_CACHE_VERSION,
@@ -97,13 +98,7 @@ data class OfflineMetaBundle(
 class OfflineMetaCacheStore(context: Context) {
     private val appContext = context.applicationContext
     private val cacheFile = File(appContext.filesDir, CACHE_FILE_NAME)
-    private val moshi = Moshi.Builder()
-        .addLast(KotlinJsonAdapterFactory())
-        .build()
-    private val adapter = moshi.adapter(OfflineMetaBundle::class.java)
-
-    @Volatile
-    private var inMemoryBundle: OfflineMetaBundle? = null
+    private val cacheKey: String = cacheFile.absolutePath
 
     private data class PreloadedSet18CatalogData(
         val champions: List<ChampionTierEntry>,
@@ -112,20 +107,36 @@ class OfflineMetaCacheStore(context: Context) {
         val ddragonVersion: String
     )
 
-    fun peekInMemoryOrSeed(): OfflineMetaBundle = inMemoryBundle ?: OfflineMetaBundle()
+    fun peekInMemoryOrSeed(): OfflineMetaBundle = sharedBundlesByPath[cacheKey] ?: OfflineMetaBundle()
 
     suspend fun readOrSeedBundleAsync(): OfflineMetaBundle = withContext(Dispatchers.IO) {
         val bundle = readOrSeedBundle(skipResolverSync = true)
-        val parsedAssets = TftAssetIconResolver.parseDdragonCatalogInBackground(
+        val shouldApplyDdragon = !TftAssetIconResolver.hasSameDynamicVersion(
             version = bundle.ddragonVersion,
-            championJson = bundle.ddragonChampionJson,
-            itemJson = bundle.ddragonItemJson,
-            augmentJson = bundle.ddragonAugmentJson,
-            traitJson = bundle.ddragonTraitJson
+            hasChampJson = !bundle.ddragonChampionJson.isNullOrBlank(),
+            hasItemJson = !bundle.ddragonItemJson.isNullOrBlank(),
+            hasAugmentJson = !bundle.ddragonAugmentJson.isNullOrBlank()
         )
-        withContext(Dispatchers.Main.immediate) {
-            TftAssetIconResolver.applyParsedDdragonCatalog(parsedAssets)
-            applyPersistedPbeCatalogIfPresent(bundle)
+        val parsedAssets = if (shouldApplyDdragon) {
+            TftAssetIconResolver.parseDdragonCatalogInBackground(
+                version = bundle.ddragonVersion,
+                championJson = bundle.ddragonChampionJson,
+                itemJson = bundle.ddragonItemJson,
+                augmentJson = bundle.ddragonAugmentJson,
+                traitJson = bundle.ddragonTraitJson
+            )
+        } else {
+            null
+        }
+        val shouldApplyPbe = !TftAssetIconResolver.isPbeCatalogApplied() &&
+            (bundle.pbeChampionIcons.isNotEmpty() || bundle.pbeTraitIcons.isNotEmpty() || bundle.pbeItemIcons.isNotEmpty())
+        if (parsedAssets != null || shouldApplyPbe) {
+            withContext(Dispatchers.Main.immediate) {
+                parsedAssets?.let { TftAssetIconResolver.applyParsedDdragonCatalog(it) }
+                if (shouldApplyPbe) {
+                    applyPersistedPbeCatalogIfPresent(bundle)
+                }
+            }
         }
         bundle
     }
@@ -133,7 +144,7 @@ class OfflineMetaCacheStore(context: Context) {
     fun readOrSeedBundle(skipResolverSync: Boolean = false): OfflineMetaBundle = synchronized(cacheIoLock) {
         ensurePreloadedIconCatalogInitialized()
 
-        inMemoryBundle?.let { cached ->
+        sharedBundlesByPath[cacheKey]?.let { cached ->
             if (!skipResolverSync) {
                 TftAssetIconResolver.updateDdragonCatalog(
                     version = cached.ddragonVersion,
@@ -150,7 +161,7 @@ class OfflineMetaCacheStore(context: Context) {
         if (cacheFile.exists()) {
             val raw = runCatching { cacheFile.readText(Charsets.UTF_8) }.getOrNull()
             if (!raw.isNullOrBlank()) {
-                val parsed = runCatching { adapter.fromJson(raw) }.getOrNull()
+                val parsed = runCatching { sharedAdapter.fromJson(raw) }.getOrNull()
                 if (parsed != null &&
                     parsed.cacheVersion >= OfflineMetaBundle.CURRENT_CACHE_VERSION &&
                     parsed.liveItems.isNotEmpty() &&
@@ -175,7 +186,7 @@ class OfflineMetaCacheStore(context: Context) {
                     } else {
                         parsed
                     }
-                    inMemoryBundle = sanitized
+                    sharedBundlesByPath[cacheKey] = sanitized
                     if (!skipResolverSync) {
                         TftAssetIconResolver.updateDdragonCatalog(
                             version = sanitized.ddragonVersion,
@@ -415,7 +426,7 @@ class OfflineMetaCacheStore(context: Context) {
                 TftAcademyCompsScraper.computeCompsSignature(cleanLive, cleanPbe)
             }
         )
-        inMemoryBundle = normalized
+        sharedBundlesByPath[cacheKey] = normalized
         var tmpFile: File? = null
         return@synchronized runCatching {
             val parent = cacheFile.parentFile ?: appContext.filesDir
@@ -423,7 +434,7 @@ class OfflineMetaCacheStore(context: Context) {
                 parent.mkdirs()
             }
             tmpFile = File.createTempFile("tft_meta_cache_", ".tmp", parent)
-            tmpFile!!.writeText(adapter.toJson(normalized), Charsets.UTF_8)
+            tmpFile!!.writeText(sharedAdapter.toJson(normalized), Charsets.UTF_8)
             if (cacheFile.exists()) {
                 cacheFile.delete()
             }
@@ -444,6 +455,15 @@ class OfflineMetaCacheStore(context: Context) {
 
     companion object {
         private val cacheIoLock = Any()
+        private val sharedBundlesByPath = ConcurrentHashMap<String, OfflineMetaBundle>()
+        private val sharedMoshi: Moshi by lazy {
+            Moshi.Builder()
+                .addLast(KotlinJsonAdapterFactory())
+                .build()
+        }
+        private val sharedAdapter by lazy {
+            sharedMoshi.adapter(OfflineMetaBundle::class.java)
+        }
         private const val CACHE_FILE_NAME = "tft_offline_meta_cache_v2.json"
         private const val PRELOAD_ASSET_FILE = "tftacademy_preload.json"
         private const val PBE_PRELOAD_ASSET_FILE = "tftactics_pbe_preload.json"

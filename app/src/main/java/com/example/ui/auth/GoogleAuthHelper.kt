@@ -75,8 +75,15 @@ object GoogleAuthHelper {
         else -> null
     }
 
+    @Suppress("DiscouragedApi")
     private fun resolveDefaultWebClientId(context: Context): String? {
-        return runCatching { context.getString(R.string.default_web_client_id) }
+        val resId = context.resources.getIdentifier(
+            "default_web_client_id",
+            "string",
+            context.packageName
+        )
+        if (resId == 0) return null
+        return runCatching { context.getString(resId) }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
     }
@@ -88,6 +95,10 @@ object GoogleAuthHelper {
         onAuthSuccess: () -> Unit,
         onUnauthenticated: () -> Unit
     ) {
+        if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+            onUnauthenticated()
+            return
+        }
         val firebaseAuth = runCatching { Firebase.auth }.getOrNull()
         if (firebaseAuth == null) {
             onUnauthenticated()
@@ -138,25 +149,51 @@ object GoogleAuthHelper {
         onAuthError: (String) -> Unit,
         onAuthCancelled: () -> Unit = {}
     ) {
+        if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+            onAuthError(
+                "Firebase is not initialized in this APK build (missing google-services.json). Tap Explore as Guest to use all offline & live features."
+            )
+            return
+        }
         val firebaseAuth = runCatching { Firebase.auth }.getOrNull()
         if (firebaseAuth == null) {
-            onAuthError("Firebase is not configured in this APK build. Use Explore as Guest for offline & local features.")
+            onAuthError("Firebase Auth is unavailable in this APK build. Tap Explore as Guest for offline & local features.")
             return
         }
         val clientId = resolveDefaultWebClientId(context)
         if (clientId == null) {
-            onAuthError("Google Sign-In configuration missing: default_web_client_id not found.")
+            onAuthError(
+                "Google Sign-In Web Client ID (default_web_client_id) is missing in this APK build. Tap Explore as Guest to continue."
+            )
             return
         }
         val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
-        val request = GetCredentialRequest.Builder()
+        val primaryRequest = GetCredentialRequest.Builder()
             .addCredentialOption(signInOption)
             .build()
 
         scope.launch {
+            val hostContext: Context = context.findActivity() ?: context
             try {
-                val hostContext: Context = context.findActivity() ?: context
-                val cred = credentialManager.getCredential(hostContext, request).credential
+                val cred = try {
+                    credentialManager.getCredential(hostContext, primaryRequest).credential
+                } catch (primaryErr: GetCredentialException) {
+                    if (primaryErr is GetCredentialCancellationException && !looksLikeProviderConfigError(primaryErr.message)) {
+                        throw primaryErr
+                    }
+                    // Fallback to GetGoogleIdOption(filterByAuthorizedAccounts = false) for devices
+                    // where GetSignInWithGoogleOption returns NoCredential or provider config errors.
+                    val fallbackOption = GetGoogleIdOption.Builder()
+                        .setFilterByAuthorizedAccounts(false)
+                        .setServerClientId(clientId)
+                        .setAutoSelectEnabled(false)
+                        .build()
+                    val fallbackRequest = GetCredentialRequest.Builder()
+                        .addCredentialOption(fallbackOption)
+                        .build()
+                    credentialManager.getCredential(hostContext, fallbackRequest).credential
+                }
+
                 if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                     val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
                     firebaseAuth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
@@ -169,14 +206,7 @@ object GoogleAuthHelper {
             } catch (e: GetCredentialCancellationException) {
                 Log.w(TAG, "Google Sign-In cancelled or dismissed: ${e.message}", e)
                 val rawMsg = e.message.orEmpty()
-                val looksLikeConfigOrAccountError = rawMsg.contains("16", ignoreCase = true) ||
-                    rawMsg.contains("10", ignoreCase = true) ||
-                    rawMsg.contains("28436", ignoreCase = true) ||
-                    rawMsg.contains("developer", ignoreCase = true) ||
-                    rawMsg.contains("sha", ignoreCase = true) ||
-                    rawMsg.contains("reauth", ignoreCase = true) ||
-                    rawMsg.contains("matching credential", ignoreCase = true)
-                if (looksLikeConfigOrAccountError) {
+                if (looksLikeProviderConfigError(rawMsg)) {
                     onAuthError(
                         "Google Sign-In could not verify this APK signing key or Google account ($rawMsg). Tap Explore as Guest to use all offline features immediately."
                     )
@@ -209,6 +239,17 @@ object GoogleAuthHelper {
                 onAuthError(e.localizedMessage ?: "Google Sign-In failed")
             }
         }
+    }
+
+    private fun looksLikeProviderConfigError(rawMsg: String?): Boolean {
+        val msg = rawMsg.orEmpty()
+        return msg.contains("16", ignoreCase = true) ||
+            msg.contains("10", ignoreCase = true) ||
+            msg.contains("28436", ignoreCase = true) ||
+            msg.contains("developer", ignoreCase = true) ||
+            msg.contains("sha", ignoreCase = true) ||
+            msg.contains("reauth", ignoreCase = true) ||
+            msg.contains("matching credential", ignoreCase = true)
     }
 
     fun signOut(

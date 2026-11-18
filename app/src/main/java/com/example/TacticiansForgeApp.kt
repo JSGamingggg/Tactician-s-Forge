@@ -17,6 +17,7 @@ import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.example.data.model.TftEnvironment
+import com.example.data.network.RiotApiClientFactory
 import com.example.data.repository.MetaRepository
 import com.example.data.repository.OfflineMetaBundle
 import com.example.notifications.PatchMonitorWorker
@@ -28,6 +29,7 @@ import com.google.firebase.messaging.messaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
@@ -42,9 +44,11 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
+            .okHttpClient { RiotApiClientFactory.publicOkHttp }
+            .allowRgb565(true)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.28)
+                    .maxSizePercent(0.24)
                     .build()
             }
             .diskCache {
@@ -53,7 +57,7 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
                     .maxSizeBytes(64L * 1024L * 1024L)
                     .build()
             }
-            .crossfade(120)
+            .crossfade(false)
             .respectCacheHeaders(false)
             .build()
     }
@@ -69,64 +73,31 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
     private fun preloadEverythingOnLaunch() {
         if (Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) return
         appScope.launch {
+            // Immediately warm the shared in-memory bundle & icon maps off the main thread
             val repo = MetaRepository(applicationContext)
-            val initialBundle = runCatching { repo.loadOfflineBundleAsync() }.getOrNull()
-            if (initialBundle != null) {
-                prefetchBundleIcons(initialBundle)
-            }
-            runCatching { repo.refreshAndPersistMeta() }
-            val refreshedBundle = runCatching { repo.loadOfflineBundleAsync() }.getOrNull()
-            if (refreshedBundle != null) {
-                prefetchBundleIcons(refreshedBundle)
-            }
+            val initialBundle = runCatching { repo.loadOfflineBundleAsync() }.getOrNull() ?: return@launch
+            // Wait briefly so initial screen composition & metadata sync get full bandwidth first
+            delay(1_200L)
+            prefetchTopIcons(initialBundle)
         }
     }
 
-    private fun prefetchBundleIcons(bundle: OfflineMetaBundle) {
+    private fun prefetchTopIcons(bundle: OfflineMetaBundle) {
         val imageLoader = Coil.imageLoader(this)
-        val urls = LinkedHashSet<String>()
-        (bundle.liveComps + bundle.pbeComps).forEach { comp ->
+        val urls = LinkedHashSet<String>(64)
+        (bundle.liveComps.take(10) + bundle.pbeComps.take(8)).forEach { comp ->
             TftAssetIconResolver.resolveChampionIconUrl(comp.carryName, comp.environment)?.let(urls::add)
-            comp.coreUnits.forEach { unit ->
+            comp.coreUnits.take(6).forEach { unit ->
                 TftAssetIconResolver.resolveChampionIconUrl(unit, comp.environment)?.let(urls::add)
             }
-            comp.hexPlacements.forEach { placement ->
-                TftAssetIconResolver.resolveChampionIconUrl(placement.unitName, comp.environment)?.let(urls::add)
-                placement.items.forEach { item ->
-                    TftAssetIconResolver.resolveItemIconUrl(item)?.let(urls::add)
-                }
-            }
-            comp.traits.forEach { trait ->
-                TftAssetIconResolver.resolveTraitIconUrl(trait, comp.environment)?.let(urls::add)
-            }
-            comp.augmentPriorities.forEach { aug ->
-                TftAssetIconResolver.resolveAugmentIconUrl(aug)?.let(urls::add)
+            comp.hexPlacements.firstOrNull { it.isCarry }?.items?.take(3)?.forEach { item ->
+                TftAssetIconResolver.resolveItemIconUrl(item, comp.environment)?.let(urls::add)
             }
         }
-        bundle.liveChampions.forEach { champ ->
-            TftAssetIconResolver.resolveChampionIconUrl(champ.name, TftEnvironment.LIVE)?.let(urls::add)
-            champ.traits.forEach { trait ->
-                TftAssetIconResolver.resolveTraitIconUrl(trait, TftEnvironment.LIVE)?.let(urls::add)
-            }
-        }
-        bundle.pbeChampions.forEach { champ ->
-            TftAssetIconResolver.resolveChampionIconUrl(champ.name, TftEnvironment.PBE)?.let(urls::add)
-            champ.traits.forEach { trait ->
-                TftAssetIconResolver.resolveTraitIconUrl(trait, TftEnvironment.PBE)?.let(urls::add)
-            }
-        }
-        bundle.liveItems.take(70).forEach { item ->
-            TftAssetIconResolver.resolveItemIconUrl(item.name, TftEnvironment.LIVE)?.let(urls::add)
-        }
-        bundle.pbeItems.take(60).forEach { item ->
-            TftAssetIconResolver.resolveItemIconUrl(item.name, TftEnvironment.PBE)?.let(urls::add)
-        }
-        bundle.liveAugments.take(50).forEach { aug ->
-            TftAssetIconResolver.resolveAugmentIconUrl(aug.name)?.let(urls::add)
-        }
-        urls.take(440).forEach { url ->
+        urls.take(48).forEach { url ->
             val request = ImageRequest.Builder(this)
                 .data(url)
+                .size(96)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .build()

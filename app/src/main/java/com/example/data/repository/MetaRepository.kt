@@ -351,7 +351,24 @@ class MetaRepository(
                 pbeChampionTraits = resolvedPbeChampTraits
             )
 
-            if (syncedFromNetwork) {
+            val dataChanged = compsUpdated ||
+                newLivePatchDetected ||
+                newPbePatchDetected ||
+                ddragonVersion != currentBundle.ddragonVersion ||
+                resolvedLiveComps != currentBundle.liveComps ||
+                resolvedPbeComps != currentBundle.pbeComps ||
+                (resolvedLiveCatalog != null && (
+                    resolvedLiveCatalog.champions.size != currentBundle.liveChampions.size ||
+                        resolvedLiveCatalog.items.size != currentBundle.liveItems.size ||
+                        resolvedLiveCatalog.augments.size != currentBundle.liveAugments.size
+                    )) ||
+                resolvedPbeChampions != currentBundle.pbeChampions ||
+                resolvedPbeItems != currentBundle.pbeItems ||
+                resolvedPbeAugments != currentBundle.pbeAugments ||
+                !cacheStore.hasPersistedCache() ||
+                (now - currentBundle.cachedAtMillis) >= 300_000L
+
+            if (syncedFromNetwork && dataChanged) {
                 cacheStore.writeBundle(updatedBundle)
                 MetaCacheUpdates.notifyUpdated()
             }

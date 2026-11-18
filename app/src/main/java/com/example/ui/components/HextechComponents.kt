@@ -41,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -271,19 +272,23 @@ fun HextechPanelCard(
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
-    val hextech = LocalHextechColors.current
-    val borderStroke = if (accentBorder) {
-        BorderStroke(
-            width = 1.25.dp,
-            brush = Brush.linearGradient(
-                listOf(
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.82f),
-                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.55f)
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = MaterialTheme.colorScheme.secondary
+    val outline = MaterialTheme.colorScheme.outline
+    val borderStroke = remember(accentBorder, primary, secondary, outline) {
+        if (accentBorder) {
+            BorderStroke(
+                width = 1.25.dp,
+                brush = Brush.linearGradient(
+                    listOf(
+                        primary.copy(alpha = 0.82f),
+                        secondary.copy(alpha = 0.55f)
+                    )
                 )
             )
-        )
-    } else {
-        BorderStroke(1.dp, hextech.goldBorder.copy(alpha = 0.25f).let { MaterialTheme.colorScheme.outline })
+        } else {
+            BorderStroke(1.dp, outline)
+        }
     }
     if (onClick != null) {
         Surface(
@@ -320,7 +325,10 @@ fun TftHexBoard(
     val secondary = MaterialTheme.colorScheme.secondary
     val outline = MaterialTheme.colorScheme.outline
     val surfaceBg = MaterialTheme.colorScheme.surfaceVariant
-    val occupied = placements.associateBy { it.row to it.col }
+    val occupied = remember(placements) { placements.associateBy { it.row to it.col } }
+    val sortedPlacements = remember(placements) {
+        placements.sortedWith(compareByDescending<HexUnitPlacement> { it.isCarry }.thenBy { it.row }.thenBy { it.col })
+    }
     val density = LocalDensity.current
 
     Column(
@@ -372,38 +380,44 @@ fun TftHexBoard(
             val startX = (widthPx - (cols * dx + dx * 0.5f)) / 2f + rPx
             val startY = (heightPx - ((rows - 1) * dy + rPx * 2f)) / 2f + rPx
 
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                for (r in 0 until rows) {
-                    for (c in 0 until cols) {
-                        val rowOffset = if (r % 2 == 1) dx * 0.5f else 0f
-                        val cx = startX + c * dx + rowOffset
-                        val cy = startY + r * dy
-                        val unit = occupied[r to c]
-
-                        val path = Path().apply {
-                            for (i in 0 until 6) {
-                                val angle = Math.toRadians((60 * i - 30).toDouble())
-                                val px = cx + rPx * 0.9f * cos(angle).toFloat()
-                                val py = cy + rPx * 0.9f * sin(angle).toFloat()
-                                if (i == 0) moveTo(px, py) else lineTo(px, py)
+            val hexCells = remember(widthPx, heightPx, rPx) {
+                buildList(rows * cols) {
+                    for (r in 0 until rows) {
+                        for (c in 0 until cols) {
+                            val rowOffset = if (r % 2 == 1) dx * 0.5f else 0f
+                            val cx = startX + c * dx + rowOffset
+                            val cy = startY + r * dy
+                            val path = Path().apply {
+                                for (i in 0 until 6) {
+                                    val angle = Math.toRadians((60 * i - 30).toDouble())
+                                    val px = cx + rPx * 0.9f * cos(angle).toFloat()
+                                    val py = cy + rPx * 0.9f * sin(angle).toFloat()
+                                    if (i == 0) moveTo(px, py) else lineTo(px, py)
+                                }
+                                close()
                             }
-                            close()
+                            add(Triple(r, c, path))
                         }
+                    }
+                }
+            }
 
-                        when {
-                            unit?.isCarry == true -> {
-                                drawPath(path, color = primary.copy(alpha = 0.30f))
-                                drawPath(path, color = primary, style = Stroke(width = 3.5f))
-                            }
-                            unit != null -> {
-                                val costTint = championCostColor(unit.cost)
-                                drawPath(path, color = costTint.copy(alpha = 0.22f))
-                                drawPath(path, color = costTint, style = Stroke(width = 2.5f))
-                            }
-                            else -> {
-                                drawPath(path, color = surfaceBg.copy(alpha = 0.45f))
-                                drawPath(path, color = outline.copy(alpha = 0.7f), style = Stroke(width = 1.5f))
-                            }
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                for ((r, c, path) in hexCells) {
+                    val unit = occupied[r to c]
+                    when {
+                        unit?.isCarry == true -> {
+                            drawPath(path, color = primary.copy(alpha = 0.30f))
+                            drawPath(path, color = primary, style = Stroke(width = 3.5f))
+                        }
+                        unit != null -> {
+                            val costTint = championCostColor(unit.cost)
+                            drawPath(path, color = costTint.copy(alpha = 0.22f))
+                            drawPath(path, color = costTint, style = Stroke(width = 2.5f))
+                        }
+                        else -> {
+                            drawPath(path, color = surfaceBg.copy(alpha = 0.45f))
+                            drawPath(path, color = outline.copy(alpha = 0.7f), style = Stroke(width = 1.5f))
                         }
                     }
                 }
@@ -446,8 +460,7 @@ fun TftHexBoard(
             )
             Spacer(Modifier.height(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                placements.sortedWith(compareByDescending<HexUnitPlacement> { it.isCarry }.thenBy { it.row }.thenBy { it.col })
-                    .forEach { unit ->
+                sortedPlacements.forEach { unit ->
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = if (unit.isCarry) primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface,

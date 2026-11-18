@@ -76,6 +76,19 @@ object TftAssetIconResolver {
 
     fun isPbeCatalogApplied(): Boolean = pbeCatalogLoaded
 
+    fun hasSameDynamicVersion(
+        version: String?,
+        hasChampJson: Boolean,
+        hasItemJson: Boolean,
+        hasAugmentJson: Boolean
+    ): Boolean {
+        if (!version.isNullOrBlank() && version != ddragonVersion) return false
+        if (hasChampJson && dynamicChampionImages.isEmpty()) return false
+        if (hasItemJson && dynamicItemImages.isEmpty()) return false
+        if (hasAugmentJson && dynamicAugmentImages.isEmpty()) return false
+        return true
+    }
+
     fun updatePbeSetCatalog(
         championIcons: Map<String, String>,
         championCosts: Map<String, Int>,
@@ -104,13 +117,31 @@ object TftAssetIconResolver {
         championTraits.forEach { (k, v) ->
             if (v.isNotEmpty()) normChampTraits[normalizeLookupKey(k)] = v
         }
-        if (normChamps.isNotEmpty()) pbeChampionImages = normChamps
-        if (normTraits.isNotEmpty()) pbeTraitImages = normTraits
-        if (normItems.isNotEmpty()) pbeItemImages = normItems
-        if (normCosts.isNotEmpty()) pbeChampionCosts = normCosts
-        if (normChampTraits.isNotEmpty()) pbeChampionTraits = normChampTraits
+        var changed = !pbeCatalogLoaded
+        if (normChamps.isNotEmpty() && normChamps != pbeChampionImages) {
+            pbeChampionImages = normChamps
+            changed = true
+        }
+        if (normTraits.isNotEmpty() && normTraits != pbeTraitImages) {
+            pbeTraitImages = normTraits
+            changed = true
+        }
+        if (normItems.isNotEmpty() && normItems != pbeItemImages) {
+            pbeItemImages = normItems
+            changed = true
+        }
+        if (normCosts.isNotEmpty() && normCosts != pbeChampionCosts) {
+            pbeChampionCosts = normCosts
+            changed = true
+        }
+        if (normChampTraits.isNotEmpty() && normChampTraits != pbeChampionTraits) {
+            pbeChampionTraits = normChampTraits
+            changed = true
+        }
         pbeCatalogLoaded = true
-        catalogRevision += 1
+        if (changed) {
+            catalogRevision += 1
+        }
     }
 
     fun parsePreloadedSetCatalogInBackground(rawJson: String): ParsedPreloadedSetCatalog? {
@@ -321,13 +352,13 @@ object TftAssetIconResolver {
     }
 
     fun resolveTraitDescription(traitNameOrId: String): String? {
-        val clean = traitNameOrId.replace(Regex("^\\d+\\s+"), "").trim()
+        val clean = traitNameOrId.replace(REGEX_LEADING_COUNT, "").trim()
         val norm = normalizeLookupKey(clean)
         return traitDescriptionCatalog[norm] ?: traitDescriptionCatalog[normalizeLookupKey(traitNameOrId)]
     }
 
     fun resolveTraitIconUrl(traitNameOrId: String, environment: TftEnvironment? = null): String? {
-        val clean = traitNameOrId.replace(Regex("^\\d+\\s+"), "").trim()
+        val clean = traitNameOrId.replace(REGEX_LEADING_COUNT, "").trim()
         if (clean.isEmpty()) return null
         val norm = normalizeLookupKey(clean)
         val rawNorm = normalizeLookupKey(traitNameOrId)
@@ -461,7 +492,7 @@ object TftAssetIconResolver {
         val strippedTierNorm = normalizeLookupKey(
             cleanName
                 .replace("+", "")
-                .replace(Regex("\\s+(III|II|I)\\s*$", RegexOption.IGNORE_CASE), "")
+                .replace(REGEX_AUGMENT_TIER_SUFFIX, "")
         )
 
         // 1. Check dynamically fetched Riot tft-augments.json map (real non-missing icons)
@@ -540,19 +571,34 @@ object TftAssetIconResolver {
         return map
     }
 
+    private val REGEX_LEADING_COUNT = Regex("^\\d+\\s+")
+    private val REGEX_AUGMENT_TIER_SUFFIX = Regex("\\s+(III|II|I)\\s*$", RegexOption.IGNORE_CASE)
+    private val REGEX_NON_ALNUM = Regex("[^A-Za-z0-9]+")
+    private val REGEX_WHITESPACE = Regex("\\s+")
+
     private fun toDdragonImgUrl(relativeOrUrl: String): String =
         if (relativeOrUrl.startsWith("http")) relativeOrUrl
         else "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/${relativeOrUrl.trimStart('/')}"
 
-    private fun normalizeLookupKey(raw: String): String =
-        raw.lowercase().replace(Regex("[^a-z0-9]"), "")
+    private fun normalizeLookupKey(raw: String): String {
+        if (raw.isEmpty()) return ""
+        val sb = StringBuilder(raw.length)
+        for (i in 0 until raw.length) {
+            val ch = raw[i]
+            when (ch) {
+                in 'a'..'z', in '0'..'9' -> sb.append(ch)
+                in 'A'..'Z' -> sb.append((ch.code + 32).toChar())
+            }
+        }
+        return sb.toString()
+    }
 
     private fun toChampionKey(displayName: String): String {
         return displayName
             .replace("'", "")
             .replace(".", "")
             .replace("&", "")
-            .split(Regex("\\s+"))
+            .split(REGEX_WHITESPACE)
             .filter { it.isNotBlank() }
             .joinToString("") { token ->
                 token.lowercase().replaceFirstChar { it.uppercaseChar() }

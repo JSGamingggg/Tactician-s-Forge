@@ -104,7 +104,8 @@ fun ChampionTierListScreen(
     var selectedAugmentTier by remember { mutableStateOf<AugmentTier?>(null) }
     var expandedId by remember { mutableStateOf<String?>(null) }
 
-    val filteredChampions = remember(champions, searchQuery, selectedCost, selectedTier) {
+    val filteredChampions = remember(activeSubTab, champions, searchQuery, selectedCost, selectedTier) {
+        if (activeSubTab != TierCatalogTab.CHAMPIONS) return@remember emptyList()
         champions
             .filter { champ ->
                 val matchesSearch = searchQuery.isBlank() ||
@@ -118,7 +119,8 @@ fun ChampionTierListScreen(
             .sortedWith(compareBy<ChampionTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
     }
 
-    val filteredItems = remember(items, searchQuery, selectedTier, selectedItemCategory) {
+    val filteredItems = remember(activeSubTab, items, searchQuery, selectedTier, selectedItemCategory) {
+        if (activeSubTab != TierCatalogTab.ITEMS) return@remember emptyList()
         items
             .filter { item ->
                 val matchesSearch = searchQuery.isBlank() ||
@@ -132,7 +134,8 @@ fun ChampionTierListScreen(
             .sortedWith(compareBy<ItemTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
     }
 
-    val filteredAugments = remember(augments, searchQuery, selectedTier, selectedAugmentTier) {
+    val filteredAugments = remember(activeSubTab, augments, searchQuery, selectedTier, selectedAugmentTier) {
+        if (activeSubTab != TierCatalogTab.AUGMENTS) return@remember emptyList()
         augments
             .filter { aug ->
                 val matchesSearch = searchQuery.isBlank() ||
@@ -326,12 +329,7 @@ fun ChampionTierListScreen(
                         ChampionTierCard(
                             champ = champ,
                             expanded = isExpanded,
-                            onClick = { expandedId = if (isExpanded) null else champ.id },
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(220),
-                                fadeOutSpec = tween(160),
-                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                            )
+                            onClick = { expandedId = if (isExpanded) null else champ.id }
                         )
                     }
                 }
@@ -352,14 +350,7 @@ fun ChampionTierListScreen(
                     }
                 } else {
                     items(filteredItems, key = { it.id }, contentType = { "item_tier" }) { itemEntry ->
-                        ItemTierCard(
-                            item = itemEntry,
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(220),
-                                fadeOutSpec = tween(160),
-                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                            )
-                        )
+                        ItemTierCard(item = itemEntry)
                     }
                 }
             }
@@ -379,14 +370,7 @@ fun ChampionTierListScreen(
                     }
                 } else {
                     items(filteredAugments, key = { it.id }, contentType = { "augment_tier" }) { augment ->
-                        AugmentTierCard(
-                            augment = augment,
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(220),
-                                fadeOutSpec = tween(160),
-                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                            )
-                        )
+                        AugmentTierCard(augment = augment)
                     }
                 }
             }
@@ -662,6 +646,9 @@ private fun ItemTierCard(
                         modifier = Modifier.align(Alignment.CenterVertically)
                     )
                     item.bestHolders.forEach { holder ->
+                        val holderCost = remember(holder, item.environment, TftAssetIconResolver.catalogRevision) {
+                            TftAssetIconResolver.getChampionCost(holder, item.environment) ?: 4
+                        }
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant
@@ -673,7 +660,7 @@ private fun ItemTierCard(
                             ) {
                                 TftChampionAvatar(
                                     name = holder,
-                                    cost = TftAssetIconResolver.getChampionCost(holder, item.environment) ?: 4,
+                                    cost = holderCost,
                                     size = 18.dp,
                                     environment = item.environment
                                 )

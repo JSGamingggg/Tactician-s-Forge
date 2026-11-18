@@ -69,6 +69,9 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
         super.onCreate()
         TftNotificationHelper.ensureChannels(this)
         if (!isRobolectricRuntime()) {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                runCatching { FirebaseApp.initializeApp(this) }
+            }
             schedulePatchMonitor()
             subscribeToFcmTopics()
             preloadEverythingOnLaunch()

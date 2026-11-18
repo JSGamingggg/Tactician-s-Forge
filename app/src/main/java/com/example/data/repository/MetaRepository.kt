@@ -176,7 +176,7 @@ class MetaRepository(
                         }
                         if (liveVersion == prevLiveVer && tftipsResult?.fetchedFromNetwork != true) {
                             val shortTag = latestDdragon.split(".").take(2).joinToString(".")
-                            liveVersion = "18.6b (DD $shortTag)"
+                            liveVersion = "18.7 (DD $shortTag)"
                         }
                     }
                 }
@@ -358,6 +358,8 @@ class MetaRepository(
             val dataChanged = compsUpdated ||
                 newLivePatchDetected ||
                 newPbePatchDetected ||
+                mergedLivePatches != currentBundle.livePatches ||
+                mergedPbePatches != currentBundle.pbePatches ||
                 ddragonVersion != currentBundle.ddragonVersion ||
                 resolvedLiveComps != currentBundle.liveComps ||
                 resolvedPbeComps != currentBundle.pbeComps ||
@@ -446,9 +448,19 @@ class MetaRepository(
         existing: List<PatchUpdateRecord>
     ): List<PatchUpdateRecord> {
         if (incoming.isEmpty()) return existing
-        val byId = LinkedHashMap<String, PatchUpdateRecord>()
-        incoming.forEach { byId[it.id] = it }
-        existing.forEach { old -> if (!byId.containsKey(old.id)) byId[old.id] = old }
-        return byId.values.toList()
+        val byVersionKey = LinkedHashMap<String, PatchUpdateRecord>()
+        incoming.forEach { rec ->
+            val key = "${rec.environment.name}_${rec.version.uppercase()}"
+            byVersionKey[key] = rec
+        }
+        existing
+            .filter { it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true) }
+            .forEach { old ->
+                val key = "${old.environment.name}_${old.version.uppercase()}"
+                if (!byVersionKey.containsKey(key)) {
+                    byVersionKey[key] = old
+                }
+            }
+        return byVersionKey.values.toList()
     }
 }

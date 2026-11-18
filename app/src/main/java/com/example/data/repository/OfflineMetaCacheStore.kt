@@ -28,7 +28,7 @@ data class OfflineMetaBundle(
     val cacheVersion: Int = CURRENT_CACHE_VERSION,
     val cachedAtMillis: Long = System.currentTimeMillis(),
     val liveVersionInfo: LiveVersionInfo = LiveVersionInfo(
-        livePatchVersion = "18.6b",
+        livePatchVersion = "18.7",
         pbePatchVersion = "19.1-PBE",
         source = "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftactics.gg",
         checkedAtMillis = System.currentTimeMillis()
@@ -91,7 +91,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 13
+        const val CURRENT_CACHE_VERSION = 14
     }
 }
 
@@ -177,10 +177,22 @@ class OfflineMetaCacheStore(context: Context) {
                     }.ifEmpty {
                         loadPreloadedTftacticsPbeData(parsed.liveVersionInfo.pbePatchVersion)?.pbeComps.orEmpty()
                     }
-                    val sanitized = if (cleanLive.size != parsed.liveComps.size || cleanPbe.size != parsed.pbeComps.size) {
+                    val cleanLivePatches = parsed.livePatches.filter {
+                        it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true)
+                    }.ifEmpty { MetaCatalogData.livePatches }
+                    val cleanPbePatches = parsed.pbePatches.filter {
+                        it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true)
+                    }.ifEmpty { MetaCatalogData.pbePatches }
+                    val sanitized = if (cleanLive.size != parsed.liveComps.size ||
+                        cleanPbe.size != parsed.pbeComps.size ||
+                        cleanLivePatches.size != parsed.livePatches.size ||
+                        cleanPbePatches.size != parsed.pbePatches.size
+                    ) {
                         parsed.copy(
                             liveComps = cleanLive,
                             pbeComps = cleanPbe,
+                            livePatches = cleanLivePatches,
+                            pbePatches = cleanPbePatches,
                             compsSignature = TftAcademyCompsScraper.computeCompsSignature(cleanLive, cleanPbe)
                         )
                     } else {

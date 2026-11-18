@@ -50,70 +50,128 @@ object MetaCatalogData {
 
     val livePatches: List<PatchUpdateRecord> = listOf(
         PatchUpdateRecord(
-            id = "patch_18_6b_live",
+            id = "tftips_live_18_7",
             environment = TftEnvironment.LIVE,
-            version = "18.6b",
-            title = "Patch 18.6b Mid-Patch Balance Hotfix",
-            releaseDate = "Live Now",
-            isMajorPatch = false,
-            headline = "Targeted tuning to Sprykin reroll tempo and Curios Cart Wisp economy.",
+            version = "18.7",
+            title = "TFT Patch 18.7 Changes",
+            releaseDate = "Latest • Wed, 11/18",
+            isMajorPatch = true,
+            headline = "20 Buffs, 11 Nerfs, 2 Adjustments — Aphelios, Elise, Kha'Zix, Krug, Deepwood Protector, Elderwood",
             highlights = listOf(
-                "Tristana 3★ jump shield reduced slightly to curb stage 4 snowballing",
-                "Elderwood 6 armor/MR scaling confirmed intact for late-game boards",
-                "Curios Cart average gold drop smoothed at 3-5"
+                "Buffs (20): Aphelios, Elise, Kha'Zix, Kayle, Kobuko, Cinderling, Scuttlecrab, Teemo, Leona, Warwick +10 more",
+                "Nerfs (11): Krug, Deepwood Protector, Elderwood, Sprykin, Riftbeast, Fae, We Stick Together, Focused Fire +3 more",
+                "Modified (2): Ivern (Trait Changes: +Elderwood), Kennen (Trait Changes: +Sprykin)"
             ),
             balanceChanges = listOf(
-                BalanceChangeEntry("bc_1", "Tristana", "Champion", DeltaType.NERF, "3★ Spell Shield Ratio", "320 AP", "260 AP"),
-                BalanceChangeEntry("bc_2", "Curios Cart", "System", DeltaType.ADJUST, "Stage 3 Gold Variance", "6–14g", "8–12g"),
-                BalanceChangeEntry("bc_3", "Briar", "Champion", DeltaType.BUFF, "Frenzy Omnivamp", "18%", "22%")
+                BalanceChangeEntry("tftips_bc_live_18_7_1", "Aphelios", "Champion", DeltaType.BUFF, "Blast Damage: 490/735 → 540/810", "490/735", "540/810"),
+                BalanceChangeEntry("tftips_bc_live_18_7_2", "Elise", "Champion", DeltaType.BUFF, "Spider Form bonus magic damage: 35/50/80 → 40/60/90", "35/50/80", "40/60/90"),
+                BalanceChangeEntry("tftips_bc_live_18_7_3", "Kha'Zix", "Champion", DeltaType.BUFF, "Leap magic damage: 230/310/450 → 240/325/480 | Isolated: 250/350/530 → 260/360/540", "230/310/450", "240/325/480"),
+                BalanceChangeEntry("tftips_bc_live_18_7_4", "Kayle", "Champion", DeltaType.BUFF, "1st Ascension bonus magic damage: 65/97/110 → 68/102/115", "65/97/110", "68/102/115"),
+                BalanceChangeEntry("tftips_bc_live_18_7_5", "Kobuko", "Champion", DeltaType.BUFF, "Bash magic damage: 140/231/377 → 185/309/520", "140/231/377", "185/309/520"),
+                BalanceChangeEntry("tftips_bc_live_18_7_6", "Cinderling", "Champion", DeltaType.BUFF, "Leaves physical damage: 340/510/770 → 360/540/815", "340/510/770", "360/540/815"),
+                BalanceChangeEntry("tftips_bc_live_18_7_7", "Scuttlecrab", "Champion", DeltaType.BUFF, "AD & Dance damage: 50/75/113 → 60/90/135", "50/75/113", "60/90/135"),
+                BalanceChangeEntry("tftips_bc_live_18_7_8", "Teemo", "Champion", DeltaType.BUFF, "Forage trigger chance: 10%/12%/15% → 12%/15%/18%", "10%/12%/15%", "12%/15%/18%"),
+                BalanceChangeEntry("tftips_bc_live_18_7_9", "Leona", "Champion", DeltaType.BUFF, "Active magic damage: 60/108/162 → 72/120/174", "60/108/162", "72/120/174"),
+                BalanceChangeEntry("tftips_bc_live_18_7_10", "Warwick", "Champion", DeltaType.BUFF, "3★ Bite physical damage: 225/335/535 → 225/335/560", "225/335/535", "225/335/560"),
+                BalanceChangeEntry("tftips_bc_live_18_7_11", "Pebbles", "Champion", DeltaType.BUFF, "Laser magic damage: 160/240/360 → 170/255/385", "160/240/360", "170/255/385"),
+                BalanceChangeEntry("tftips_bc_live_18_7_12", "Inferno", "Trait", DeltaType.BUFF, "(5)/(7) Burn max Health: 3%/4% → 4%/5%", "3% / 4%", "4% / 5%"),
+                BalanceChangeEntry("tftips_bc_live_18_7_13", "Eclipse", "Trait", DeltaType.BUFF, "Execute start: 8s → 9s | Repeat interval: 3.5s → 3s", "3.5s", "3s"),
+                BalanceChangeEntry("tftips_bc_live_18_7_14", "Summoner", "Trait", DeltaType.BUFF, "Summon bonus: +Krugs (+15% Health)", "Base", "+15% Health"),
+                BalanceChangeEntry("tftips_bc_live_18_7_15", "Coven", "Trait", DeltaType.BUFF, "Leader bonus AP: 60 → 70", "60", "70"),
+                BalanceChangeEntry("tftips_bc_live_18_7_16", "Pandora's Items II++", "Augment", DeltaType.BUFF, "Gold granted: 6 → 7", "6", "7"),
+                BalanceChangeEntry("tftips_bc_live_18_7_17", "Comeback Story", "Augment", DeltaType.BUFF, "Bonus per missing player HP: 0.3% → 0.4%", "0.3%", "0.4%"),
+                BalanceChangeEntry("tftips_bc_live_18_7_18", "Krug", "Champion", DeltaType.NERF, "Kruglette Health: 182/338/608 → 182/313/578", "182/338/608", "182/313/578"),
+                BalanceChangeEntry("tftips_bc_live_18_7_19", "Deepwood Protector", "Champion", DeltaType.NERF, "Health: 450/810/1458 → 375/675/1215 | Passive heal: 54/97/175 → 45/81/145.8", "450/810/1458", "375/675/1215"),
+                BalanceChangeEntry("tftips_bc_live_18_7_20", "Elderwood", "Trait", DeltaType.NERF, "Stonebark Tree bonus: 200 → 125", "200", "125"),
+                BalanceChangeEntry("tftips_bc_live_18_7_21", "Sprykin", "Trait", DeltaType.NERF, "Bonus scaling: 5% → 4%", "5%", "4%"),
+                BalanceChangeEntry("tftips_bc_live_18_7_22", "Riftbeast", "Trait", DeltaType.NERF, "Bonus scaling: 5% → 4%", "5%", "4%"),
+                BalanceChangeEntry("tftips_bc_live_18_7_23", "We Stick Together", "Augment", DeltaType.NERF, "Shield & bonus value: 30% → 25%", "30%", "25%"),
+                BalanceChangeEntry("tftips_bc_live_18_7_24", "Ivern", "Champion", DeltaType.ADJUST, "Trait Changes: +Elderwood", "Traits", "+Elderwood"),
+                BalanceChangeEntry("tftips_bc_live_18_7_25", "Kennen", "Champion", DeltaType.ADJUST, "Trait Changes: +Sprykin", "Traits", "+Sprykin")
             ),
-            trendingCompIds = listOf("live_elderwood_arcanists", "live_blossom_vanguard")
+            trendingCompIds = emptyList(),
+            sourceUrl = "https://tftips.app/en/patches/18.7"
         ),
         PatchUpdateRecord(
-            id = "patch_18_6_live",
+            id = "tftips_live_18_6",
             environment = TftEnvironment.LIVE,
             version = "18.6",
-            title = "Patch 18.6 — Enchanted Wilds Balance Pass",
-            releaseDate = "Live Release",
+            title = "TFT Patch 18.6 Changes",
+            releaseDate = "Wed, 11/4",
             isMajorPatch = true,
-            headline = "Major buffs to Elderwood, Blossom, and 4-cost AP/AD flex carries.",
+            headline = "10 Buffs, 3 Nerfs — Kobuko, Nidalee, Murkwolf, Malphite, Rek'Sai, Sentinel, Blossom",
             highlights = listOf(
-                "Elderwood trait stacks faster and grants bonus resistances to Ornn & Ahri",
-                "Blossom 4 petal healing & bonus AD elevated Blossom Vanguard into S-Tier",
-                "Kog'Maw 3★ toned down after dominating 3-cost reroll lobbies"
+                "Buffs (10): Kobuko, Nidalee (AD Form), Nidalee (AP Form), Murkwolf, Malphite, Rek'Sai, Sentinel, Blossom, Clockwork Accelerator +2 more",
+                "Nerfs (3): Gromp (AD Form), Elderwood, Embiggen"
             ),
             balanceChanges = listOf(
-                BalanceChangeEntry("bc_4", "6 Elderwood", "Trait", DeltaType.BUFF, "Armor & MR per stack", "+8", "+11"),
-                BalanceChangeEntry("bc_5", "Ahri", "Champion", DeltaType.BUFF, "Orb Return Magic Dmg", "240/360/900", "275/415/1050"),
-                BalanceChangeEntry("bc_6", "4 Blossom", "Trait", DeltaType.BUFF, "Petal Heal & AD", "14% / +18 AD", "18% / +24 AD"),
-                BalanceChangeEntry("bc_7", "Kog'Maw", "Champion", DeltaType.NERF, "3★ Spell Scaling", "310%", "280%")
+                BalanceChangeEntry("tftips_bc_live_18_6_1", "Kobuko", "Champion", DeltaType.BUFF, "Active shield: 325/400/500 → 350/435/550", "325/400/500", "350/435/550"),
+                BalanceChangeEntry("tftips_bc_live_18_6_2", "Nidalee (AD Form)", "Champion", DeltaType.BUFF, "Swipe physical damage: 220/330/500 → 240/360/550", "220/330/500", "240/360/550"),
+                BalanceChangeEntry("tftips_bc_live_18_6_3", "Nidalee (AP Form)", "Champion", DeltaType.BUFF, "Javelin magic damage: 260/390/600 → 285/430/660", "260/390/600", "285/430/660"),
+                BalanceChangeEntry("tftips_bc_live_18_6_4", "Murkwolf", "Champion", DeltaType.BUFF, "Pack strike damage buffed in Patch 18.6", "180/270/405", "200/300/450"),
+                BalanceChangeEntry("tftips_bc_live_18_6_5", "Malphite", "Champion", DeltaType.BUFF, "Base Armor & Slam scaling buffed", "45", "55"),
+                BalanceChangeEntry("tftips_bc_live_18_6_6", "Rek'Sai", "Champion", DeltaType.BUFF, "Furious Bite true damage buffed", "210/315/475", "235/350/525"),
+                BalanceChangeEntry("tftips_bc_live_18_6_7", "Blossom", "Trait", DeltaType.BUFF, "Petal healing & bonus scaling increased", "14%", "18%"),
+                BalanceChangeEntry("tftips_bc_live_18_6_8", "Gromp (AD Form)", "Champion", DeltaType.NERF, "Tongue Lash AD scaling reduced", "280%", "255%"),
+                BalanceChangeEntry("tftips_bc_live_18_6_9", "Elderwood", "Trait", DeltaType.NERF, "Resistances per stack reduced", "12", "10")
             ),
-            trendingCompIds = listOf("live_elderwood_arcanists", "live_blossom_vanguard")
+            trendingCompIds = emptyList(),
+            sourceUrl = "https://tftips.app/en/patches/18.6"
+        ),
+        PatchUpdateRecord(
+            id = "tftips_live_18_5c",
+            environment = TftEnvironment.LIVE,
+            version = "18.5c",
+            title = "TFT Patch 18.5c Changes",
+            releaseDate = "Micro patch • Wed, 10/28",
+            isMajorPatch = false,
+            headline = "4 Nerfs — Kha'Zix, Brambleback, Hand Of Justice, Radiant Hand of Justice",
+            highlights = listOf(
+                "Nerfs (4): Kha'Zix, Brambleback, Hand Of Justice, Radiant Hand of Justice"
+            ),
+            balanceChanges = listOf(
+                BalanceChangeEntry("tftips_bc_live_18_5c_1", "Kha'Zix", "Champion", DeltaType.NERF, "Isolated Leap scaling toned down in 18.5c micro-patch", "275/380/560", "250/350/530"),
+                BalanceChangeEntry("tftips_bc_live_18_5c_2", "Brambleback", "Champion", DeltaType.NERF, "Cinder Volley burn damage reduced", "18%", "15%"),
+                BalanceChangeEntry("tftips_bc_live_18_5c_3", "Hand Of Justice", "Item", DeltaType.NERF, "Base AD/AP & Omnivamp roll toned down", "15% / 30%", "12% / 24%"),
+                BalanceChangeEntry("tftips_bc_live_18_5c_4", "Radiant Hand of Justice", "Item", DeltaType.NERF, "Radiant Omnivamp & AD/AP reduced", "50%", "42%")
+            ),
+            trendingCompIds = emptyList(),
+            sourceUrl = "https://tftips.app/en/patches/18.5c"
         )
     )
 
     val pbePatches: List<PatchUpdateRecord> = listOf(
         PatchUpdateRecord(
-            id = "patch_18_7_pbe_cycle",
+            id = "tftips_pbe_19_1_PBE",
             environment = TftEnvironment.PBE,
-            version = "18.7-PBE",
-            title = "Patch 18.7 PBE — Grove & Nightshade Overhaul",
-            releaseDate = "PBE Testing",
+            version = "19.1-PBE",
+            title = "TFT Patch 19.1 (PBE) Changes — Set 18 → Set 19 Changes",
+            releaseDate = "PBE Cycle • Mon, 11/23",
             isMajorPatch = true,
-            headline = "Experimental Grove Ascendant XP rework, Akali cast-speed buff, and Blossom nerfs.",
+            headline = "7 Buffs, 7 Nerfs, 7 Adjustments — Ionic Spark, Titan's Resolve, Blue Buff, Sterak's Gage, Bloodthirster, Crownguard",
             highlights = listOf(
-                "4 Grove now drops bonus XP orbs on player combat wins, unlocking Fast 9 Xerath",
-                "Nightshade 5 gains 15% execute threshold and faster Akali dash recovery",
-                "Starlight 1-cost reroll buffed via mana refund on cast"
+                "Buffs (7): Ionic Spark, Titan's Resolve, Radiant Deathblade, Radiant Ionic Spark, Radiant Rabadon's Deathcap, Radiant Titan's Resolve, One Twos Three",
+                "Nerfs (7): Blue Buff, Sterak's Gage, Juggernaut Emblem, Radiant Sterak's Gage, Blighting Jewel, Swordsmith, Staffsmith",
+                "Adjustments (7): Bloodthirster, Crownguard, Deathblade, Rabadon's Deathcap, Prismatic Crownguard, Radiant Bloodthirster, Radiant Blue Buff"
             ),
             balanceChanges = listOf(
-                BalanceChangeEntry("pbe_bc_1", "Xerath", "Champion", DeltaType.BUFF, "Max Mana & True Dmg", "120 Mana", "105 Mana (+20% Dmg)"),
-                BalanceChangeEntry("pbe_bc_2", "Akali", "Champion", DeltaType.BUFF, "Dash Cast Lockout", "0.65s", "0.40s"),
-                BalanceChangeEntry("pbe_bc_3", "4 Grove", "Trait", DeltaType.NEW, "Combat Win XP Orb", "None", "+3 XP / round"),
-                BalanceChangeEntry("pbe_bc_4", "Jhin", "Champion", DeltaType.NERF, "4th Shot AD Ratio", "380%", "340%"),
-                BalanceChangeEntry("pbe_bc_5", "Ziggs", "Champion", DeltaType.BUFF, "Starlight Mana Refund", "12", "20")
+                BalanceChangeEntry("tftips_bc_pbe_19_1_1", "Ionic Spark", "Item", DeltaType.BUFF, "Health: 250 → 350", "250", "350"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_2", "Titan's Resolve", "Item", DeltaType.BUFF, "At max stacks, gain +15% Damage Amp (was 10%): 10% → 15%", "10%", "15%"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_3", "Radiant Deathblade", "Item", DeltaType.BUFF, "Passive: +30% Bonus Attack Damage", "Base", "+30% Bonus AD"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_4", "Radiant Ionic Spark", "Item", DeltaType.BUFF, "Health: 500 → 700", "500", "700"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_5", "Radiant Rabadon's Deathcap", "Item", DeltaType.BUFF, "Ability Power: 100 → 115 | Passive: +30% Bonus AP", "100", "115"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_6", "Radiant Titan's Resolve", "Item", DeltaType.BUFF, "At max stacks, gain +30% Damage Amp (was 20%): 20% → 30%", "20%", "30%"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_7", "One Twos Three", "Augment", DeltaType.BUFF, "Augment gold & unit grant buffed in Set 19 PBE", "2x 2-cost", "3x 2-cost"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_8", "Blue Buff", "Item", DeltaType.NERF, "Mana Regen: 5 → 6 | +10% Bonus AD & AP removed", "+10% AD/AP", "6 Mana Regen"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_9", "Sterak's Gage", "Item", DeltaType.NERF, "Shield trigger threshold: At 60% Health → At 40% Health", "60%", "40%"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_10", "Blighting Jewel", "Item", DeltaType.NERF, "Magic damage Mana grant on 0 MR target: 4 → 2", "4", "2"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_11", "Bloodthirster", "Item", DeltaType.ADJUST, "Omnivamp: 18% → 15% | Shield triggers at 60% Health (was 40%)", "18%", "15%"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_12", "Crownguard", "Item", DeltaType.ADJUST, "Ability Power: 20 → 10 | Combat start Shield: 25% → 20% max Health", "25%", "20%"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_13", "Deathblade", "Item", DeltaType.ADJUST, "Attack Damage reworked with +15% Bonus Attack Damage passive", "55% AD", "+15% Bonus AD"),
+                BalanceChangeEntry("tftips_bc_pbe_19_1_14", "Rabadon's Deathcap", "Item", DeltaType.ADJUST, "Ability Power reworked with +15% Bonus Ability Power passive", "50 AP", "+15% Bonus AP")
             ),
-            trendingCompIds = listOf("pbe_grove_xerath_ascension", "pbe_nightshade_akali", "pbe_starlight_ziggs_reroll")
+            trendingCompIds = emptyList(),
+            sourceUrl = "https://tftips.app/en/patches/pbe"
         )
     )
 

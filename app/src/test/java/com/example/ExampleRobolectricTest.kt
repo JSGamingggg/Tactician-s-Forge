@@ -170,6 +170,47 @@ class ExampleRobolectricTest {
         assertEquals("18.8", live?.version)
         assertTrue(pbe?.version?.contains("18.9") == true)
         assertEquals(TftipsPatchScraper.TFTIPS_PATCHES_URL, live?.sourceUrl)
+
+        val realCardHtml = """
+            <div>
+              <a href="/patches/pbe">Set 18 → Set 19 Changes</a>
+              <time datetime="2026-11-23">Mon, 11/23</time>
+              <ul aria-label="Buffs">
+                <li title="Ionic Spark"><a href="/items/ionic_spark" class="tft-icon icon-item"></a></li>
+              </ul>
+              <a href="/patches/18.7">Patch 18.7</a>
+              <span>Latest</span>
+              <time datetime="2026-11-18">Wed, 11/18</time>
+              <ul aria-label="Buffs">
+                <li title="Aphelios"><a href="/champs/18_aphelios" class="tft-icon icon-champ"></a></li>
+                <li title="Inferno"><a href="/traits/18_inferno" class="tft-icon icon-trait"></a></li>
+              </ul>
+              <ul aria-label="Nerfs">
+                <li title="Krug"><a href="/champs/18_krug" class="tft-icon icon-champ"></a></li>
+              </ul>
+            </div>
+        """.trimIndent()
+        val detailHtml187 = """
+            <html><body>
+              <h1>TFT Patch 18.7 Changes</h1>
+              <h2>Buffs</h2>
+              <h3 class="text-sm font-bold leading-tight">Aphelios</h3>
+              <div>Blast Damage: <span class="tft-diff-change"><span class="tft-diff-change-old">490/735</span><span class="tft-diff-change-new">540/810</span></span></div>
+              <h2>Nerfs</h2>
+              <h3 class="text-sm font-bold leading-tight">Krug</h3>
+              <div>Kruglette Health: <span class="tft-diff-change"><span class="tft-diff-change-old">182/338/608</span><span class="tft-diff-change-new">182/313/578</span></span></div>
+            </body></html>
+        """.trimIndent()
+
+        val cardRecords = scraper.parseHtmlPatchCards(realCardHtml)
+        val live187 = cardRecords.firstOrNull { it.environment == TftEnvironment.LIVE && it.version == "18.7" }
+        val pbe191 = cardRecords.firstOrNull { it.environment == TftEnvironment.PBE }
+        assertNotNull(live187)
+        assertNotNull(pbe191)
+        val enriched187 = scraper.enrichPatchWithDetailHtml(live187!!, detailHtml187)
+        val apheliosChange = enriched187.balanceChanges.firstOrNull { it.targetName == "Aphelios" }
+        assertEquals("490/735", apheliosChange?.previousValue)
+        assertEquals("540/810", apheliosChange?.newValue)
     }
 
     @Test

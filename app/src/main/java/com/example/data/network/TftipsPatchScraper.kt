@@ -18,8 +18,9 @@ data class TftipsFetchResult(
 )
 
 /**
- * Fetches and parses LIVE and PBE patch notes and newly emerging compositions
- * directly from https://tftips.app/en/patches (with HTML + Next.js JSON extraction).
+ * Fetches and parses actual LIVE and PBE patch notes and balance changes
+ * directly from https://tftips.app/en/patches and its detail pages
+ * (e.g. /en/patches/18.7, /en/patches/18.6, /en/patches/pbe).
  */
 class TftipsPatchScraper(
     private val client: OkHttpClient = RiotApiClientFactory.publicOkHttp
@@ -35,20 +36,23 @@ class TftipsPatchScraper(
             )
 
         val parsedFromJson = parseNextDataPatches(mainHtml)
-        val parsedFromHtml = parseHtmlPatchSections(mainHtml)
+        val parsedCards = parseHtmlPatchCards(mainHtml)
 
-        val allParsed = (parsedFromJson + parsedFromHtml)
-            .distinctBy { "${it.environment.name}_${it.version}" }
-
-        // Optionally enrich the top LIVE and top PBE detail pages if linked on /en/patches
-        val detailLinks = extractPatchDetailLinks(mainHtml).take(2)
-        val detailRecords = detailLinks.mapNotNull { link ->
-            val detailHtml = fetchUrl(link.url) ?: return@mapNotNull null
-            parseDetailPage(detailHtml, link.url, link.hintEnv, link.hintVersion)
+        val enrichedRecords = parsedCards.mapIndexed { index, cardRecord ->
+            if (index < 4 && cardRecord.sourceUrl.isNotBlank() && cardRecord.sourceUrl != TFTIPS_PATCHES_URL) {
+                val detailHtml = fetchUrl(cardRecord.sourceUrl)
+                if (detailHtml != null) {
+                    enrichPatchWithDetailHtml(cardRecord, detailHtml)
+                } else {
+                    cardRecord
+                }
+            } else {
+                cardRecord
+            }
         }
 
-        val combined = (detailRecords + allParsed)
-            .distinctBy { "${it.environment.name}_${it.version}" }
+        val combined = (enrichedRecords + parsedFromJson)
+            .distinctBy { "${it.environment.name}_${it.version.uppercase()}" }
 
         val livePatches = combined.filter { it.environment == TftEnvironment.LIVE }
         val pbePatches = combined.filter { it.environment == TftEnvironment.PBE }
@@ -58,7 +62,7 @@ class TftipsPatchScraper(
             pbePatchVersion = pbePatches.firstOrNull()?.version,
             livePatchRecords = livePatches,
             pbePatchRecords = pbePatches,
-            fetchedFromNetwork = true
+            fetchedFromNetwork = combined.isNotEmpty()
         )
     }
 
@@ -66,7 +70,10 @@ class TftipsPatchScraper(
         return try {
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "TacticiansForge-Android/1.0 (+https://tftips.app/en/patches)")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+                )
                 .header("Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .build()
@@ -76,6 +83,438 @@ class TftipsPatchScraper(
             }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    internal fun parseHtmlPatchSections(html: String): List<PatchUpdateRecord> =
+        parseHtmlPatchCards(html)
+
+    /**
+     * Parses the patch cards on https://tftips.app/en/patches.
+     * Each card starts with `<a href="/patches/...">...</a>` and contains `<time>` plus
+     * `<ul aria-label="Buffs|Nerfs|Adjustments|Modified|Added|Removed">` icon lists with
+     * `<li title="TargetName"><a href="/champs|traits|items|augs/...">`.
+     */
+    internal fun parseHtmlPatchCards(html: String): List<PatchUpdateRecord> {
+        val records = mutableListOf<PatchUpdateRecord>()
+        val cardAnchors = PATCH_CARD_ANCHOR_REGEX.findAll(html).toList()
+        if (cardAnchors.isEmpty()) {
+            return parseGenericHeadingPatchSections(html)
+        }
+
+        for (i in cardAnchors.indices) {
+            val match = cardAnchors[i]
+            val rawHref = match.groupValues[1].trim()
+            val anchorText = cleanText(match.groupValues[2])
+            if (anchorText.isBlank()) continue
+
+            val nextStart = if (i + 1 < cardAnchors.size) {
+                cardAnchors[i + 1].range.first
+            } else {
+                (match.range.last + 20000).coerceAtMost(html.length)
+            }
+            val cardChunk = html.substring(match.range.first, nextStart)
+
+            val slug = rawHref.substringAfterLast("/").trim()
+            val isPbe = slug.equals("pbe", ignoreCase = true) ||
+                rawHref.contains("/pbe", ignoreCase = true) ||
+                anchorText.contains("pbe", ignoreCase = true) ||
+                SET_TRANSITION_REGEX.containsMatchIn(anchorText)
+
+            val env = if (isPbe) TftEnvironment.PBE else TftEnvironment.LIVE
+
+            val version = when {
+                isPbe -> {
+                    val verInText = PATCH_VERSION_REGEX.find("$anchorText $slug")?.value
+                    val targetSet = SET_TRANSITION_REGEX.find(anchorText)?.groupValues?.getOrNull(2)
+                    when {
+                        verInText != null -> if (verInText.contains("PBE", ignoreCase = true)) verInText else "$verInText-PBE"
+                        targetSet != null -> "$targetSet.1-PBE"
+                        else -> "19.1-PBE"
+                    }
+                }
+                else -> {
+                    PATCH_VERSION_REGEX.find("$slug $anchorText")?.value ?: slug.ifBlank { continue }
+                }
+            }
+
+            val timeText = TIME_TAG_REGEX.find(cardChunk)?.groupValues?.getOrNull(1)?.let(::cleanText).orEmpty()
+            val badgeText = when {
+                cardChunk.contains(">Latest<", ignoreCase = true) -> "Latest"
+                cardChunk.contains(">Micro patch<", ignoreCase = true) -> "Micro patch"
+                cardChunk.contains(">Set launch<", ignoreCase = true) -> "Set launch"
+                else -> ""
+            }
+            val releaseDate = listOf(badgeText, timeText).filter { it.isNotBlank() }.joinToString(" • ")
+                .ifBlank { if (isPbe) "PBE Cycle" else "Live Release" }
+
+            val groupedTargets = LinkedHashMap<String, MutableList<Pair<String, String>>>()
+            for (ulMatch in UL_ARIA_REGEX.findAll(cardChunk)) {
+                val sectionLabel = cleanText(ulMatch.groupValues[1])
+                val ulBody = ulMatch.groupValues[2]
+                val list = groupedTargets.getOrPut(sectionLabel) { mutableListOf() }
+                for (liMatch in LI_TITLE_REGEX.findAll(ulBody)) {
+                    val targetName = unescapeHtml(liMatch.groupValues[1]).trim()
+                    if (targetName.isBlank()) continue
+                    val liInner = liMatch.groupValues[2]
+                    val category = detectCategoryFromHtml(liInner)
+                    if (list.none { it.first.equals(targetName, ignoreCase = true) }) {
+                        list.add(targetName to category)
+                    }
+                }
+            }
+
+            val highlights = mutableListOf<String>()
+            val balanceChanges = mutableListOf<BalanceChangeEntry>()
+            var changeIdx = 0
+
+            for ((sectionLabel, targets) in groupedTargets) {
+                if (targets.isEmpty()) continue
+                val previewNames = targets.take(10).joinToString(", ") { it.first }
+                val overflow = if (targets.size > 10) " +${targets.size - 10} more" else ""
+                highlights.add("$sectionLabel (${targets.size}): $previewNames$overflow")
+
+                val deltaType = mapSectionToDelta(sectionLabel)
+                for ((targetName, category) in targets) {
+                    changeIdx++
+                    balanceChanges.add(
+                        BalanceChangeEntry(
+                            id = "tftips_bc_${env.name.lowercase()}_${version.replace(Regex("[^a-zA-Z0-9]"), "_")}_$changeIdx",
+                            targetName = targetName,
+                            category = category,
+                            deltaType = deltaType,
+                            summary = "$category ${sectionLabel.lowercase().removeSuffix("s")} in Patch $version",
+                            previousValue = "",
+                            newValue = ""
+                        )
+                    )
+                }
+            }
+
+            val totalBuffs = groupedTargets.entries.firstOrNull { it.key.equals("Buffs", ignoreCase = true) }?.value?.size ?: 0
+            val totalNerfs = groupedTargets.entries.firstOrNull { it.key.equals("Nerfs", ignoreCase = true) }?.value?.size ?: 0
+            val totalAdjust = groupedTargets.entries
+                .filter { !it.key.equals("Buffs", ignoreCase = true) && !it.key.equals("Nerfs", ignoreCase = true) }
+                .sumOf { it.value.size }
+
+            val summaryParts = mutableListOf<String>()
+            if (totalBuffs > 0) summaryParts.add("$totalBuffs Buff${if (totalBuffs > 1) "s" else ""}")
+            if (totalNerfs > 0) summaryParts.add("$totalNerfs Nerf${if (totalNerfs > 1) "s" else ""}")
+            if (totalAdjust > 0) summaryParts.add("$totalAdjust Adjustment${if (totalAdjust > 1) "s" else ""}")
+
+            val topTargetsPreview = groupedTargets.values.flatten().take(6).joinToString(", ") { it.first }
+            val headline = if (summaryParts.isNotEmpty()) {
+                "${summaryParts.joinToString(", ")} — $topTargetsPreview"
+            } else {
+                "TFT $version patch changes synced from tftips.app/en/patches."
+            }
+
+            val fullUrl = when {
+                rawHref.startsWith("http") -> rawHref
+                rawHref.startsWith("/en/") -> "https://tftips.app$rawHref"
+                rawHref.startsWith("/") -> "https://tftips.app/en$rawHref"
+                else -> "https://tftips.app/en/$rawHref"
+            }
+
+            val cleanTitle = when {
+                isPbe && !anchorText.contains("Patch", ignoreCase = true) -> "TFT Patch $version — $anchorText"
+                !anchorText.startsWith("TFT", ignoreCase = true) -> "TFT $anchorText Changes"
+                else -> anchorText
+            }
+
+            val bareVer = version.removeSuffix("-PBE").trim()
+            val isMajor = bareVer.isNotEmpty() && !bareVer.last().isLetter() && !badgeText.contains("Micro", ignoreCase = true)
+
+            records.add(
+                PatchUpdateRecord(
+                    id = "tftips_${env.name.lowercase()}_${version.replace(Regex("[^a-zA-Z0-9]"), "_")}",
+                    environment = env,
+                    version = version,
+                    title = cleanTitle,
+                    releaseDate = releaseDate,
+                    isMajorPatch = isMajor,
+                    headline = headline,
+                    highlights = highlights.ifEmpty {
+                        listOf("Tracked live on $fullUrl")
+                    },
+                    balanceChanges = balanceChanges,
+                    trendingCompIds = emptyList(),
+                    sourceUrl = fullUrl
+                )
+            )
+            if (records.size >= 8) break
+        }
+
+        return records
+    }
+
+    /**
+     * Enriches a patch card with exact per-target stat changes (`oldValue -> newValue` and ability/trait summaries)
+     * parsed from its detail page (e.g., https://tftips.app/en/patches/18.7 or /en/patches/pbe).
+     */
+    internal fun enrichPatchWithDetailHtml(
+        baseRecord: PatchUpdateRecord,
+        detailHtml: String
+    ): PatchUpdateRecord {
+        val h1Text = TITLE_REGEX.find(detailHtml)?.groupValues?.getOrNull(1)?.let(::cleanText).orEmpty()
+        var resolvedVersion = baseRecord.version
+        if (h1Text.isNotBlank()) {
+            val h1Ver = PATCH_VERSION_REGEX.find(h1Text)?.value
+            if (h1Ver != null) {
+                resolvedVersion = if (baseRecord.environment == TftEnvironment.PBE && !h1Ver.contains("PBE", ignoreCase = true)) {
+                    "$h1Ver-PBE"
+                } else {
+                    h1Ver.replace(Regex("""\s*\(\s*PBE\s*\)""", RegexOption.IGNORE_CASE), "-PBE")
+                        .replace(" ", "")
+                }
+            }
+        }
+
+        val resolvedTitle = when {
+            h1Text.isNotBlank() && baseRecord.environment == TftEnvironment.PBE &&
+                baseRecord.title.contains("Set", ignoreCase = true) && !h1Text.contains("Set", ignoreCase = true) -> {
+                val suffix = baseRecord.title.substringAfter("—", "").trim()
+                if (suffix.isNotBlank()) "$h1Text — $suffix" else h1Text
+            }
+            h1Text.isNotBlank() -> h1Text
+            else -> baseRecord.title
+        }
+
+        val detailMap = parseDetailTargetChanges(detailHtml)
+        if (detailMap.isEmpty()) {
+            return baseRecord.copy(
+                id = "tftips_${baseRecord.environment.name.lowercase()}_${resolvedVersion.replace(Regex("[^a-zA-Z0-9]"), "_")}",
+                version = resolvedVersion,
+                title = resolvedTitle
+            )
+        }
+
+        val updatedChanges = if (baseRecord.balanceChanges.isNotEmpty()) {
+            baseRecord.balanceChanges.map { entry ->
+                val detail = detailMap[entry.targetName.lowercase()]
+                if (detail != null) {
+                    entry.copy(
+                        summary = detail.summary.ifBlank { entry.summary },
+                        previousValue = detail.previousValue,
+                        newValue = detail.newValue,
+                        deltaType = detail.deltaType ?: entry.deltaType
+                    )
+                } else {
+                    entry
+                }
+            }
+        } else {
+            detailMap.values.mapIndexed { idx, d ->
+                BalanceChangeEntry(
+                    id = "tftips_bc_${baseRecord.environment.name.lowercase()}_${resolvedVersion.replace(Regex("[^a-zA-Z0-9]"), "_")}_${idx + 1}",
+                    targetName = d.targetName,
+                    category = d.category,
+                    deltaType = d.deltaType ?: DeltaType.ADJUST,
+                    summary = d.summary,
+                    previousValue = d.previousValue,
+                    newValue = d.newValue
+                )
+            }
+        }
+
+        return baseRecord.copy(
+            id = "tftips_${baseRecord.environment.name.lowercase()}_${resolvedVersion.replace(Regex("[^a-zA-Z0-9]"), "_")}",
+            version = resolvedVersion,
+            title = resolvedTitle,
+            balanceChanges = updatedChanges
+        )
+    }
+
+    private data class ParsedTargetDetail(
+        val targetName: String,
+        val category: String,
+        val deltaType: DeltaType?,
+        val summary: String,
+        val previousValue: String,
+        val newValue: String
+    )
+
+    private fun parseDetailTargetChanges(detailHtml: String): Map<String, ParsedTargetDetail> {
+        val result = LinkedHashMap<String, ParsedTargetDetail>()
+
+        // 1. Parse rendered HTML <h2> sections (Buffs, Nerfs, Modified, Adjustments) and <h3> target blocks
+        val h2Matches = H2_SECTION_REGEX.findAll(detailHtml).toList()
+        for (i in h2Matches.indices) {
+            val sectionName = cleanText(h2Matches[i].groupValues[1])
+            val delta = mapSectionToDelta(sectionName)
+            val sectionStart = h2Matches[i].range.last + 1
+            val sectionEnd = if (i + 1 < h2Matches.size) h2Matches[i + 1].range.first else detailHtml.length
+            val sectionHtml = detailHtml.substring(sectionStart.coerceAtMost(detailHtml.length), sectionEnd.coerceAtMost(detailHtml.length))
+
+            val h3Matches = H3_TARGET_REGEX.findAll(sectionHtml).toList()
+            for (j in h3Matches.indices) {
+                val targetName = cleanText(h3Matches[j].groupValues[1])
+                if (targetName.isBlank()) continue
+                val blockStart = h3Matches[j].range.last + 1
+                val blockEnd = if (j + 1 < h3Matches.size) h3Matches[j + 1].range.first else sectionHtml.length
+                val blockHtml = sectionHtml.substring(blockStart.coerceAtMost(sectionHtml.length), blockEnd.coerceAtMost(sectionHtml.length))
+
+                val detail = extractTargetDetailFromHtmlBlock(targetName, delta, blockHtml)
+                if (detail != null) {
+                    result[targetName.lowercase()] = detail
+                }
+            }
+        }
+
+        // 2. Parse RSC payload scripts for additional tabs (e.g. Traits, Augments, Items)
+        val unescapedRsc = detailHtml
+            .replace("\\\"", "\"")
+            .replace("\\n", " ")
+            .replace("\\u0026", "&")
+            .replace("\\u003c", "<")
+            .replace("\\u003e", ">")
+
+        val rscTargetMatches = RSC_H3_TARGET_REGEX.findAll(unescapedRsc).toList()
+        for (k in rscTargetMatches.indices) {
+            val targetName = unescapeHtml(rscTargetMatches[k].groupValues[1]).trim()
+            if (targetName.isBlank() || result.containsKey(targetName.lowercase())) continue
+            val start = rscTargetMatches[k].range.last + 1
+            val end = if (k + 1 < rscTargetMatches.size) {
+                rscTargetMatches[k + 1].range.first.coerceAtMost(start + 3500)
+            } else {
+                (start + 3500).coerceAtMost(unescapedRsc.length)
+            }
+            val snippet = unescapedRsc.substring(start.coerceAtMost(unescapedRsc.length), end.coerceAtMost(unescapedRsc.length))
+            val detail = extractTargetDetailFromRscSnippet(targetName, snippet)
+            if (detail != null) {
+                result[targetName.lowercase()] = detail
+            }
+        }
+
+        return result
+    }
+
+    private fun extractTargetDetailFromHtmlBlock(
+        targetName: String,
+        deltaType: DeltaType,
+        blockHtml: String
+    ): ParsedTargetDetail? {
+        val diffPairs = mutableListOf<Pair<String, String>>()
+        for (m in DIFF_CHANGE_REGEX.findAll(blockHtml)) {
+            val oldVal = cleanText(m.groupValues[1])
+            val newVal = cleanText(m.groupValues[2])
+            if (oldVal.isNotBlank() && newVal.isNotBlank()) {
+                diffPairs.add(oldVal to newVal)
+            }
+        }
+
+        val firstOld = diffPairs.firstOrNull()?.first.orEmpty()
+        val firstNew = diffPairs.firstOrNull()?.second.orEmpty()
+
+        val insVal = if (firstNew.isBlank()) {
+            DIFF_INS_REGEX.find(blockHtml)?.groupValues?.getOrNull(1)?.let(::cleanText).orEmpty()
+        } else ""
+        val delVal = if (firstOld.isBlank()) {
+            DIFF_DEL_REGEX.find(blockHtml)?.groupValues?.getOrNull(1)?.let(::cleanText).orEmpty()
+        } else ""
+
+        // Convert old/new spans into "old -> new" inline before stripping tags so summary is crystal clear
+        val readableHtml = blockHtml
+            .replace(DIFF_CHANGE_REGEX) { m ->
+                val o = cleanText(m.groupValues[1])
+                val n = cleanText(m.groupValues[2])
+                " $o → $n "
+            }
+            .replace(Regex("""</(?:div|p|li|h4)>""", RegexOption.IGNORE_CASE), " • ")
+
+        val rawLines = cleanText(readableHtml)
+            .split("•")
+            .map { it.trim() }
+            .filter { line ->
+                line.length >= 4 &&
+                    !line.equals("Passive", ignoreCase = true) &&
+                    !line.equals("Active", ignoreCase = true) &&
+                    !line.equals("Stats", ignoreCase = true)
+            }
+
+        val bestLines = rawLines.filter { it.contains("→") || it.contains("+") || it.contains("%") || it.contains("Trait") }
+            .ifEmpty { rawLines }
+
+        val summary = bestLines.take(2).joinToString(" | ").take(130)
+            .ifBlank { "Balance adjustment in latest patch" }
+
+        return ParsedTargetDetail(
+            targetName = targetName,
+            category = detectCategoryFromHtml(blockHtml),
+            deltaType = deltaType,
+            summary = summary,
+            previousValue = firstOld.ifBlank { delVal },
+            newValue = firstNew.ifBlank { insVal }
+        )
+    }
+
+    private fun extractTargetDetailFromRscSnippet(
+        targetName: String,
+        snippet: String
+    ): ParsedTargetDetail? {
+        val oldVal = RSC_OLD_VAL_REGEX.find(snippet)?.groupValues?.getOrNull(1)?.let(::cleanText).orEmpty()
+        val newVal = RSC_NEW_VAL_REGEX.find(snippet)?.groupValues?.getOrNull(1)?.let(::cleanText).orEmpty()
+        val insVal = RSC_INS_VAL_REGEX.find(snippet)?.groupValues?.getOrNull(1)?.let(::cleanText).orEmpty()
+
+        val textTokens = RSC_CHILDREN_TEXT_REGEX.findAll(snippet)
+            .map { unescapeHtml(it.groupValues[1]).trim() }
+            .filter { token ->
+                token.length in 2..90 &&
+                    !token.startsWith("$") &&
+                    !token.contains("text-") &&
+                    !token.contains("flex") &&
+                    !token.contains("border-") &&
+                    !token.contains("bg-") &&
+                    !token.equals("span", ignoreCase = true) &&
+                    !token.equals("div", ignoreCase = true)
+            }
+            .toList()
+
+        val summary = when {
+            oldVal.isNotBlank() && newVal.isNotBlank() -> {
+                val contextLabel = textTokens.firstOrNull {
+                    it != oldVal && it != newVal && it != "→" && it.length >= 3
+                }?.trimEnd(':')?.trim()
+                if (!contextLabel.isNullOrBlank()) {
+                    "$contextLabel: $oldVal → $newVal"
+                } else {
+                    "$oldVal → $newVal"
+                }
+            }
+            insVal.isNotBlank() -> {
+                val contextLabel = textTokens.firstOrNull { it != insVal && it.length >= 3 }?.trimEnd(':')?.trim()
+                if (!contextLabel.isNullOrBlank()) "$contextLabel: $insVal" else insVal
+            }
+            textTokens.isNotEmpty() -> textTokens.take(3).joinToString(" ").take(110)
+            else -> return null
+        }
+
+        return ParsedTargetDetail(
+            targetName = targetName,
+            category = detectCategoryFromHtml(snippet),
+            deltaType = null,
+            summary = summary.take(130),
+            previousValue = oldVal,
+            newValue = newVal.ifBlank { insVal }
+        )
+    }
+
+    private fun detectCategoryFromHtml(rawHtml: String): String {
+        return when {
+            rawHtml.contains("/champs/", ignoreCase = true) || rawHtml.contains("icon-champ", ignoreCase = true) -> "Champion"
+            rawHtml.contains("/traits/", ignoreCase = true) || rawHtml.contains("icon-trait", ignoreCase = true) -> "Trait"
+            rawHtml.contains("/items/", ignoreCase = true) || rawHtml.contains("icon-item", ignoreCase = true) -> "Item"
+            rawHtml.contains("/augs/", ignoreCase = true) || rawHtml.contains("icon-aug", ignoreCase = true) -> "Augment"
+            else -> "Patch Note"
+        }
+    }
+
+    private fun mapSectionToDelta(sectionLabel: String): DeltaType {
+        return when {
+            sectionLabel.contains("buff", ignoreCase = true) -> DeltaType.BUFF
+            sectionLabel.contains("nerf", ignoreCase = true) -> DeltaType.NERF
+            sectionLabel.contains("add", ignoreCase = true) || sectionLabel.contains("new", ignoreCase = true) -> DeltaType.NEW
+            else -> DeltaType.ADJUST
         }
     }
 
@@ -133,7 +572,7 @@ class TftipsPatchScraper(
                             version = normalizedVer,
                             title = cleanText(titleCandidate).ifBlank { "TFT Patch $normalizedVer" },
                             releaseDate = dateStr,
-                            isMajorPatch = !normalizedVer.last().isLetter(),
+                            isMajorPatch = !normalizedVer.removeSuffix("-PBE").last().isLetter(),
                             headline = summary,
                             highlights = extractJsonHighlights(node).ifEmpty {
                                 listOf("Synced live from https://tftips.app/en/patches")
@@ -175,13 +614,11 @@ class TftipsPatchScraper(
         return list
     }
 
-    internal fun parseHtmlPatchSections(html: String): List<PatchUpdateRecord> {
+    private fun parseGenericHeadingPatchSections(html: String): List<PatchUpdateRecord> {
         val records = mutableListOf<PatchUpdateRecord>()
-        val headingMatches = HEADING_OR_LINK_REGEX.findAll(html).toList()
-
-        for (match in headingMatches) {
-            val rawBlock = cleanText(match.value)
-            if (rawBlock.length < 3 || rawBlock.length > 140) continue
+        for (match in HEADING_REGEX.findAll(html)) {
+            val rawBlock = cleanText(match.groupValues[1])
+            if (rawBlock.length !in 3..140) continue
             val verMatch = PATCH_VERSION_REGEX.find(rawBlock) ?: continue
             val ver = verMatch.value.trim()
             val isPbe = rawBlock.contains("pbe", ignoreCase = true)
@@ -194,10 +631,23 @@ class TftipsPatchScraper(
             val bulletHighlights = LIST_ITEM_REGEX.findAll(snippetHtml)
                 .map { cleanText(it.groupValues[1]) }
                 .filter { it.length in 8..180 }
-                .take(4)
+                .take(6)
                 .toList()
 
-            val balanceChanges = extractBalanceChangesFromText(bulletHighlights, env, normalizedVer)
+            val balanceChanges = bulletHighlights.mapIndexedNotNull { idx, line ->
+                val arrowMatch = ARROW_CHANGE_REGEX.find(line)
+                val delta = mapSectionToDelta(line)
+                val target = line.substringBefore(":").substringBefore("—").trim().take(28).ifBlank { "Balance Update" }
+                BalanceChangeEntry(
+                    id = "tftips_bc_${env.name.lowercase()}_${normalizedVer}_$idx",
+                    targetName = target,
+                    category = "Champion",
+                    deltaType = delta,
+                    summary = line.take(110),
+                    previousValue = arrowMatch?.groupValues?.getOrNull(1)?.trim().orEmpty(),
+                    newValue = arrowMatch?.groupValues?.getOrNull(2)?.trim().orEmpty()
+                )
+            }
 
             records.add(
                 PatchUpdateRecord(
@@ -222,100 +672,21 @@ class TftipsPatchScraper(
         return records
     }
 
-    private data class PatchDetailLink(
-        val url: String,
-        val hintEnv: TftEnvironment,
-        val hintVersion: String
-    )
-
-    private fun extractPatchDetailLinks(html: String): List<PatchDetailLink> {
-        val links = mutableListOf<PatchDetailLink>()
-        for (m in PATCH_HREF_REGEX.findAll(html)) {
-            val href = m.groupValues[1]
-            val contextText = cleanText(m.groupValues[2])
-            val verMatch = PATCH_VERSION_REGEX.find("$href $contextText") ?: continue
-            val isPbe = href.contains("pbe", ignoreCase = true) || contextText.contains("pbe", ignoreCase = true)
-            val env = if (isPbe) TftEnvironment.PBE else TftEnvironment.LIVE
-            val fullUrl = if (href.startsWith("http")) href else "https://tftips.app${if (href.startsWith("/")) href else "/$href"}"
-            links.add(PatchDetailLink(fullUrl, env, verMatch.value))
-        }
-        return links.distinctBy { it.url }
-    }
-
-    private fun parseDetailPage(
-        html: String,
-        url: String,
-        env: TftEnvironment,
-        fallbackVersion: String
-    ): PatchUpdateRecord? {
-        val nextRecords = parseNextDataPatches(html)
-        if (nextRecords.isNotEmpty()) {
-            return nextRecords.first().copy(environment = env, sourceUrl = url)
-        }
-        val titleMatch = TITLE_REGEX.find(html)?.groupValues?.getOrNull(1)?.let(::cleanText)
-            ?: "Patch $fallbackVersion"
-        val bullets = LIST_ITEM_REGEX.findAll(html)
-            .map { cleanText(it.groupValues[1]) }
-            .filter { it.length in 10..180 }
-            .take(5)
-            .toList()
-        if (bullets.isEmpty()) return null
-        val normalizedVer = if (env == TftEnvironment.PBE && !fallbackVersion.contains("PBE", ignoreCase = true)) {
-            "$fallbackVersion-PBE"
-        } else fallbackVersion
-        return PatchUpdateRecord(
-            id = "tftips_${env.name.lowercase()}_${normalizedVer.replace(Regex("[^a-zA-Z0-9]"), "_")}",
-            environment = env,
-            version = normalizedVer,
-            title = titleMatch,
-            releaseDate = if (env == TftEnvironment.PBE) "PBE (TFTips)" else "Live (TFTips)",
-            isMajorPatch = !fallbackVersion.last().isLetter(),
-            headline = bullets.first(),
-            highlights = bullets,
-            balanceChanges = extractBalanceChangesFromText(bullets, env, normalizedVer),
-            trendingCompIds = emptyList(),
-            sourceUrl = url
-        )
-    }
-
-    private fun extractBalanceChangesFromText(
-        lines: List<String>,
-        env: TftEnvironment,
-        ver: String
-    ): List<BalanceChangeEntry> {
-        return lines.mapIndexedNotNull { idx, line ->
-            val arrowMatch = ARROW_CHANGE_REGEX.find(line)
-            val delta = when {
-                line.contains("buff", ignoreCase = true) || line.contains("increase", ignoreCase = true) -> DeltaType.BUFF
-                line.contains("nerf", ignoreCase = true) || line.contains("reduce", ignoreCase = true) -> DeltaType.NERF
-                line.contains("new", ignoreCase = true) || line.contains("rework", ignoreCase = true) -> DeltaType.NEW
-                else -> DeltaType.ADJUST
-            }
-            val target = line.substringBefore(":").substringBefore("—").trim().take(28).ifBlank { "Balance Update" }
-            if (arrowMatch != null || delta != DeltaType.ADJUST) {
-                BalanceChangeEntry(
-                    id = "tftips_bc_${env.name.lowercase()}_${ver}_$idx",
-                    targetName = target,
-                    category = "Patch Note",
-                    deltaType = delta,
-                    summary = line.take(90),
-                    previousValue = arrowMatch?.groupValues?.getOrNull(1)?.trim() ?: "Prev",
-                    newValue = arrowMatch?.groupValues?.getOrNull(2)?.trim() ?: "Updated"
-                )
-            } else null
-        }
+    private fun unescapeHtml(raw: String): String {
+        return raw
+            .replace("&amp;", "&")
+            .replace("&#39;", "'")
+            .replace("&#x27;", "'")
+            .replace("&apos;", "'")
+            .replace("&quot;", "\"")
+            .replace("&rarr;", "→")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&nbsp;", " ")
     }
 
     private fun cleanText(raw: String): String {
-        return raw
-            .replace(HTML_TAG_REGEX, " ")
-            .replace("&amp;", "&")
-            .replace("&#39;", "'")
-            .replace("&apos;", "'")
-            .replace("&quot;", "\"")
-            .replace("&rarr;", "->")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
+        return unescapeHtml(raw.replace(HTML_TAG_REGEX, " "))
             .replace(WHITESPACE_REGEX, " ")
             .trim()
     }
@@ -327,24 +698,78 @@ class TftipsPatchScraper(
             """<script[^>]*id=["']__NEXT_DATA__["'][^>]*>(.*?)</script>""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
-        private val HEADING_OR_LINK_REGEX = Regex(
-            """<(?:h1|h2|h3|h4|a)[^>]*>(.*?)</(?:h1|h2|h3|h4|a)>""",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        )
-        private val PATCH_HREF_REGEX = Regex(
-            """<a[^>]*href=["']([^"']*patches[^"']+)["'][^>]*>(.*?)</a>""",
+        private val HEADING_REGEX = Regex(
+            """<(?:h1|h2|h3|h4)[^>]*>(.*?)</(?:h1|h2|h3|h4)>""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
         private val LIST_ITEM_REGEX = Regex(
             """<li[^>]*>(.*?)</li>""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
+        private val ARROW_CHANGE_REGEX = Regex("""([0-9.%+/\-]+)\s*(?:->|→|⇒)\s*([0-9.%+/\-]+)""")
+        private val PATCH_CARD_ANCHOR_REGEX = Regex(
+            """<a[^>]*href=["']((?:/en)?/patches/[^"'#?]+)["'][^>]*>(.*?)</a>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val TIME_TAG_REGEX = Regex(
+            """<time[^>]*>(.*?)</time>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val UL_ARIA_REGEX = Regex(
+            """<ul[^>]*aria-label=["']([^"']+)["'][^>]*>(.*?)</ul>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val LI_TITLE_REGEX = Regex(
+            """<li[^>]*title=["']([^"']+)["'][^>]*>(.*?)</li>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
         private val TITLE_REGEX = Regex(
             """<h1[^>]*>(.*?)</h1>""",
             setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
         )
-        private val PATCH_VERSION_REGEX = Regex("""\b(?:1[3-9]|2[0-9])\.\d+[a-z]?(?:\s*[-/]?\s*PBE)?\b""", RegexOption.IGNORE_CASE)
-        private val ARROW_CHANGE_REGEX = Regex("""([0-9.%+/\-]+)\s*(?:->|→|⇒)\s*([0-9.%+/\-]+)""")
+        private val H2_SECTION_REGEX = Regex(
+            """<h2[^>]*>(Buffs|Nerfs|Modified|Adjustments|Added|Removed|New|Reworked)</h2>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val H3_TARGET_REGEX = Regex(
+            """<h3[^>]*class=["'][^"']*font-bold[^"']*["'][^>]*>(.*?)</h3>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val DIFF_CHANGE_REGEX = Regex(
+            """<span[^>]*class=["'][^"']*tft-diff-change\b[^"']*["'][^>]*>.*?<span[^>]*class=["'][^"']*tft-diff-change-old[^"']*["'][^>]*>(.*?)</span>.*?<span[^>]*class=["'][^"']*tft-diff-change-new[^"']*["'][^>]*>(.*?)</span>.*?</span>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val DIFF_INS_REGEX = Regex(
+            """<ins[^>]*class=["'][^"']*tft-diff-ins[^"']*["'][^>]*>(.*?)</ins>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val DIFF_DEL_REGEX = Regex(
+            """<del[^>]*class=["'][^"']*tft-diff-del[^"']*["'][^>]*>(.*?)</del>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        )
+        private val RSC_H3_TARGET_REGEX = Regex(
+            """"h3"\s*,\s*null\s*,\s*\{\s*"className"\s*:\s*"text-sm font-bold leading-tight"\s*,\s*"children"\s*:\s*"([^"]+)""""
+        )
+        private val RSC_OLD_VAL_REGEX = Regex(
+            """"tft-diff-change-old"\s*,\s*"children"\s*:\s*"([^"]+)""""
+        )
+        private val RSC_NEW_VAL_REGEX = Regex(
+            """"tft-diff-change-new"\s*,\s*"children"\s*:\s*"([^"]+)""""
+        )
+        private val RSC_INS_VAL_REGEX = Regex(
+            """"tft-diff-ins[^"]*"\s*,\s*"children"\s*:\s*\[\s*"\+"\s*,\s*"([^"]+)""""
+        )
+        private val RSC_CHILDREN_TEXT_REGEX = Regex(
+            """"children"\s*:\s*"([^"]+)""""
+        )
+        private val SET_TRANSITION_REGEX = Regex(
+            """Set\s*(\d+)\s*(?:→|->)\s*Set\s*(\d+)""",
+            RegexOption.IGNORE_CASE
+        )
+        private val PATCH_VERSION_REGEX = Regex(
+            """\b(?:1[3-9]|2[0-9])\.\d+[a-z]?(?:\s*[-/(]?\s*PBE\)?)?\b""",
+            RegexOption.IGNORE_CASE
+        )
         private val HTML_TAG_REGEX = Regex("""<[^>]+>""")
         private val WHITESPACE_REGEX = Regex("""\s+""")
     }

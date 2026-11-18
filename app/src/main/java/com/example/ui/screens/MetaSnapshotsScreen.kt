@@ -239,7 +239,7 @@ fun MetaSnapshotsScreen(
                         ) {
                             Text(
                                 text = if (environment == TftEnvironment.LIVE) {
-                                    "LIVE • ${liveVersionInfo?.livePatchVersion ?: "18.6b"}"
+                                    "LIVE • ${liveVersionInfo?.livePatchVersion ?: "18.7"}"
                                 } else {
                                     "PBE • ${liveVersionInfo?.pbePatchVersion ?: "19.1-PBE"}"
                                 },
@@ -378,8 +378,8 @@ fun MetaSnapshotsScreen(
                         EnvironmentToggleBar(
                             selected = environment,
                             onSelect = onSelectEnvironment,
-                            liveLabel = liveVersionInfo?.livePatchVersion ?: "18.6b Live",
-                            pbeLabel = liveVersionInfo?.pbePatchVersion ?: "18.7 PBE",
+                            liveLabel = liveVersionInfo?.livePatchVersion ?: "18.7 Live",
+                            pbeLabel = liveVersionInfo?.pbePatchVersion ?: "19.1-PBE",
                             modifier = Modifier.fillMaxWidth()
                         )
                     }

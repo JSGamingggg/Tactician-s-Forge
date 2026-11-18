@@ -10,10 +10,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.NewReleases
@@ -129,7 +132,7 @@ fun PatchTierAlertBanner(
                             modifier = Modifier.size(15.dp)
                         )
                         Text(
-                            text = "Tier List Shifts",
+                            text = "Patch Notes",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = BrightGold
@@ -146,12 +149,12 @@ fun PatchTierAlertBanner(
                     overflow = TextOverflow.Ellipsis
                 )
 
-                if (latestPatch.highlights.isNotEmpty()) {
+                latestPatch.highlights.take(2).forEach { hl ->
                     Text(
-                        text = "• ${latestPatch.highlights.first()}",
+                        text = "• $hl",
                         fontSize = 11.sp,
                         color = Color(0xFFC7D3EA),
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -162,7 +165,7 @@ fun PatchTierAlertBanner(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Tap to view full balance changes & tier list updates →",
+                        text = "Tap to view all ${latestPatch.balanceChanges.size} patch changes →",
                         fontSize = 10.sp,
                         color = ArcaneCyan,
                         fontWeight = FontWeight.Medium
@@ -192,13 +195,15 @@ fun PatchTierDetailsDialog(
         title = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = BrightGold)
-                Text("Patch ${patch.version} & Tier List Shifts")
+                Text(patch.title.ifBlank { "Patch ${patch.version} Changes" })
             }
         },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
                     .padding(vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -211,7 +216,7 @@ fun PatchTierDetailsDialog(
 
                 if (patch.highlights.isNotEmpty()) {
                     Text(
-                        text = "Key Patch Highlights & Tier Shifts:",
+                        text = "Summary by Category:",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = BrightGold
@@ -228,12 +233,12 @@ fun PatchTierDetailsDialog(
                 if (patch.balanceChanges.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Significant Balance & Tier Adjustments:",
+                        text = "All Patch Balance Changes (${patch.balanceChanges.size}):",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = BrightGold
                     )
-                    patch.balanceChanges.take(6).forEach { bc ->
+                    patch.balanceChanges.forEach { bc ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -245,18 +250,34 @@ fun PatchTierDetailsDialog(
                                 modifier = Modifier.weight(1f)
                             ) {
                                 DeltaBadge(bc.deltaType)
-                                Text(
-                                    text = "${bc.targetName}: ${bc.summary}",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Column {
+                                    Text(
+                                        text = "${bc.targetName} (${bc.category})",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                    Text(
+                                        text = bc.summary,
+                                        fontSize = 10.sp,
+                                        color = Color(0xFFC7D3EA),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                             if (bc.previousValue.isNotBlank() && bc.newValue.isNotBlank()) {
+                                Spacer(Modifier.width(6.dp))
                                 Text(
                                     text = "${bc.previousValue} → ${bc.newValue}",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = BrightGold
+                                )
+                            } else if (bc.newValue.isNotBlank()) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = bc.newValue,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = BrightGold

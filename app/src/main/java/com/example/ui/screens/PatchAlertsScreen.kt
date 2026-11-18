@@ -176,8 +176,8 @@ fun PatchAlertsScreen(
             EnvironmentToggleBar(
                 selected = environment,
                 onSelect = onSelectEnvironment,
-                liveLabel = liveVersionInfo?.livePatchVersion ?: "18.6b Live",
-                pbeLabel = liveVersionInfo?.pbePatchVersion ?: "18.7 PBE",
+                liveLabel = liveVersionInfo?.livePatchVersion ?: "18.7 Live",
+                pbeLabel = liveVersionInfo?.pbePatchVersion ?: "19.1-PBE",
                 modifier = Modifier.fillMaxWidth()
             )
         }
@@ -262,12 +262,15 @@ fun PatchAlertsScreen(
                                         val patch = patches.firstOrNull()
                                         val posted = TftNotificationHelper.postPatchOrBalanceNotification(
                                             context = context,
-                                            title = "${environment.label} Patch ${patch?.version ?: "18.6b"} Alert",
+                                            title = "${environment.label} Patch ${patch?.version ?: "18.7"} Alert",
                                             shortBody = patch?.headline ?: "New balance updates live.",
                                             expandedBody = buildString {
                                                 append(patch?.headline ?: "Balance updates ready.")
-                                                patch?.balanceChanges?.take(3)?.forEach {
-                                                    append("\n• ${it.deltaType.label} ${it.targetName}: ${it.previousValue} -> ${it.newValue}")
+                                                patch?.balanceChanges?.take(4)?.forEach {
+                                                    val valSuffix = if (it.previousValue.isNotBlank() && it.newValue.isNotBlank()) {
+                                                        "${it.previousValue} → ${it.newValue}"
+                                                    } else it.summary
+                                                    append("\n• ${it.deltaType.label} ${it.targetName}: $valSuffix")
                                                 }
                                             },
                                             environment = environment
@@ -365,12 +368,15 @@ fun PatchAlertsScreen(
                                     val patch = patches.firstOrNull()
                                     val posted = TftNotificationHelper.postPatchOrBalanceNotification(
                                         context = context,
-                                        title = "${environment.label} Patch ${patch?.version ?: "18.6b"} Alert",
+                                        title = "${environment.label} Patch ${patch?.version ?: "18.7"} Alert",
                                         shortBody = patch?.headline ?: "New balance updates live.",
                                         expandedBody = buildString {
                                             append(patch?.headline ?: "Balance updates ready.")
-                                            patch?.balanceChanges?.take(3)?.forEach {
-                                                append("\n• ${it.deltaType.label} ${it.targetName}: ${it.previousValue} -> ${it.newValue}")
+                                            patch?.balanceChanges?.take(4)?.forEach {
+                                                val valSuffix = if (it.previousValue.isNotBlank() && it.newValue.isNotBlank()) {
+                                                    "${it.previousValue} → ${it.newValue}"
+                                                } else it.summary
+                                                append("\n• ${it.deltaType.label} ${it.targetName}: $valSuffix")
                                             }
                                         },
                                         environment = environment
@@ -809,11 +815,23 @@ private fun PatchUpdateCard(
                                 )
                             }
                         }
-                        Text(
-                            text = "${change.previousValue} -> ${change.newValue}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        if (change.previousValue.isNotBlank() && change.newValue.isNotBlank()) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "${change.previousValue} → ${change.newValue}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else if (change.newValue.isNotBlank()) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = change.newValue,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
             }

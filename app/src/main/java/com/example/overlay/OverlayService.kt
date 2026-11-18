@@ -2625,8 +2625,8 @@ private fun OverlayCompCard(
 
             Spacer(Modifier.height(5.dp))
             FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 comp.coreUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
@@ -2634,7 +2634,7 @@ private fun OverlayCompCard(
                         name = unit,
                         cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
                         isCarry = isCarryUnit,
-                        size = 24.dp,
+                        size = 32.dp,
                         environment = comp.environment
                     )
                 }

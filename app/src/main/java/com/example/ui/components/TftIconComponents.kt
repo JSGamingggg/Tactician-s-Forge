@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -61,6 +62,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -254,7 +256,7 @@ fun TftChampionAvatar(
                 AsyncImage(
                     model = request,
                     contentDescription = "$cleanName champion icon",
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Fit,
                     alignment = Alignment.Center,
                     modifier = Modifier
                         .fillMaxSize()
@@ -307,14 +309,14 @@ fun TftChampionTile(
     cost: Int,
     isCarry: Boolean = false,
     stars: Int = 2,
-    size: Dp = 32.dp,
+    size: Dp = 36.dp,
     environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val cleanName = remember(name) { formatRiotAssetLabel(name) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier
+        modifier = modifier.widthIn(max = size + 24.dp)
     ) {
         TftChampionAvatar(
             name = name,
@@ -324,14 +326,15 @@ fun TftChampionTile(
             size = size,
             environment = environment
         )
-        Spacer(Modifier.height(1.dp))
+        Spacer(Modifier.height(2.dp))
         Text(
             text = cleanName,
-            fontSize = 9.sp,
-            fontWeight = if (isCarry) FontWeight.Bold else FontWeight.Medium,
-            color = if (isCarry) Color(0xFFFFD700) else Color(0xFFE6ECF5),
+            fontSize = 10.sp,
+            fontWeight = if (isCarry) FontWeight.Bold else FontWeight.SemiBold,
+            color = if (isCarry) Color(0xFFFFD700) else Color(0xFFF1F5F9),
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
         )
     }
 }

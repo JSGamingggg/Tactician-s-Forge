@@ -889,8 +889,8 @@ private fun MetaCompCard(
             )
             Spacer(Modifier.height(5.dp))
             FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 comp.coreUnits.forEach { unit ->
                     val isCarry = unit.equals(comp.carryName, ignoreCase = true)
@@ -899,7 +899,7 @@ private fun MetaCompCard(
                         name = unit,
                         cost = cost,
                         isCarry = isCarry,
-                        size = 30.dp,
+                        size = 36.dp,
                         environment = comp.environment
                     )
                 }

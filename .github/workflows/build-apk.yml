@@ -77,9 +77,29 @@ jobs:
               echo "RIOT_API_KEY=${RIOT_API_KEY}" >> .env
             fi
           fi
+          if grep -q '^GITHUB_REPO=' .env 2>/dev/null; then
+            sed -i "s|^GITHUB_REPO=.*|GITHUB_REPO=${GITHUB_REPOSITORY}|" .env
+          else
+            echo "GITHUB_REPO=${GITHUB_REPOSITORY}" >> .env
+          fi
           if [ -n "${GOOGLE_SERVICES_JSON:-}" ] && [ ! -f app/google-services.json ]; then
             printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
           fi
+
+      - name: Compute App Release Metadata
+        id: build_meta
+        run: |
+          VERSION_CODE=$((1 + GITHUB_RUN_NUMBER))
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RAW_TAG="${GITHUB_REF_NAME}"
+            VERSION_NAME="${RAW_TAG#v}"
+          else
+            VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
+          fi
+          BUILD_TS_MS="$(date +%s)000"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "build_ts_ms=${BUILD_TS_MS}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -87,7 +107,12 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        run: |
+          gradle :app:assembleDebug --no-daemon \
+            -PAPP_VERSION_CODE=${{ steps.build_meta.outputs.version_code }} \
+            -PAPP_VERSION_NAME=${{ steps.build_meta.outputs.version_name }} \
+            -PGIT_COMMIT_SHA=${{ github.sha }} \
+            -PBUILD_TIMESTAMP_MS=${{ steps.build_meta.outputs.build_ts_ms }}
 
       - name: Run Unit Tests
         timeout-minutes: 10
@@ -112,7 +137,11 @@ jobs:
         run: |
           if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${STORE_PASSWORD:-}" ] && [ -n "${KEY_PASSWORD:-}" ]; then
             echo "$KEYSTORE_BASE64" | tr -d '\r\n' | base64 -d > "$KEYSTORE_PATH"
-            gradle :app:assembleRelease --no-daemon
+            gradle :app:assembleRelease --no-daemon \
+              -PAPP_VERSION_CODE=${{ steps.build_meta.outputs.version_code }} \
+              -PAPP_VERSION_NAME=${{ steps.build_meta.outputs.version_name }} \
+              -PGIT_COMMIT_SHA=${{ github.sha }} \
+              -PBUILD_TIMESTAMP_MS=${{ steps.build_meta.outputs.build_ts_ms }}
             echo "built=true" >> "$GITHUB_OUTPUT"
           else
             echo "Skipping signed release APK (signing secrets not configured)."
@@ -142,12 +171,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest-apk
-          name: Latest Debug APK
+          name: "Tactician's Forge v${{ steps.build_meta.outputs.version_name }}"
           prerelease: false
           make_latest: true
           overwrite_files: true
           fail_on_unmatched_files: true
-          body: "Automated APK build for Tactician's Forge. Download app-debug.apk from Assets below."
+          body: |
+            Automated APK build for Tactician's Forge.
+            Version: ${{ steps.build_meta.outputs.version_name }}
+            BuildCode: ${{ steps.build_meta.outputs.version_code }}
+            Commit: ${{ github.sha }}
           files: |
             app/build/outputs/apk/debug/*.apk
 
@@ -165,8 +198,24 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          make_latest: true
           overwrite_files: true
           fail_on_unmatched_files: true
+          body: |
+            Release ${{ github.ref_name }} for Tactician's Forge.
+            Version: ${{ steps.build_meta.outputs.version_name }}
+            BuildCode: ${{ steps.build_meta.outputs.version_code }}
+            Commit: ${{ github.sha }}
           files: |
             app/build/outputs/apk/debug/*.apk
           generate_release_notes: true
+
+      - name: Attach Release APK to Tag Release (when built)
+        if: startsWith(github.ref, 'refs/tags/v') && steps.release_build.outputs.built == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            app/build/outputs/apk/release/*.apk
+

@@ -4,12 +4,14 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -93,11 +95,22 @@ fun PlayerStatsScreen(
     var riotIdQuery by remember { mutableStateOf("") }
     var showPlatformMenu by remember { mutableStateOf(false) }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val useSideMatchPanel = maxWidth >= 680.dp && selectedMatch != null
+        val matchColumns = if (!useSideMatchPanel && maxWidth >= 680.dp) 2 else 1
+
+        Row(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = if (useSideMatchPanel) {
+                    Modifier
+                        .weight(0.48f)
+                        .fillMaxHeight()
+                } else {
+                    Modifier.fillMaxSize()
+                },
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
         item {
             Column {
                 Text(
@@ -357,27 +370,93 @@ fun PlayerStatsScreen(
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
-                    items(profile.matches, key = { it.matchId }) { match ->
-                        MatchHistoryCard(
-                            match = match,
-                            onClick = { onOpenMatchAnalysis(match) }
-                        )
+                    if (matchColumns > 1) {
+                        items(profile.matches.chunked(matchColumns), key = { row -> row.joinToString("_") { it.matchId } }) { rowMatches ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                rowMatches.forEach { match ->
+                                    MatchHistoryCard(
+                                        match = match,
+                                        onClick = { onOpenMatchAnalysis(match) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (rowMatches.size == 1) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    } else {
+                        items(profile.matches, key = { it.matchId }) { match ->
+                            MatchHistoryCard(
+                                match = match,
+                                onClick = { onOpenMatchAnalysis(match) }
+                            )
+                        }
                     }
                 }
             }
         }
 
         item { Spacer(Modifier.height(24.dp)) }
-    }
+            }
 
-    selectedMatch?.let { match ->
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            onDismissRequest = onDismissMatchAnalysis,
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            MatchAnalysisSheetContent(match = match)
+            if (useSideMatchPanel) {
+                val sideMatch = selectedMatch
+                if (sideMatch != null) {
+                    HextechPanelCard(
+                        accentBorder = true,
+                        modifier = Modifier
+                            .weight(0.52f)
+                            .fillMaxHeight()
+                            .padding(top = 16.dp, end = 16.dp, bottom = 16.dp)
+                    ) {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp, end = 8.dp, top = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Match Breakdown",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                IconButton(
+                                    onClick = onDismissMatchAnalysis,
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Close match analysis",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            MatchAnalysisSheetContent(match = sideMatch)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!useSideMatchPanel) {
+            selectedMatch?.let { match ->
+                val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+                ModalBottomSheet(
+                    onDismissRequest = onDismissMatchAnalysis,
+                    sheetState = sheetState,
+                    containerColor = MaterialTheme.colorScheme.surface
+                ) {
+                    MatchAnalysisSheetContent(match = match)
+                }
+            }
         }
     }
 }
@@ -451,7 +530,8 @@ private fun MetricCol(label: String, value: String) {
 @Composable
 private fun MatchHistoryCard(
     match: MatchAnalysisSummary,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val hextech = LocalHextechColors.current
     val placeColor = when (match.placement) {
@@ -463,7 +543,7 @@ private fun MatchHistoryCard(
         SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(match.gameDatetime))
     }
 
-    HextechPanelCard(onClick = onClick) {
+    HextechPanelCard(onClick = onClick, modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),

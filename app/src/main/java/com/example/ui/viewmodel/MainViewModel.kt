@@ -23,7 +23,11 @@ import com.example.data.repository.MetaCacheUpdates
 import com.example.data.repository.MetaRepository
 import com.example.data.repository.OfflineMetaBundle
 import com.example.notifications.MetaUpdateNotifier
+import com.example.update.AppUpdateCoordinator
+import com.example.update.AppUpdateUiState
+import com.example.update.GitHubReleaseInfo
 import com.google.firebase.firestore.FirebaseFirestoreException
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -86,6 +90,8 @@ class MainViewModel(
 
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
+
+    val appUpdateState: StateFlow<AppUpdateUiState> = AppUpdateCoordinator.uiState
 
     val preferencesState: StateFlow<UserPreferencesDoc> =
         if (currentUserId.isNullOrBlank()) {
@@ -200,6 +206,7 @@ class MainViewModel(
             val loaded = metaRepository.loadOfflineBundleAsync()
             _metaBundle.value = loaded
             _liveVersionInfo.value = loaded.liveVersionInfo
+            appContext?.let { AppUpdateCoordinator.refreshSettingsSnapshot(it) }
         }
         observeBackgroundCacheUpdates()
         if (autoSyncOnInit) {
@@ -208,6 +215,7 @@ class MainViewModel(
                 onlyNotifyOnChanges = true,
                 triggerPushAlerts = true
             )
+            checkForAppUpdate(userInitiated = false)
             startActivePollingLoop()
         }
         if (!currentUserId.isNullOrBlank()) {
@@ -224,18 +232,90 @@ class MainViewModel(
                     onlyNotifyOnChanges = true,
                     triggerPushAlerts = true
                 )
+                checkForAppUpdate(userInitiated = false)
             }
         }
     }
 
     fun onAppResumed() {
         val now = System.currentTimeMillis()
+        appContext?.let { ctx ->
+            viewModelScope.launch {
+                AppUpdateCoordinator.resumePendingInstallIfPermitted(ctx)
+            }
+        }
         if (now - lastAutoSyncAttemptMillis < RESUME_DEBOUNCE_MS) return
         refreshPatchVersions(
             notifyIfUpdated = true,
             onlyNotifyOnChanges = true,
             triggerPushAlerts = true
         )
+        checkForAppUpdate(userInitiated = false)
+    }
+
+    fun checkForAppUpdate(userInitiated: Boolean = true) {
+        val ctx = appContext ?: return
+        viewModelScope.launch {
+            val outcome = AppUpdateCoordinator.checkForUpdates(
+                context = ctx,
+                userInitiated = userInitiated,
+                showInAppModalOnLaunch = true,
+                dispatchOsNotification = true
+            )
+            if (outcome.updateAvailable && outcome.release != null && (userInitiated || outcome.inAppNotificationTriggered)) {
+                _snackbarMessage.value = "App update available: ${outcome.release.displayVersionLabel} — tap Update to install in-app."
+            } else if (!outcome.updateAvailable && userInitiated) {
+                val repo = AppUpdateCoordinator.uiState.value.configuredRepo
+                if (repo != null && AppUpdateCoordinator.uiState.value.status !is com.example.update.AppUpdateStatus.Error) {
+                    _snackbarMessage.value = "Tactician's Forge is up to date with github.com/$repo."
+                }
+            }
+        }
+    }
+
+    fun saveGithubRepo(rawInput: String) {
+        val ctx = appContext ?: return
+        viewModelScope.launch {
+            val saved = AppUpdateCoordinator.saveGithubRepoSlug(ctx, rawInput)
+            if (saved == null) {
+                _snackbarMessage.value = "Enter a valid GitHub repo like owner/repo or https://github.com/owner/repo"
+            } else {
+                _snackbarMessage.value = "Saved update source: github.com/$saved"
+                checkForAppUpdate(userInitiated = true)
+            }
+        }
+    }
+
+    fun setAppUpdateAlertsEnabled(enabled: Boolean) {
+        val ctx = appContext ?: return
+        viewModelScope.launch {
+            AppUpdateCoordinator.setAppUpdateAlertsEnabled(ctx, enabled)
+        }
+    }
+
+    fun downloadAndInstallAppUpdate(release: GitHubReleaseInfo) {
+        val ctx = appContext ?: return
+        viewModelScope.launch {
+            AppUpdateCoordinator.downloadAndInstallUpdate(ctx, release)
+        }
+    }
+
+    fun installReadyAppUpdate(apkFile: File, release: GitHubReleaseInfo) {
+        val ctx = appContext ?: return
+        viewModelScope.launch {
+            AppUpdateCoordinator.launchPackageInstaller(ctx, apkFile, release)
+        }
+    }
+
+    fun openAppUpdateDialog() {
+        AppUpdateCoordinator.openPromptModalIfAvailable()
+    }
+
+    fun dismissAppUpdateDialog(suppressThisReleaseOnLaunch: Boolean = true) {
+        val ctx = appContext ?: return
+        viewModelScope.launch {
+            AppUpdateCoordinator.dismissPromptModal(ctx, suppressThisReleaseOnLaunch)
+        }
     }
 
     private fun observeBackgroundCacheUpdates() {

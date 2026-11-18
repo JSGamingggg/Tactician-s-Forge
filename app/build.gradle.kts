@@ -13,11 +13,24 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    val ciVersionCode = (project.findProperty("APP_VERSION_CODE") as String?)?.toIntOrNull() ?: 1
+    val ciVersionName = (project.findProperty("APP_VERSION_NAME") as String?)
+      ?.takeIf { it.isNotBlank() }
+      ?: "1.0"
+    val ciGitCommitSha = (project.findProperty("GIT_COMMIT_SHA") as String?)
+      ?.trim()
+      ?.take(40)
+      .orEmpty()
+    val ciBuildTimestampMs = (project.findProperty("BUILD_TIMESTAMP_MS") as String?)?.toLongOrNull() ?: 0L
+
     applicationId = "com.aistudio.tftforge.kxmzpq"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = ciVersionCode
+    versionName = ciVersionName
+
+    buildConfigField("String", "GIT_COMMIT_SHA", "\"$ciGitCommitSha\"")
+    buildConfigField("long", "BUILD_TIMESTAMP_MS", "${ciBuildTimestampMs}L")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.data.repository.MetaRepository
+import com.example.update.AppUpdateCoordinator
 
 class PatchMonitorWorker(
     appContext: Context,
@@ -19,6 +20,13 @@ class PatchMonitorWorker(
             context = applicationContext,
             syncResult = syncResult,
             bundle = bundle
+        )
+
+        AppUpdateCoordinator.checkForUpdates(
+            context = applicationContext,
+            userInitiated = false,
+            showInAppModalOnLaunch = false,
+            dispatchOsNotification = true
         )
         return Result.success()
     }

@@ -68,17 +68,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloseFullscreen
 import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.WorkspacePremium
@@ -308,11 +311,9 @@ internal fun resolveOverlayWindowBounds(
     )
 }
 
-internal fun resolveOverlayWindowScreenOrientation(state: OverlayDisplayState): Int = when (state) {
-    OverlayDisplayState.EXPANDED -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-    OverlayDisplayState.BUBBLE,
-    OverlayDisplayState.EDGE_COLLAPSED -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-}
+internal fun resolveOverlayWindowScreenOrientation(
+    @Suppress("UNUSED_PARAMETER") state: OverlayDisplayState
+): Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 
 data class OverlayDrawerDimensions(
     val widthDp: Dp,
@@ -390,6 +391,24 @@ internal fun clampOverlayCustomSize(
         .dp
     val activeHeight = customHeightDp?.coerceIn(bounds.minHeightDp, bounds.maxHeightDp)?.dp
     return activeWidth to activeHeight
+}
+
+internal fun computeLeftEdgeResizeResult(
+    startOriginX: Int,
+    startWidthDp: Float,
+    deltaRawX: Float,
+    density: Float,
+    minLeftPx: Int,
+    maxRightPx: Int,
+    bounds: OverlaySizeBounds
+): Pair<Float, Int> {
+    val safeDensity = density.coerceAtLeast(1f)
+    val fixedRightPx = (startOriginX + (startWidthDp * safeDensity).roundToInt()).coerceAtMost(maxRightPx)
+    val desiredWidthDp = startWidthDp - (deltaRawX / safeDensity)
+    val maxWidthFromRightPx = ((fixedRightPx - minLeftPx) / safeDensity).coerceAtLeast(bounds.minWidthDp)
+    val clampedWidthDp = desiredWidthDp.coerceIn(bounds.minWidthDp, minOf(bounds.maxWidthDp, maxWidthFromRightPx))
+    val newOriginX = (fixedRightPx - (clampedWidthDp * safeDensity).roundToInt()).coerceAtLeast(minLeftPx)
+    return clampedWidthDp to newOriginX
 }
 
 class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
@@ -672,6 +691,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         val maxTopY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - dpToPx(8)).coerceAtLeast(minTopY)
 
         overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
+        overlayLayoutParams.width = effectiveWpx
+        overlayLayoutParams.height = if (clampedH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
         val candidateX = targetX ?: savedExpandedOriginPx?.first ?: overlayLayoutParams.x
         val candidateY = targetY ?: savedExpandedOriginPx?.second ?: overlayLayoutParams.y
         val clampedX = candidateX.coerceIn(minLeftX, maxLeftX)
@@ -684,9 +705,25 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
         overlayView?.let { view ->
             if (view.isAttachedToWindow) {
-                runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+                runCatching {
+                    windowManager.updateViewLayout(view, overlayLayoutParams)
+                    view.requestLayout()
+                }
             }
         }
+    }
+
+    private fun extendExpandedToFullWidth() {
+        if (!::overlayLayoutParams.isInitialized) return
+        val bounds = currentWindowBounds()
+        val sizeBounds = currentSizeBounds(bounds)
+        val minLeftX = bounds.safeLeftPx + dpToPx(8)
+        applyExpandedBoundsToWindow(
+            widthDp = sizeBounds.maxWidthDp,
+            heightDp = customHeightDpState.value,
+            targetX = minLeftX,
+            targetY = savedExpandedOriginPx?.second ?: overlayLayoutParams.y
+        )
     }
 
     private fun resetExpandedSizeAndPosition() {
@@ -731,6 +768,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         when (displayState.value) {
             OverlayDisplayState.EDGE_COLLAPSED -> {
                 val edgeGravity = if (dockEdgeState.value == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
+                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
+                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
                 overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
                 overlayLayoutParams.x = if (dockEdgeState.value == OverlayDockEdge.LEFT) bounds.safeLeftPx else bounds.safeRightPx
                 overlayLayoutParams.y = savedBubbleAnchorY
@@ -738,11 +777,15 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             OverlayDisplayState.BUBBLE -> {
                 val minX = bounds.safeLeftPx
                 val maxX = (bounds.widthPx - bounds.safeRightPx - dpToPx(72)).coerceAtLeast(minX)
+                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
+                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
                 overlayLayoutParams.x = overlayLayoutParams.x.coerceIn(minX, maxX)
                 overlayLayoutParams.y = savedBubbleAnchorY
             }
             OverlayDisplayState.EXPANDED -> {
                 overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
+                overlayLayoutParams.width = effectiveWpx
+                overlayLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
                 val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
                 val preferredY = savedExpandedOriginPx?.second ?: savedBubbleAnchorY
                 overlayLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
@@ -751,7 +794,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         }
         overlayView?.let { view ->
             if (view.isAttachedToWindow) {
-                runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+                runCatching {
+                    windowManager.updateViewLayout(view, overlayLayoutParams)
+                    view.requestLayout()
+                }
             }
         }
     }
@@ -792,17 +838,23 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
         when (targetState) {
             OverlayDisplayState.EDGE_COLLAPSED -> {
+                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
+                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
                 overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
                 overlayLayoutParams.x = edgeSafeMargin
                 overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
             }
             OverlayDisplayState.BUBBLE -> {
+                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
+                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
                 overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
                 overlayLayoutParams.x = edgeSafeMargin + marginPx
                 overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
             }
             OverlayDisplayState.EXPANDED -> {
                 overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
+                overlayLayoutParams.width = effectiveWpx
+                overlayLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
                 val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
                 val preferredY = savedExpandedOriginPx?.second ?: savedBubbleAnchorY
                 overlayLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
@@ -812,7 +864,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
         overlayView?.let { view ->
             if (view.isAttachedToWindow) {
-                runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
+                runCatching {
+                    windowManager.updateViewLayout(view, overlayLayoutParams)
+                    view.requestLayout()
+                }
             }
         }
     }
@@ -1032,12 +1087,14 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                                 targetY = nextY
                             )
                         },
-                        onResizeExpandedWindow = { nextW, nextH ->
+                        onResizeExpandedWindow = { nextW, nextH, nextX ->
                             applyExpandedBoundsToWindow(
                                 widthDp = nextW,
-                                heightDp = nextH
+                                heightDp = nextH,
+                                targetX = nextX
                             )
                         },
+                        onExtendFullWidth = ::extendExpandedToFullWidth,
                         onResetExpandedSize = ::resetExpandedSizeAndPosition,
                         onExpandDrawer = {
                             windowSnapAnimator?.cancel()
@@ -1114,7 +1171,8 @@ private fun OverlayRootContent(
     windowSizeProvider: () -> Pair<Float, Float>,
     densityProvider: () -> Float,
     onMoveExpandedWindow: (Int, Int) -> Unit,
-    onResizeExpandedWindow: (Float?, Float?) -> Unit,
+    onResizeExpandedWindow: (Float?, Float?, Int?) -> Unit,
+    onExtendFullWidth: () -> Unit,
     onResetExpandedSize: () -> Unit,
     onExpandDrawer: () -> Unit,
     onMinimizeToBubble: () -> Unit,
@@ -1398,7 +1456,6 @@ private fun OverlayRootContent(
                 val selectedComp = remember(displayed, selectedCompId) {
                     displayed.firstOrNull { it.id == selectedCompId }
                 }
-                val showingSideDetail = selectedComp != null && drawerDims.useSideDetailPane
                 // All tier sub-headers in the Live Match Drawer start closed until opened
                 var expandedOverlayTiers by remember(browseMode, envFilter) {
                     mutableStateOf(emptySet<TierRank>())
@@ -1443,7 +1500,7 @@ private fun OverlayRootContent(
                                 Modifier.fillMaxWidth()
                             })
                                 .padding(
-                                    start = 12.dp,
+                                    start = 14.dp,
                                     end = 14.dp,
                                     top = 8.dp,
                                     bottom = 12.dp
@@ -1511,17 +1568,49 @@ private fun OverlayRootContent(
                                             label = "${envFilter.label} ($envScopedCompsCount)",
                                             selected = browseMode == OverlayBrowseMode.ALL_COMPS,
                                             icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                                            onClick = { browseMode = OverlayBrowseMode.ALL_COMPS }
+                                            onClick = {
+                                                browseMode = OverlayBrowseMode.ALL_COMPS
+                                                selectedCompId = null
+                                            }
                                         )
                                         OverlayEnvChip(
                                             label = "Favs ($envScopedFavoritesCount)",
                                             selected = browseMode == OverlayBrowseMode.FAVORITES,
                                             icon = Icons.Filled.Star,
-                                            onClick = { browseMode = OverlayBrowseMode.FAVORITES }
+                                            onClick = {
+                                                browseMode = OverlayBrowseMode.FAVORITES
+                                                selectedCompId = null
+                                            }
                                         )
                                     }
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val isAtFullWidth = activeWidthDp.value >= sizeBounds.maxWidthDp - 6f
+                                    IconButton(
+                                        onClick = {
+                                            if (isAtFullWidth) {
+                                                val compactW = (sizeBounds.maxWidthDp * 0.62f)
+                                                    .coerceAtLeast(sizeBounds.minWidthDp)
+                                                onResizeExpandedWindow(compactW, customHeightDp, null)
+                                            } else {
+                                                onExtendFullWidth()
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .testTag("overlay_extend_full_width_button")
+                                    ) {
+                                        Icon(
+                                            if (isAtFullWidth) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
+                                            contentDescription = if (isAtFullWidth) {
+                                                "Compact overlay width"
+                                            } else {
+                                                "Extend overlay across full device width"
+                                            },
+                                            tint = ArcaneCyan,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
                                     if (isCustomResized) {
                                         IconButton(
                                             onClick = onResetExpandedSize,
@@ -1530,10 +1619,10 @@ private fun OverlayRootContent(
                                                 .testTag("overlay_reset_size_button")
                                         ) {
                                             Icon(
-                                                Icons.Default.OpenInFull,
-                                                contentDescription = "Reset overlay to full screen width",
+                                                Icons.Default.RestartAlt,
+                                                contentDescription = "Reset overlay to default landscape size",
                                                 tint = BrightGold,
-                                                modifier = Modifier.size(15.dp)
+                                                modifier = Modifier.size(16.dp)
                                             )
                                         }
                                     }
@@ -1572,62 +1661,78 @@ private fun OverlayRootContent(
                                 }
                             }
 
-                        // Compact single landscape filter strip: optional browse pills + LIVE/PBE/Tier/Open All
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .padding(top = 4.dp, bottom = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (!inlineBrowseChips) {
-                                OverlayEnvChip(
-                                    label = "${envFilter.label} Comps ($envScopedCompsCount)",
-                                    selected = browseMode == OverlayBrowseMode.ALL_COMPS,
-                                    icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                                    onClick = { browseMode = OverlayBrowseMode.ALL_COMPS }
-                                )
-                                OverlayEnvChip(
-                                    label = "Favorites ($envScopedFavoritesCount)",
-                                    selected = browseMode == OverlayBrowseMode.FAVORITES,
-                                    icon = Icons.Filled.Star,
-                                    onClick = { browseMode = OverlayBrowseMode.FAVORITES }
-                                )
-                            }
-                            OverlayEnvChip("LIVE", envFilter == TftEnvironment.LIVE, Icons.Default.Bolt) { envFilter = TftEnvironment.LIVE }
-                            OverlayEnvChip("PBE", envFilter == TftEnvironment.PBE, Icons.Default.Science) { envFilter = TftEnvironment.PBE }
-                            TierRank.entries.forEach { t ->
-                                val tColor = when (t) {
-                                    TierRank.S -> TierSColor
-                                    TierRank.A -> TierAColor
-                                    TierRank.B -> TierBColor
-                                    TierRank.C -> TierCColor
-                                    TierRank.X -> TierXColor
+                        // Compact single filter strip while browsing comps list
+                        if (selectedComp == null) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(top = 4.dp, bottom = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (!inlineBrowseChips) {
+                                    OverlayEnvChip(
+                                        label = "${envFilter.label} Comps ($envScopedCompsCount)",
+                                        selected = browseMode == OverlayBrowseMode.ALL_COMPS,
+                                        icon = Icons.AutoMirrored.Filled.FormatListBulleted,
+                                        onClick = {
+                                            browseMode = OverlayBrowseMode.ALL_COMPS
+                                            selectedCompId = null
+                                        }
+                                    )
+                                    OverlayEnvChip(
+                                        label = "Favorites ($envScopedFavoritesCount)",
+                                        selected = browseMode == OverlayBrowseMode.FAVORITES,
+                                        icon = Icons.Filled.Star,
+                                        onClick = {
+                                            browseMode = OverlayBrowseMode.FAVORITES
+                                            selectedCompId = null
+                                        }
+                                    )
                                 }
-                                OverlayEnvChip(
-                                    label = "${t.label}-Tier",
-                                    selected = tierFilter == t,
-                                    accentColor = tColor,
-                                    icon = if (t == TierRank.S) Icons.Default.WorkspacePremium else null
-                                ) {
-                                    tierFilter = if (tierFilter == t) null else t
+                                OverlayEnvChip("LIVE", envFilter == TftEnvironment.LIVE, Icons.Default.Bolt) {
+                                    envFilter = TftEnvironment.LIVE
+                                    selectedCompId = null
                                 }
-                            }
-                            if (displayedByTier.isNotEmpty()) {
-                                val anyOpen = displayedByTier.any { expandedOverlayTiers.contains(it.first) }
-                                OverlayEnvChip(
-                                    label = if (anyOpen) "Close All" else "Open All",
-                                    selected = anyOpen,
-                                    accentColor = ArcaneCyan
-                                ) {
-                                    expandedOverlayTiers = if (anyOpen) {
-                                        emptySet()
-                                    } else {
-                                        displayedByTier.map { it.first }.toSet()
+                                OverlayEnvChip("PBE", envFilter == TftEnvironment.PBE, Icons.Default.Science) {
+                                    envFilter = TftEnvironment.PBE
+                                    selectedCompId = null
+                                }
+                                TierRank.entries.forEach { t ->
+                                    val tColor = when (t) {
+                                        TierRank.S -> TierSColor
+                                        TierRank.A -> TierAColor
+                                        TierRank.B -> TierBColor
+                                        TierRank.C -> TierCColor
+                                        TierRank.X -> TierXColor
+                                    }
+                                    OverlayEnvChip(
+                                        label = "${t.label}-Tier",
+                                        selected = tierFilter == t,
+                                        accentColor = tColor,
+                                        icon = if (t == TierRank.S) Icons.Default.WorkspacePremium else null
+                                    ) {
+                                        tierFilter = if (tierFilter == t) null else t
+                                    }
+                                }
+                                if (displayedByTier.isNotEmpty()) {
+                                    val anyOpen = displayedByTier.any { expandedOverlayTiers.contains(it.first) }
+                                    OverlayEnvChip(
+                                        label = if (anyOpen) "Close All" else "Open All",
+                                        selected = anyOpen,
+                                        accentColor = ArcaneCyan
+                                    ) {
+                                        expandedOverlayTiers = if (anyOpen) {
+                                            emptySet()
+                                        } else {
+                                            displayedByTier.map { it.first }.toSet()
+                                        }
                                     }
                                 }
                             }
+                        } else {
+                            Spacer(Modifier.height(6.dp))
                         }
 
                         Box(
@@ -1636,13 +1741,47 @@ private fun OverlayRootContent(
                                 .weight(1f, fill = activeHeightDp != null)
                         ) {
                             AnimatedContent(
-                                targetState = Triple(browseMode, envFilter, tierFilter),
+                                targetState = Triple(browseMode, envFilter, tierFilter) to selectedComp?.id,
                                 transitionSpec = {
                                     fadeIn(tween(150)) togetherWith fadeOut(tween(110))
                                 },
                                 label = "overlayCompsFilterTransition"
-                            ) { (activeMode, activeEnv, _) ->
-                                if (displayed.isEmpty()) {
+                            ) { (filterKey, _) ->
+                                val (activeMode, activeEnv, _) = filterKey
+                                if (selectedComp != null) {
+                                    val leftWeight = if (drawerDims.widthDp >= 600.dp) 0.49f else 0.46f
+                                    val rightWeight = 1f - leftWeight
+                                    val paneHeightModifier = if (activeHeightDp != null) {
+                                        Modifier.fillMaxHeight()
+                                    } else {
+                                        Modifier.heightIn(max = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp))
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .then(if (activeHeightDp != null) Modifier.fillMaxHeight() else Modifier),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        OverlayCompLeftDetailPane(
+                                            comp = selectedComp,
+                                            isFavorite = favoriteIds.contains(selectedComp.id),
+                                            onToggleFavorite = { onToggleFavorite(selectedComp) },
+                                            onBackToComps = { selectedCompId = null },
+                                            modifier = Modifier
+                                                .weight(leftWeight)
+                                                .then(paneHeightModifier)
+                                        )
+                                        OverlayHexBoardRightPane(
+                                            comp = selectedComp,
+                                            fillAvailableHeight = activeHeightDp != null,
+                                            maxPaneHeightDp = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp),
+                                            modifier = Modifier
+                                                .weight(rightWeight)
+                                                .then(paneHeightModifier)
+                                        )
+                                    }
+                                } else if (displayed.isEmpty()) {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -1661,137 +1800,99 @@ private fun OverlayRootContent(
                                     }
                                 } else {
                                     val listState = rememberLazyListState()
-                                    val useFullWidthTwoColGrid = !showingSideDetail &&
-                                        drawerDims.useSideDetailPane &&
-                                        drawerDims.widthDp >= 700.dp
+                                    val useFullWidthTwoColGrid = drawerDims.widthDp >= 640.dp
 
-                                    Row(
+                                    LazyColumn(
+                                        state = listState,
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalAlignment = Alignment.Top
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        LazyColumn(
-                                            state = listState,
-                                            modifier = Modifier
-                                                .weight(
-                                                    if (showingSideDetail) {
-                                                        if (drawerDims.widthDp >= 820.dp) 0.41f else 0.45f
-                                                    } else {
-                                                        1f
-                                                    }
-                                                )
-                                                .then(
-                                                    if (showingSideDetail) Modifier.fillMaxHeight() else Modifier
-                                                ),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            displayedByTier.forEach { (tier, tierComps) ->
-                                                val isTierOpen = expandedOverlayTiers.contains(tier)
-                                                item(
-                                                    key = "overlay_tier_header_${activeMode}_${activeEnv}_${tier.name}",
-                                                    contentType = "overlay_tier_header"
-                                                ) {
-                                                    OverlayTierSubHeader(
-                                                        tier = tier,
-                                                        comps = tierComps,
-                                                        expanded = isTierOpen,
-                                                        onClick = {
-                                                            expandedOverlayTiers = if (isTierOpen) {
-                                                                expandedOverlayTiers - tier
-                                                            } else {
-                                                                expandedOverlayTiers + tier
-                                                            }
-                                                        },
-                                                        modifier = Modifier.animateItem(
-                                                            fadeInSpec = tween(180),
-                                                            fadeOutSpec = tween(120),
-                                                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                                        )
-                                                    )
-                                                }
-                                                if (isTierOpen) {
-                                                    if (useFullWidthTwoColGrid) {
-                                                        val rows = tierComps.chunked(2)
-                                                        items(
-                                                            items = rows,
-                                                            key = { pair -> "${tier.name}_row_${pair.joinToString("_") { it.id }}" },
-                                                            contentType = { "overlay_comp_row" }
-                                                        ) { rowComps ->
-                                                            Row(
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .animateItem(
-                                                                        fadeInSpec = tween(180),
-                                                                        fadeOutSpec = tween(130),
-                                                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                                                    ),
-                                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                            ) {
-                                                                rowComps.forEach { comp ->
-                                                                    val isSelected = selectedCompId == comp.id
-                                                                    val isFav = favoriteIds.contains(comp.id)
-                                                                    OverlayCompCard(
-                                                                        comp = comp,
-                                                                        isFavorite = isFav,
-                                                                        selected = isSelected,
-                                                                        expanded = false,
-                                                                        opensInSidePane = true,
-                                                                        useTwoColumnLayout = false,
-                                                                        onCardClick = {
-                                                                            selectedCompId = if (isSelected) null else comp.id
-                                                                        },
-                                                                        onToggleFavorite = { onToggleFavorite(comp) },
-                                                                        modifier = Modifier.weight(1f)
-                                                                    )
-                                                                }
-                                                                if (rowComps.size == 1) {
-                                                                    Spacer(Modifier.weight(1f))
-                                                                }
-                                                            }
+                                        displayedByTier.forEach { (tier, tierComps) ->
+                                            val isTierOpen = expandedOverlayTiers.contains(tier)
+                                            item(
+                                                key = "overlay_tier_header_${activeMode}_${activeEnv}_${tier.name}",
+                                                contentType = "overlay_tier_header"
+                                            ) {
+                                                OverlayTierSubHeader(
+                                                    tier = tier,
+                                                    comps = tierComps,
+                                                    expanded = isTierOpen,
+                                                    onClick = {
+                                                        expandedOverlayTiers = if (isTierOpen) {
+                                                            expandedOverlayTiers - tier
+                                                        } else {
+                                                            expandedOverlayTiers + tier
                                                         }
-                                                    } else {
-                                                        items(
-                                                            items = tierComps,
-                                                            key = { "${tier.name}_${it.id}" },
-                                                            contentType = { "overlay_comp" }
-                                                        ) { comp ->
-                                                            val isSelected = selectedCompId == comp.id
-                                                            val showInlineExpanded = !drawerDims.useSideDetailPane && isSelected
-                                                            val isFav = favoriteIds.contains(comp.id)
-                                                            OverlayCompCard(
-                                                                comp = comp,
-                                                                isFavorite = isFav,
-                                                                selected = isSelected,
-                                                                expanded = showInlineExpanded,
-                                                                opensInSidePane = drawerDims.useSideDetailPane,
-                                                                useTwoColumnLayout = drawerDims.useTwoColumnCards,
-                                                                onCardClick = {
-                                                                    selectedCompId = if (isSelected) null else comp.id
-                                                                },
-                                                                onToggleFavorite = { onToggleFavorite(comp) },
-                                                                modifier = Modifier.animateItem(
+                                                    },
+                                                    modifier = Modifier.animateItem(
+                                                        fadeInSpec = tween(180),
+                                                        fadeOutSpec = tween(120),
+                                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                                    )
+                                                )
+                                            }
+                                            if (isTierOpen) {
+                                                if (useFullWidthTwoColGrid) {
+                                                    val rows = tierComps.chunked(2)
+                                                    items(
+                                                        items = rows,
+                                                        key = { pair -> "${tier.name}_row_${pair.joinToString("_") { it.id }}" },
+                                                        contentType = { "overlay_comp_row" }
+                                                    ) { rowComps ->
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .animateItem(
                                                                     fadeInSpec = tween(180),
                                                                     fadeOutSpec = tween(130),
                                                                     placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                                                ),
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            rowComps.forEach { comp ->
+                                                                val isFav = favoriteIds.contains(comp.id)
+                                                                OverlayCompCard(
+                                                                    comp = comp,
+                                                                    isFavorite = isFav,
+                                                                    selected = false,
+                                                                    expanded = false,
+                                                                    opensInSidePane = true,
+                                                                    useTwoColumnLayout = false,
+                                                                    onCardClick = { selectedCompId = comp.id },
+                                                                    onToggleFavorite = { onToggleFavorite(comp) },
+                                                                    modifier = Modifier.weight(1f)
                                                                 )
-                                                            )
+                                                            }
+                                                            if (rowComps.size == 1) {
+                                                                Spacer(Modifier.weight(1f))
+                                                            }
                                                         }
+                                                    }
+                                                } else {
+                                                    items(
+                                                        items = tierComps,
+                                                        key = { "${tier.name}_${it.id}" },
+                                                        contentType = { "overlay_comp" }
+                                                    ) { comp ->
+                                                        val isFav = favoriteIds.contains(comp.id)
+                                                        OverlayCompCard(
+                                                            comp = comp,
+                                                            isFavorite = isFav,
+                                                            selected = false,
+                                                            expanded = false,
+                                                            opensInSidePane = true,
+                                                            useTwoColumnLayout = false,
+                                                            onCardClick = { selectedCompId = comp.id },
+                                                            onToggleFavorite = { onToggleFavorite(comp) },
+                                                            modifier = Modifier.animateItem(
+                                                                fadeInSpec = tween(180),
+                                                                fadeOutSpec = tween(130),
+                                                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                                            )
+                                                        )
                                                     }
                                                 }
                                             }
-                                        }
-
-                                        if (drawerDims.useSideDetailPane && selectedComp != null) {
-                                            OverlayCompSideDetailPane(
-                                                comp = selectedComp,
-                                                isFavorite = favoriteIds.contains(selectedComp.id),
-                                                wideSidePane = drawerDims.widthDp >= 840.dp,
-                                                onToggleFavorite = { onToggleFavorite(selectedComp) },
-                                                onCloseDetail = { selectedCompId = null },
-                                                modifier = Modifier
-                                                    .weight(if (drawerDims.widthDp >= 820.dp) 0.59f else 0.55f)
-                                                    .fillMaxHeight()
-                                            )
                                         }
                                     }
                                 }
@@ -1824,7 +1925,53 @@ private fun OverlayRootContent(
                         }
                         }
 
-                        // Right-edge horizontal resize grip
+                        // Left-edge horizontal resize grip (extends leftward across device width)
+                        var leftResizeStartOriginX by remember { mutableIntStateOf(0) }
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .width(14.dp)
+                                .height(76.dp)
+                                .pointerInteropFilter { event ->
+                                    when (event.actionMasked) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            leftResizeStartOriginX = windowOriginProvider().first
+                                            resizeStartSize = windowSizeProvider()
+                                            resizeStartRaw = event.rawX to event.rawY
+                                            true
+                                        }
+                                        MotionEvent.ACTION_MOVE -> {
+                                            val d = densityProvider().coerceAtLeast(1f)
+                                            val deltaRawX = event.rawX - resizeStartRaw.first
+                                            val (nextW, nextX) = computeLeftEdgeResizeResult(
+                                                startOriginX = leftResizeStartOriginX,
+                                                startWidthDp = resizeStartSize.first,
+                                                deltaRawX = deltaRawX,
+                                                density = d,
+                                                minLeftPx = 0,
+                                                maxRightPx = Int.MAX_VALUE,
+                                                bounds = sizeBounds
+                                            )
+                                            onResizeExpandedWindow(nextW, customHeightDp, nextX)
+                                            true
+                                        }
+                                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                                        else -> false
+                                    }
+                                }
+                                .testTag("overlay_resize_left_handle"),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(start = 3.dp)
+                                    .width(3.dp)
+                                    .height(34.dp)
+                                    .background(BrushedGold.copy(alpha = 0.72f), RoundedCornerShape(2.dp))
+                            )
+                        }
+
+                        // Right-edge horizontal resize grip (extends rightward across device width)
                         Box(
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
@@ -1840,7 +1987,7 @@ private fun OverlayRootContent(
                                         MotionEvent.ACTION_MOVE -> {
                                             val d = densityProvider().coerceAtLeast(1f)
                                             val nextW = resizeStartSize.first + (event.rawX - resizeStartRaw.first) / d
-                                            onResizeExpandedWindow(nextW, customHeightDp)
+                                            onResizeExpandedWindow(nextW, customHeightDp, null)
                                             true
                                         }
                                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
@@ -1876,7 +2023,7 @@ private fun OverlayRootContent(
                                         MotionEvent.ACTION_MOVE -> {
                                             val d = densityProvider().coerceAtLeast(1f)
                                             val nextH = resizeStartSize.second + (event.rawY - resizeStartRaw.second) / d
-                                            onResizeExpandedWindow(customWidthDp, nextH)
+                                            onResizeExpandedWindow(customWidthDp, nextH, null)
                                             true
                                         }
                                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
@@ -1911,7 +2058,7 @@ private fun OverlayRootContent(
                                             val d = densityProvider().coerceAtLeast(1f)
                                             val nextW = resizeStartSize.first + (event.rawX - resizeStartRaw.first) / d
                                             val nextH = resizeStartSize.second + (event.rawY - resizeStartRaw.second) / d
-                                            onResizeExpandedWindow(nextW, nextH)
+                                            onResizeExpandedWindow(nextW, nextH, null)
                                             true
                                         }
                                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
@@ -2064,12 +2211,11 @@ private fun OverlayTierSubHeader(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun OverlayCompSideDetailPane(
+private fun OverlayCompLeftDetailPane(
     comp: MetaComp,
     isFavorite: Boolean,
-    wideSidePane: Boolean,
     onToggleFavorite: () -> Unit,
-    onCloseDetail: () -> Unit,
+    onBackToComps: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val unitCosts = remember(comp.hexPlacements) {
@@ -2087,9 +2233,9 @@ private fun OverlayCompSideDetailPane(
         color = DeepSlate,
         border = BorderStroke(
             width = 1.4.dp,
-            brush = Brush.linearGradient(listOf(ArcaneCyan, BrightGold))
+            brush = Brush.linearGradient(listOf(BrightGold, ArcaneCyan))
         ),
-        modifier = modifier.testTag("overlay_side_detail_pane")
+        modifier = modifier.testTag("overlay_left_comp_pane")
     ) {
         Column(
             modifier = Modifier
@@ -2103,27 +2249,29 @@ private fun OverlayCompSideDetailPane(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                Surface(
+                    onClick = onBackToComps,
+                    shape = RoundedCornerShape(8.dp),
+                    color = SlateElevated,
+                    border = BorderStroke(1.dp, ArcaneCyan.copy(alpha = 0.65f)),
+                    modifier = Modifier.testTag("overlay_detail_back_button")
                 ) {
-                    TierBadge(tier = comp.tier)
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = comp.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to compositions list",
+                            tint = ArcaneCyan,
+                            modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = "${comp.environment.label} • ${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)} • ${comp.setName}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (comp.environment == TftEnvironment.PBE) PbePurple else ArcaneCyan,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            text = "Comps",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ArcaneCyan
                         )
                     }
                 }
@@ -2131,7 +2279,7 @@ private fun OverlayCompSideDetailPane(
                     IconButton(
                         onClick = onToggleFavorite,
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(32.dp)
                             .testTag("overlay_detail_fav_${comp.id}")
                     ) {
                         Icon(
@@ -2142,18 +2290,43 @@ private fun OverlayCompSideDetailPane(
                         )
                     }
                     IconButton(
-                        onClick = onCloseDetail,
+                        onClick = onBackToComps,
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(32.dp)
                             .testTag("overlay_detail_close_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Close selected composition side panel",
+                            contentDescription = "Close composition details",
                             tint = Color(0xFFB7C4D8),
-                            modifier = Modifier.size(17.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                TierBadge(tier = comp.tier)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = comp.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${comp.environment.label} • ${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)} • ${comp.setName}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (comp.environment == TftEnvironment.PBE) PbePurple else ArcaneCyan,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
@@ -2200,43 +2373,98 @@ private fun OverlayCompSideDetailPane(
                 }
             }
 
-            if (wideSidePane && comp.hexPlacements.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.Top
+            OverlayCompSideBuildDetails(
+                comp = comp,
+                carryBis = carryBis,
+                secondaryItemized = secondaryItemized
+            )
+            if (comp.notes.isNotBlank()) {
+                Text(
+                    text = comp.notes,
+                    fontSize = 10.sp,
+                    color = Color(0xFF9FB0CC)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OverlayHexBoardRightPane(
+    comp: MetaComp,
+    fillAvailableHeight: Boolean,
+    maxPaneHeightDp: Dp,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = DeepSlate,
+        border = BorderStroke(
+            width = 1.4.dp,
+            brush = Brush.linearGradient(listOf(ArcaneCyan, BrightGold))
+        ),
+        modifier = modifier.testTag("overlay_right_hex_board_pane")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (fillAvailableHeight) Modifier.fillMaxHeight() else Modifier)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "4×7 Hex Board",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = ArcaneCyan,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Carry: ${comp.carryName}",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = BrightGold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (comp.hexPlacements.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .background(ObsidianVoid.copy(alpha = 0.6f), RoundedCornerShape(10.dp)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        OverlayCompSideBuildDetails(
-                            comp = comp,
-                            carryBis = carryBis,
-                            secondaryItemized = secondaryItemized
-                        )
-                    }
-                    Box(modifier = Modifier.weight(1.05f)) {
-                        MiniOverlayHexGrid(
-                            placements = comp.hexPlacements,
-                            environment = comp.environment,
-                            gridHeight = 132.dp
-                        )
-                    }
+                    Text(
+                        text = "No hex placements listed for this composition.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF93A1B8)
+                    )
                 }
             } else {
-                if (comp.hexPlacements.isNotEmpty()) {
+                val boardModifier = if (fillAvailableHeight) {
+                    Modifier.fillMaxWidth().weight(1f)
+                } else {
+                    Modifier.fillMaxWidth()
+                }
+                BoxWithConstraints(modifier = boardModifier) {
+                    val computedGridHeight = if (constraints.hasBoundedHeight) {
+                        (maxHeight - 28.dp).coerceIn(110.dp, 260.dp)
+                    } else {
+                        (maxPaneHeightDp - 78.dp).coerceIn(124.dp, 210.dp)
+                    }
                     MiniOverlayHexGrid(
                         placements = comp.hexPlacements,
                         environment = comp.environment,
-                        gridHeight = 120.dp
+                        gridHeight = computedGridHeight
                     )
                 }
-                OverlayCompSideBuildDetails(
-                    comp = comp,
-                    carryBis = carryBis,
-                    secondaryItemized = secondaryItemized
-                )
             }
         }
     }
@@ -2617,13 +2845,13 @@ private fun OverlayCompCard(
                 }
             } else {
                 Text(
-                    text = when {
-                        opensInSidePane && selected -> "Loaded on side panel • Tap again to close"
-                        opensInSidePane -> "Tap card to open board & BIS on side →"
-                        else -> "Tap card for BIS items, 4×7 hex board & augments"
+                    text = if (opensInSidePane) {
+                        "Tap card for Comp (Left) & Hex Board (Right) →"
+                    } else {
+                        "Tap card for BIS items, 4×7 hex board & augments"
                     },
                     fontSize = 9.sp,
-                    color = if (opensInSidePane && selected) ArcaneCyan else Color(0xFF7D8DA6),
+                    color = Color(0xFF7D8DA6),
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
@@ -2760,7 +2988,7 @@ private fun MiniOverlayHexGrid(
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = (boxDp - 4.dp).coerceIn(13.dp, 20.dp),
+                        size = (boxDp - 4.dp).coerceIn(13.dp, 28.dp),
                         environment = environment
                     )
                 }

@@ -621,9 +621,9 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `overlay window requests sensor landscape when expanded and computes cutout safe bounds`() {
+    fun `overlay window preserves device orientation when expanded and computes cutout safe bounds`() {
         assertEquals(
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
             com.example.overlay.resolveOverlayWindowScreenOrientation(com.example.overlay.OverlayDisplayState.EXPANDED)
         )
         assertEquals(
@@ -1089,5 +1089,151 @@ class ExampleRobolectricTest {
         val (narrowW, _) = com.example.overlay.clampOverlayCustomSize(420f, 300f, defaultDims, bounds)
         assertEquals(420.dp, narrowW)
         assertFalse(narrowW >= 480.dp)
+    }
+
+    @Test
+    fun `overlay left edge resize extends leftward across device width while anchoring right edge`() {
+        val bounds = com.example.overlay.resolveOverlaySizeBounds(screenWidthDp = 915, screenHeightDp = 411)
+        val density = 2f
+        // Start with 500dp wide overlay positioned at x = 600px (right edge = 1600px)
+        val (expandedW, expandedX) = com.example.overlay.computeLeftEdgeResizeResult(
+            startOriginX = 600,
+            startWidthDp = 500f,
+            deltaRawX = -300f, // drag left by 150dp -> width grows to 650dp, x shifts left by 300px to 300px
+            density = density,
+            minLeftPx = 16,
+            maxRightPx = 1814,
+            bounds = bounds
+        )
+        assertEquals(650f, expandedW, 0.01f)
+        assertEquals(300, expandedX)
+        assertEquals(1600, expandedX + (expandedW * density).toInt())
+
+        // Dragging right shrinks width down and shifts origin rightward
+        val (shrunkW, shrunkX) = com.example.overlay.computeLeftEdgeResizeResult(
+            startOriginX = 600,
+            startWidthDp = 500f,
+            deltaRawX = 200f, // drag right by 100dp -> width 400dp, origin = 800px
+            density = density,
+            minLeftPx = 16,
+            maxRightPx = 1814,
+            bounds = bounds
+        )
+        assertEquals(400f, shrunkW, 0.01f)
+        assertEquals(800, shrunkX)
+    }
+
+    @Test
+    fun `github release parser normalizes slugs selects matching apk variant and detects newer builds`() {
+        assertEquals("owner/tacticians-forge", com.example.update.GitHubReleaseParser.normalizeRepoSlug("https://github.com/owner/tacticians-forge.git"))
+        assertEquals("owner/tacticians-forge", com.example.update.GitHubReleaseParser.normalizeRepoSlug("owner/tacticians-forge"))
+        assertEquals(null, com.example.update.GitHubReleaseParser.normalizeRepoSlug("MY_GITHUB_OWNER_REPO"))
+        assertEquals(null, com.example.update.GitHubReleaseParser.normalizeRepoSlug("invalid"))
+
+        val releasesJson = """
+            [
+              {
+                "id": 201,
+                "tag_name": "latest-apk",
+                "name": "Latest Build",
+                "draft": false,
+                "prerelease": false,
+                "published_at": "2026-11-18T10:30:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/latest-apk",
+                "body": "Version: 1.0.12\nBuildCode: 12\nCommit: abcdef1234567890",
+                "assets": [
+                  {
+                    "id": 9001,
+                    "name": "tacticians-forge-debug.apk",
+                    "size": 24500000,
+                    "updated_at": "2026-11-18T10:31:00Z",
+                    "browser_download_url": "https://github.com/owner/repo/releases/download/latest-apk/tacticians-forge-debug.apk"
+                  },
+                  {
+                    "id": 9002,
+                    "name": "tacticians-forge-release.apk",
+                    "size": 18200000,
+                    "updated_at": "2026-11-18T10:31:30Z",
+                    "browser_download_url": "https://github.com/owner/repo/releases/download/latest-apk/tacticians-forge-release.apk"
+                  }
+                ]
+              },
+              {
+                "id": 199,
+                "tag_name": "v1.0.10",
+                "name": "Release v1.0.10",
+                "draft": false,
+                "prerelease": false,
+                "published_at": "2026-11-17T08:00:00Z",
+                "html_url": "https://github.com/owner/repo/releases/tag/v1.0.10",
+                "body": "Version: 1.0.10\nBuildCode: 10\nCommit: 11111112222222",
+                "assets": [
+                  {
+                    "id": 8001,
+                    "name": "app-debug.apk",
+                    "size": 24000000,
+                    "updated_at": "2026-11-17T08:01:00Z",
+                    "browser_download_url": "https://github.com/owner/repo/releases/download/v1.0.10/app-debug.apk"
+                  }
+                ]
+              }
+            ]
+        """.trimIndent()
+
+        val debugReleases = com.example.update.GitHubReleaseParser.parseGitHubReleases(releasesJson, isDebugBuild = true)
+        assertEquals(2, debugReleases.size)
+        val latestDebug = debugReleases.first()
+        assertEquals(9001L, latestDebug.apkAssetId)
+        assertEquals("tacticians-forge-debug.apk", latestDebug.apkAssetName)
+        assertEquals(12, latestDebug.parsedVersionCode)
+        assertEquals("1.0.12", latestDebug.parsedVersionName)
+        assertEquals("abcdef1234567890", latestDebug.parsedCommitSha)
+
+        val releaseVariant = com.example.update.GitHubReleaseParser.parseGitHubReleases(releasesJson, isDebugBuild = false).first()
+        assertEquals(9002L, releaseVariant.apkAssetId)
+        assertEquals("tacticians-forge-release.apk", releaseVariant.apkAssetName)
+
+        // Older installed build should detect update
+        val olderInstalled = com.example.update.InstalledAppVersionInfo(
+            versionCode = 11,
+            versionName = "1.0.11",
+            gitCommitSha = "9999999aaaaaaa",
+            buildTimestampMs = 0L,
+            isDebugBuild = true
+        )
+        assertTrue(com.example.update.GitHubReleaseParser.isRemoteReleaseNewer(latestDebug, olderInstalled))
+
+        // Same commit SHA must NOT re-prompt
+        val sameCommitInstalled = com.example.update.InstalledAppVersionInfo(
+            versionCode = 12,
+            versionName = "1.0.12",
+            gitCommitSha = "abcdef1234567890",
+            buildTimestampMs = 0L,
+            isDebugBuild = true
+        )
+        assertFalse(com.example.update.GitHubReleaseParser.isRemoteReleaseNewer(latestDebug, sameCommitInstalled))
+
+        // Equal buildCode but newer commit SHA must detect update
+        val differentCommitSameCode = sameCommitInstalled.copy(gitCommitSha = "fedcba9876543210")
+        assertTrue(com.example.update.GitHubReleaseParser.isRemoteReleaseNewer(latestDebug, differentCommitSameCode))
+    }
+
+    @Test
+    fun `local preferences store persists github repo override and app update alert watermarks`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.data.repository.LocalPreferencesStore(context)
+
+        assertTrue(prefs.isAppUpdateAlertsEnabled())
+        prefs.setGithubRepoOverride("my-org/tacticians-forge")
+        prefs.setAppUpdateAlertsEnabled(false)
+        prefs.setLastNotifiedAppReleaseKey("201_9001_abcdef1")
+        prefs.setLastInstalledApkAssetId(9001L)
+        prefs.setDismissedAppReleaseKey("201_9001_abcdef1")
+
+        assertEquals("my-org/tacticians-forge", prefs.getGithubRepoOverride())
+        assertFalse(prefs.isAppUpdateAlertsEnabled())
+        assertEquals("201_9001_abcdef1", prefs.getLastNotifiedAppReleaseKey())
+        assertEquals(9001L, prefs.getLastInstalledApkAssetId())
+        assertEquals("201_9001_abcdef1", prefs.getDismissedAppReleaseKey())
     }
 }

@@ -18,6 +18,8 @@
     <string name="channel_trending_comps_desc">Alerts when new S-tier compositions surge in win rate.</string>
     <string name="channel_overlay_name">Live Match Overlay</string>
     <string name="channel_overlay_desc">Persistent control notification while the in-game favorites overlay bubble is active.</string>
+    <string name="channel_app_updates_name">App Releases &amp; Updates</string>
+    <string name="channel_app_updates_desc">Notifications when a new Tactician\'s Forge APK release is published to GitHub for in-app updating.</string>
     <string name="overlay_action_stop">Close Overlay</string>
     <string name="overlay_empty_pins">Star a composition and tap the pin icon to display it here during live matches.</string>
     <string name="made_by_credits">Made By JS96 + MK</string>

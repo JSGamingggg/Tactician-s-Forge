@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.FavoriteCompDoc
@@ -82,6 +83,11 @@ class LocalPreferencesStore(context: Context) {
         val LOCAL_FAVORITES_JSON = stringPreferencesKey("local_favorites_json")
         val LOCAL_PLAYERS_JSON = stringPreferencesKey("local_players_json")
         val IS_GUEST_MODE = booleanPreferencesKey("is_guest_mode")
+        val GITHUB_REPO_OVERRIDE = stringPreferencesKey("github_repo_override")
+        val APP_UPDATE_ALERTS_ENABLED = booleanPreferencesKey("app_update_alerts_enabled")
+        val LAST_NOTIFIED_APP_RELEASE_KEY = stringPreferencesKey("last_notified_app_release_key")
+        val LAST_INSTALLED_APK_ASSET_ID = longPreferencesKey("last_installed_apk_asset_id")
+        val DISMISSED_APP_RELEASE_KEY = stringPreferencesKey("dismissed_app_release_key")
     }
 
     val preferencesFlow: Flow<UserPreferencesDoc> = appContext.tftDataStore.data.map { prefs ->
@@ -279,6 +285,68 @@ class LocalPreferencesStore(context: Context) {
     suspend fun saveNotifiedCompIds(compIds: Set<String>) {
         appContext.tftDataStore.edit { prefs ->
             prefs[Keys.LAST_NOTIFIED_COMP_IDS] = compIds.sorted().joinToString("\n")
+        }
+    }
+
+    val githubRepoOverrideFlow: Flow<String?> = appContext.tftDataStore.data.map { prefs ->
+        prefs[Keys.GITHUB_REPO_OVERRIDE]?.takeIf { it.isNotBlank() }
+    }
+
+    val appUpdateAlertsEnabledFlow: Flow<Boolean> = appContext.tftDataStore.data.map { prefs ->
+        prefs[Keys.APP_UPDATE_ALERTS_ENABLED] ?: true
+    }
+
+    suspend fun getGithubRepoOverride(): String? =
+        appContext.tftDataStore.data.first()[Keys.GITHUB_REPO_OVERRIDE]?.takeIf { it.isNotBlank() }
+
+    suspend fun setGithubRepoOverride(slugOrEmpty: String) {
+        appContext.tftDataStore.edit { prefs ->
+            val trimmed = slugOrEmpty.trim()
+            if (trimmed.isBlank()) {
+                prefs.remove(Keys.GITHUB_REPO_OVERRIDE)
+            } else {
+                prefs[Keys.GITHUB_REPO_OVERRIDE] = trimmed
+            }
+        }
+    }
+
+    suspend fun isAppUpdateAlertsEnabled(): Boolean =
+        appContext.tftDataStore.data.first()[Keys.APP_UPDATE_ALERTS_ENABLED] ?: true
+
+    suspend fun setAppUpdateAlertsEnabled(enabled: Boolean) {
+        appContext.tftDataStore.edit { prefs ->
+            prefs[Keys.APP_UPDATE_ALERTS_ENABLED] = enabled
+        }
+    }
+
+    suspend fun getLastNotifiedAppReleaseKey(): String? =
+        appContext.tftDataStore.data.first()[Keys.LAST_NOTIFIED_APP_RELEASE_KEY]
+
+    suspend fun setLastNotifiedAppReleaseKey(releaseKey: String) {
+        appContext.tftDataStore.edit { prefs ->
+            prefs[Keys.LAST_NOTIFIED_APP_RELEASE_KEY] = releaseKey
+        }
+    }
+
+    suspend fun getLastInstalledApkAssetId(): Long? =
+        appContext.tftDataStore.data.first()[Keys.LAST_INSTALLED_APK_ASSET_ID]
+
+    suspend fun setLastInstalledApkAssetId(assetId: Long) {
+        appContext.tftDataStore.edit { prefs ->
+            prefs[Keys.LAST_INSTALLED_APK_ASSET_ID] = assetId
+        }
+    }
+
+    suspend fun getDismissedAppReleaseKey(): String? =
+        appContext.tftDataStore.data.first()[Keys.DISMISSED_APP_RELEASE_KEY]
+
+    suspend fun setDismissedAppReleaseKey(releaseKey: String?) {
+        appContext.tftDataStore.edit { prefs ->
+            if (releaseKey.isNullOrBlank()) {
+                prefs.remove(Keys.DISMISSED_APP_RELEASE_KEY)
+            } else {
+                prefs[Keys.DISMISSED_APP_RELEASE_KEY] = releaseKey
+            }
         }
     }
 

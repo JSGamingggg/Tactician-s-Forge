@@ -13,6 +13,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -67,6 +69,7 @@ import com.example.notifications.PatchMonitorWorker
 import com.example.notifications.TftNotificationHelper
 import com.example.overlay.OverlayController
 import com.example.ui.auth.CloudSyncStatusCard
+import com.example.ui.components.AppUpdateSettingsCard
 import com.example.ui.components.DeltaBadge
 import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechPanelCard
@@ -75,6 +78,8 @@ import com.example.ui.components.TftAugmentIcon
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemIcon
 import com.example.ui.components.environmentSlideTransitionSpec
+import com.example.update.AppUpdateUiState
+import com.example.update.GitHubReleaseInfo
 import com.google.firebase.auth.FirebaseUser
 
 @Composable
@@ -88,6 +93,12 @@ fun PatchAlertsScreen(
     themeMode: ThemeMode,
     isOverlayRunning: Boolean,
     currentUser: FirebaseUser?,
+    appUpdateState: AppUpdateUiState,
+    onCheckAppUpdate: () -> Unit,
+    onSaveGithubRepo: (String) -> Unit,
+    onToggleAppUpdateAlerts: (Boolean) -> Unit,
+    onStartAppUpdate: (GitHubReleaseInfo) -> Unit,
+    onOpenAppUpdateDialog: () -> Unit,
     onRefreshVersions: () -> Unit,
     onUpdateAlertSettings: (Boolean?, Boolean?, Boolean?, Boolean?) -> Unit,
     onSetThemeMode: (ThemeMode) -> Unit,
@@ -110,11 +121,14 @@ fun PatchAlertsScreen(
 
     val canDrawOverlay = OverlayController.canDrawOverlays(context)
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val isWideLandscape = maxWidth >= 680.dp
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -168,139 +182,355 @@ fun PatchAlertsScreen(
             )
         }
 
-        // Push Notification Control Card
-        item {
-            HextechPanelCard(accentBorder = true) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(
-                            Icons.Default.NotificationsActive,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "Patch & Balance Push Notifications",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
+        // App Self-Updater & Push Notification Control Cards (2 columns in landscape)
+        if (isWideLandscape) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    AppUpdateSettingsCard(
+                        updateState = appUpdateState,
+                        onCheckForUpdate = onCheckAppUpdate,
+                        onSaveGithubRepo = onSaveGithubRepo,
+                        onToggleUpdateAlerts = onToggleAppUpdateAlerts,
+                        onStartUpdate = onStartAppUpdate,
+                        onOpenUpdateDialog = onOpenAppUpdateDialog,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HextechPanelCard(
+                        accentBorder = true,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(
+                                    Icons.Default.NotificationsActive,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Patch & Balance Push Notifications",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
 
-                    if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        Button(
-                            onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                            if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                Button(
+                                    onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("grant_notifications_button")
+                                ) {
+                                    Text("Enable OS Push Notifications")
+                                }
+                            }
+
+                            AlertToggleRow(
+                                title = "LIVE Game Patch Alerts",
+                                subtitle = "Alert immediately when a new LIVE patch or hotfix ships",
+                                checked = preferences.patchAlertsEnabled,
+                                onCheckedChange = { onUpdateAlertSettings(it, null, null, null) }
+                            )
+                            AlertToggleRow(
+                                title = "PBE Patch Deploy Alerts",
+                                subtitle = "Alert when experimental PBE cycles update",
+                                checked = preferences.pbeAlertsEnabled,
+                                onCheckedChange = { onUpdateAlertSettings(null, it, null, null) }
+                            )
+                            AlertToggleRow(
+                                title = "Significant Balance Changes",
+                                subtitle = "Champion/trait buffs & nerfs summary alerts",
+                                checked = preferences.balanceAlertsEnabled,
+                                onCheckedChange = { onUpdateAlertSettings(null, null, it, null) }
+                            )
+                            AlertToggleRow(
+                                title = "Trending S-Tier Comps",
+                                subtitle = "Alert when a composition surges in Top-4 rate",
+                                checked = preferences.trendingAlertsEnabled,
+                                onCheckedChange = { onUpdateAlertSettings(null, null, null, it) }
+                            )
+
+                            OutlinedButton(
+                                onClick = {
+                                    if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    } else {
+                                        val patch = patches.firstOrNull()
+                                        val posted = TftNotificationHelper.postPatchOrBalanceNotification(
+                                            context = context,
+                                            title = "${environment.label} Patch ${patch?.version ?: "18.6b"} Alert",
+                                            shortBody = patch?.headline ?: "New balance updates live.",
+                                            expandedBody = buildString {
+                                                append(patch?.headline ?: "Balance updates ready.")
+                                                patch?.balanceChanges?.take(3)?.forEach {
+                                                    append("\n• ${it.deltaType.label} ${it.targetName}: ${it.previousValue} -> ${it.newValue}")
+                                                }
+                                            },
+                                            environment = environment
+                                        )
+                                        onShowMessage(
+                                            if (posted) "Dispatched ${environment.label} patch notification!"
+                                            else "Notification blocked — check Android notification permissions."
+                                        )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("test_patch_notification_button")
+                            ) {
+                                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Send Instant ${environment.label} Patch Alert")
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            item {
+                AppUpdateSettingsCard(
+                    updateState = appUpdateState,
+                    onCheckForUpdate = onCheckAppUpdate,
+                    onSaveGithubRepo = onSaveGithubRepo,
+                    onToggleUpdateAlerts = onToggleAppUpdateAlerts,
+                    onStartUpdate = onStartAppUpdate,
+                    onOpenUpdateDialog = onOpenAppUpdateDialog
+                )
+            }
+
+            // Push Notification Control Card
+            item {
+                HextechPanelCard(accentBorder = true) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(
+                                Icons.Default.NotificationsActive,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Patch & Balance Push Notifications",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            Button(
+                                onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("grant_notifications_button")
+                            ) {
+                                Text("Enable OS Push Notifications")
+                            }
+                        }
+
+                        AlertToggleRow(
+                            title = "LIVE Game Patch Alerts",
+                            subtitle = "Alert immediately when a new LIVE patch or hotfix ships",
+                            checked = preferences.patchAlertsEnabled,
+                            onCheckedChange = { onUpdateAlertSettings(it, null, null, null) }
+                        )
+                        AlertToggleRow(
+                            title = "PBE Patch Deploy Alerts",
+                            subtitle = "Alert when experimental PBE cycles update",
+                            checked = preferences.pbeAlertsEnabled,
+                            onCheckedChange = { onUpdateAlertSettings(null, it, null, null) }
+                        )
+                        AlertToggleRow(
+                            title = "Significant Balance Changes",
+                            subtitle = "Champion/trait buffs & nerfs summary alerts",
+                            checked = preferences.balanceAlertsEnabled,
+                            onCheckedChange = { onUpdateAlertSettings(null, null, it, null) }
+                        )
+                        AlertToggleRow(
+                            title = "Trending S-Tier Comps",
+                            subtitle = "Alert when a composition surges in Top-4 rate",
+                            checked = preferences.trendingAlertsEnabled,
+                            onCheckedChange = { onUpdateAlertSettings(null, null, null, it) }
+                        )
+
+                        OutlinedButton(
+                            onClick = {
+                                if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    val patch = patches.firstOrNull()
+                                    val posted = TftNotificationHelper.postPatchOrBalanceNotification(
+                                        context = context,
+                                        title = "${environment.label} Patch ${patch?.version ?: "18.6b"} Alert",
+                                        shortBody = patch?.headline ?: "New balance updates live.",
+                                        expandedBody = buildString {
+                                            append(patch?.headline ?: "Balance updates ready.")
+                                            patch?.balanceChanges?.take(3)?.forEach {
+                                                append("\n• ${it.deltaType.label} ${it.targetName}: ${it.previousValue} -> ${it.newValue}")
+                                            }
+                                        },
+                                        environment = environment
+                                    )
+                                    onShowMessage(
+                                        if (posted) "Dispatched ${environment.label} patch notification!"
+                                        else "Notification blocked — check Android notification permissions."
+                                    )
+                                }
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(48.dp)
-                                .testTag("grant_notifications_button")
+                                .testTag("test_patch_notification_button")
                         ) {
-                            Text("Enable OS Push Notifications")
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Send Instant ${environment.label} Patch Alert")
                         }
-                    }
-
-                    AlertToggleRow(
-                        title = "LIVE Game Patch Alerts",
-                        subtitle = "Alert immediately when a new LIVE patch or hotfix ships",
-                        checked = preferences.patchAlertsEnabled,
-                        onCheckedChange = { onUpdateAlertSettings(it, null, null, null) }
-                    )
-                    AlertToggleRow(
-                        title = "PBE Patch Deploy Alerts",
-                        subtitle = "Alert when experimental PBE cycles update",
-                        checked = preferences.pbeAlertsEnabled,
-                        onCheckedChange = { onUpdateAlertSettings(null, it, null, null) }
-                    )
-                    AlertToggleRow(
-                        title = "Significant Balance Changes",
-                        subtitle = "Champion/trait buffs & nerfs summary alerts",
-                        checked = preferences.balanceAlertsEnabled,
-                        onCheckedChange = { onUpdateAlertSettings(null, null, it, null) }
-                    )
-                    AlertToggleRow(
-                        title = "Trending S-Tier Comps",
-                        subtitle = "Alert when a composition surges in Top-4 rate",
-                        checked = preferences.trendingAlertsEnabled,
-                        onCheckedChange = { onUpdateAlertSettings(null, null, null, it) }
-                    )
-
-                    OutlinedButton(
-                        onClick = {
-                            if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            } else {
-                                val patch = patches.firstOrNull()
-                                val posted = TftNotificationHelper.postPatchOrBalanceNotification(
-                                    context = context,
-                                    title = "${environment.label} Patch ${patch?.version ?: "18.6b"} Alert",
-                                    shortBody = patch?.headline ?: "New balance updates live.",
-                                    expandedBody = buildString {
-                                        append(patch?.headline ?: "Balance updates ready.")
-                                        patch?.balanceChanges?.take(3)?.forEach {
-                                            append("\n• ${it.deltaType.label} ${it.targetName}: ${it.previousValue} -> ${it.newValue}")
-                                        }
-                                    },
-                                    environment = environment
-                                )
-                                onShowMessage(
-                                    if (posted) "Dispatched ${environment.label} patch notification!"
-                                    else "Notification blocked — check Android notification permissions."
-                                )
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("test_patch_notification_button")
-                    ) {
-                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Send Instant ${environment.label} Patch Alert")
                     }
                 }
             }
         }
 
-        // Live Match Overlay Card
-        item {
-            HextechPanelCard {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.Layers, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-                        Text(
-                            text = "Live-Match Floating Overlay",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
+        // Live Match Overlay + Appearance / Cloud Sync (side-by-side in landscape)
+        if (isWideLandscape) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    HextechPanelCard(modifier = Modifier.weight(1f)) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Layers, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                                Text(
+                                    text = "Live-Match Floating Overlay",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            Text(
+                                text = "Shows a draggable Hextech bubble over TFT Mobile that expands into your pinned favorites & 4×7 hex boards.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!canDrawOverlay) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val intent = Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}")
+                                        )
+                                        context.startActivity(intent)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("grant_overlay_permission_button")
+                                ) {
+                                    Text("Grant 'Display Over Other Apps' Permission")
+                                }
+                            } else {
+                                Button(
+                                    onClick = onToggleOverlay,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("overlay_service_toggle_button")
+                                ) {
+                                    Text(if (isOverlayRunning) "Stop Live Match Overlay" else "Launch Floating Bubble Overlay")
+                                }
+                            }
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        HextechPanelCard {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Icon(Icons.Default.DarkMode, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    Text(
+                                        text = "Appearance Theme",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    ThemeMode.entries.forEach { mode ->
+                                        FilterChip(
+                                            selected = themeMode == mode,
+                                            onClick = { onSetThemeMode(mode) },
+                                            label = { Text(mode.label.substringBefore(" ")) },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        CloudSyncStatusCard(
+                            currentUser = currentUser,
+                            onAuthSuccess = onAuthSuccess,
+                            onAuthError = onAuthError,
+                            onSignedOut = onSignedOut
                         )
                     }
-                    Text(
-                        text = "Shows a draggable Hextech bubble over TFT Mobile that expands into your pinned favorites & 4×7 hex boards.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (!canDrawOverlay) {
-                        OutlinedButton(
-                            onClick = {
-                                val intent = Intent(
-                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:${context.packageName}")
-                                )
-                                context.startActivity(intent)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("grant_overlay_permission_button")
-                        ) {
-                            Text("Grant 'Display Over Other Apps' Permission")
+                }
+            }
+        } else {
+            // Live Match Overlay Card
+            item {
+                HextechPanelCard {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.Layers, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                            Text(
+                                text = "Live-Match Floating Overlay",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
-                    } else {
-                        Button(
-                            onClick = onToggleOverlay,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("overlay_service_toggle_button")
-                        ) {
-                            Text(if (isOverlayRunning) "Stop Live Match Overlay" else "Launch Floating Bubble Overlay")
+                        Text(
+                            text = "Shows a draggable Hextech bubble over TFT Mobile that expands into your pinned favorites & 4×7 hex boards.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!canDrawOverlay) {
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                    context.startActivity(intent)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("grant_overlay_permission_button")
+                            ) {
+                                Text("Grant 'Display Over Other Apps' Permission")
+                            }
+                        } else {
+                            Button(
+                                onClick = onToggleOverlay,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("overlay_service_toggle_button")
+                            ) {
+                                Text(if (isOverlayRunning) "Stop Live Match Overlay" else "Launch Floating Bubble Overlay")
+                            }
                         }
                     }
                 }
@@ -322,54 +552,76 @@ fun PatchAlertsScreen(
             }
         }
 
-        items(patches, key = { it.id }) { patch ->
-            PatchUpdateCard(
-                patch = patch,
-                modifier = Modifier.animateItem(
-                    fadeInSpec = tween(220),
-                    fadeOutSpec = tween(160),
-                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                )
-            )
-        }
-
-        // Appearance Mode Selector
-        item {
-            HextechPanelCard {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.DarkMode, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Text(
-                            text = "Appearance Theme",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface
+        if (isWideLandscape && patches.size > 1) {
+            items(patches.chunked(2), key = { row -> row.joinToString("_") { it.id } }) { rowPatches ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    rowPatches.forEach { patch ->
+                        PatchUpdateCard(
+                            patch = patch,
+                            modifier = Modifier.weight(1f)
                         )
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        ThemeMode.entries.forEach { mode ->
-                            FilterChip(
-                                selected = themeMode == mode,
-                                onClick = { onSetThemeMode(mode) },
-                                label = { Text(mode.label.substringBefore(" ")) },
-                                modifier = Modifier.weight(1f)
+                    if (rowPatches.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        } else {
+            items(patches, key = { it.id }) { patch ->
+                PatchUpdateCard(
+                    patch = patch,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = tween(220),
+                        fadeOutSpec = tween(160),
+                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                    )
+                )
+            }
+        }
+
+        if (!isWideLandscape) {
+            // Appearance Mode Selector
+            item {
+                HextechPanelCard {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.DarkMode, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = "Appearance Theme",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ThemeMode.entries.forEach { mode ->
+                                FilterChip(
+                                    selected = themeMode == mode,
+                                    onClick = { onSetThemeMode(mode) },
+                                    label = { Text(mode.label.substringBefore(" ")) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Optional Google Sign-In Cloud Sync
-        item {
-            CloudSyncStatusCard(
-                currentUser = currentUser,
-                onAuthSuccess = onAuthSuccess,
-                onAuthError = onAuthError,
-                onSignedOut = onSignedOut
-            )
+            // Optional Google Sign-In Cloud Sync
+            item {
+                CloudSyncStatusCard(
+                    currentUser = currentUser,
+                    onAuthSuccess = onAuthSuccess,
+                    onAuthError = onAuthError,
+                    onSignedOut = onSignedOut
+                )
+            }
         }
 
         // App Credits & Live Sync Cadence Footer
@@ -400,6 +652,7 @@ fun PatchAlertsScreen(
         }
 
         item { Spacer(Modifier.height(24.dp)) }
+        }
     }
 }
 

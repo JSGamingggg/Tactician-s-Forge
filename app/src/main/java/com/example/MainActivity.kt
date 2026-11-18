@@ -12,12 +12,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.MilitaryTech
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.PersonSearch
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -75,6 +78,8 @@ import com.example.data.repository.RiotTftRepository
 import com.example.notifications.TftNotificationHelper
 import com.example.overlay.OverlayController
 import com.example.ui.auth.GoogleAuthHelper
+import com.example.ui.components.AppUpdateInAppBanner
+import com.example.ui.components.AppUpdatePromptDialog
 import com.example.ui.screens.AuthWelcomeScreen
 import com.example.ui.screens.ChampionTierListScreen
 import com.example.ui.screens.MetaSnapshotsScreen
@@ -83,6 +88,7 @@ import com.example.ui.screens.PlayerStatsScreen
 import com.example.ui.theme.TacticiansForgeTheme
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.PlayerViewModel
+import com.example.update.AppUpdateStatus
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
@@ -115,15 +121,20 @@ internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
 }
 
 class MainActivity : ComponentActivity() {
+    private var openAppUpdateSignal by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val initialTab = intent?.getStringExtra(TftNotificationHelper.EXTRA_NAV_TAB)
         val initialEnv = intent?.getStringExtra(TftNotificationHelper.EXTRA_ENVIRONMENT)
+        openAppUpdateSignal = intent?.getBooleanExtra(TftNotificationHelper.EXTRA_OPEN_APP_UPDATE, false) == true
         setContent {
             AppRoot(
                 initialTabKey = initialTab,
-                initialEnvironmentKey = initialEnv
+                initialEnvironmentKey = initialEnv,
+                openAppUpdateOnLaunch = openAppUpdateSignal,
+                onConsumedAppUpdateSignal = { openAppUpdateSignal = false }
             )
         }
     }
@@ -131,13 +142,18 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra(TftNotificationHelper.EXTRA_OPEN_APP_UPDATE, false)) {
+            openAppUpdateSignal = true
+        }
     }
 }
 
 @Composable
 fun AppRoot(
     initialTabKey: String?,
-    initialEnvironmentKey: String?
+    initialEnvironmentKey: String?,
+    openAppUpdateOnLaunch: Boolean = false,
+    onConsumedAppUpdateSignal: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -205,7 +221,9 @@ fun AppRoot(
                     currentUser = currentUser,
                     localStore = localStore,
                     initialTabKey = initialTabKey,
-                    initialEnvironmentKey = initialEnvironmentKey
+                    initialEnvironmentKey = initialEnvironmentKey,
+                    openAppUpdateOnLaunch = openAppUpdateOnLaunch,
+                    onConsumedAppUpdateSignal = onConsumedAppUpdateSignal
                 )
             }
         }
@@ -217,7 +235,9 @@ private fun AuthenticatedOrGuestWorkspace(
     currentUser: FirebaseUser?,
     localStore: LocalPreferencesStore,
     initialTabKey: String?,
-    initialEnvironmentKey: String?
+    initialEnvironmentKey: String?,
+    openAppUpdateOnLaunch: Boolean,
+    onConsumedAppUpdateSignal: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -269,6 +289,11 @@ private fun AuthenticatedOrGuestWorkspace(
     val offlineCacheStatus by mainViewModel.offlineCacheStatus.collectAsStateWithLifecycle()
     val isRefreshingVersions by mainViewModel.isRefreshingVersions.collectAsStateWithLifecycle()
     val snackbarMessage by mainViewModel.snackbarMessage.collectAsStateWithLifecycle()
+    val appUpdateState by mainViewModel.appUpdateState.collectAsStateWithLifecycle()
+
+    val hasPendingAppUpdate = appUpdateState.status is AppUpdateStatus.UpdateAvailable ||
+        appUpdateState.status is AppUpdateStatus.Downloading ||
+        appUpdateState.status is AppUpdateStatus.ReadyToInstall
 
     val lookupState by playerViewModel.lookupState.collectAsStateWithLifecycle()
     val selectedPlatform by playerViewModel.selectedPlatform.collectAsStateWithLifecycle()
@@ -299,6 +324,18 @@ private fun AuthenticatedOrGuestWorkspace(
     LaunchedEffect(initialEnvironmentKey) {
         if (!initialEnvironmentKey.isNullOrBlank()) {
             mainViewModel.setEnvironment(TftEnvironment.fromRaw(initialEnvironmentKey))
+        }
+    }
+
+    LaunchedEffect(openAppUpdateOnLaunch, appUpdateState.status) {
+        if (openAppUpdateOnLaunch) {
+            if (hasPendingAppUpdate) {
+                mainViewModel.openAppUpdateDialog()
+                onConsumedAppUpdateSignal()
+            } else {
+                mainViewModel.checkForAppUpdate(userInitiated = true)
+                onConsumedAppUpdateSignal()
+            }
         }
     }
 
@@ -369,10 +406,20 @@ private fun AuthenticatedOrGuestWorkspace(
                                     onClick = { currentTab = tab },
                                     colors = navItemColors,
                                     icon = {
-                                        Icon(
-                                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                            contentDescription = stringResource(tab.labelRes)
-                                        )
+                                        val navIcon = if (selected) tab.selectedIcon else tab.unselectedIcon
+                                        if (tab == AppTab.ALERTS && hasPendingAppUpdate) {
+                                            BadgedBox(badge = { Badge() }) {
+                                                Icon(
+                                                    imageVector = navIcon,
+                                                    contentDescription = stringResource(tab.labelRes)
+                                                )
+                                            }
+                                        } else {
+                                            Icon(
+                                                imageVector = navIcon,
+                                                contentDescription = stringResource(tab.labelRes)
+                                            )
+                                        }
                                     },
                                     label = { Text(stringResource(tab.labelRes), maxLines = 1) },
                                     modifier = Modifier.testTag("nav_${tab.key}")
@@ -406,10 +453,20 @@ private fun AuthenticatedOrGuestWorkspace(
                                     colors = railColors,
                                     alwaysShowLabel = compactRailLabels,
                                     icon = {
-                                        Icon(
-                                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                            contentDescription = stringResource(tab.labelRes)
-                                        )
+                                        val railIcon = if (selected) tab.selectedIcon else tab.unselectedIcon
+                                        if (tab == AppTab.ALERTS && hasPendingAppUpdate) {
+                                            BadgedBox(badge = { Badge() }) {
+                                                Icon(
+                                                    imageVector = railIcon,
+                                                    contentDescription = stringResource(tab.labelRes)
+                                                )
+                                            }
+                                        } else {
+                                            Icon(
+                                                imageVector = railIcon,
+                                                contentDescription = stringResource(tab.labelRes)
+                                            )
+                                        }
                                     },
                                     label = { Text(stringResource(tab.labelRes), maxLines = 1) },
                                     modifier = Modifier.testTag("nav_${tab.key}")
@@ -418,16 +475,26 @@ private fun AuthenticatedOrGuestWorkspace(
                         }
                     }
 
-                    Box(
+                    Column(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxSize(),
-                        contentAlignment = Alignment.TopCenter
-                    ) {
-                        val contentModifier = Modifier
-                            .widthIn(max = 880.dp)
                             .fillMaxSize()
-                        val tabStateHolder = rememberSaveableStateHolder()
+                    ) {
+                        AppUpdateInAppBanner(
+                            updateState = appUpdateState,
+                            onOpenDetails = mainViewModel::openAppUpdateDialog,
+                            onStartUpdate = mainViewModel::downloadAndInstallAppUpdate,
+                            onInstallReadyApk = mainViewModel::installReadyAppUpdate,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            val contentModifier = Modifier.fillMaxSize()
+                            val tabStateHolder = rememberSaveableStateHolder()
                         Crossfade(
                             targetState = currentTab,
                             animationSpec = tween(durationMillis = 135),
@@ -491,6 +558,12 @@ private fun AuthenticatedOrGuestWorkspace(
                                         themeMode = themeMode,
                                         isOverlayRunning = isOverlayRunning,
                                         currentUser = currentUser,
+                                        appUpdateState = appUpdateState,
+                                        onCheckAppUpdate = { mainViewModel.checkForAppUpdate(userInitiated = true) },
+                                        onSaveGithubRepo = mainViewModel::saveGithubRepo,
+                                        onToggleAppUpdateAlerts = mainViewModel::setAppUpdateAlertsEnabled,
+                                        onStartAppUpdate = mainViewModel::downloadAndInstallAppUpdate,
+                                        onOpenAppUpdateDialog = mainViewModel::openAppUpdateDialog,
                                         onRefreshVersions = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
                                         onUpdateAlertSettings = mainViewModel::updateAlertSettings,
                                         onSetThemeMode = mainViewModel::setThemeMode,
@@ -510,9 +583,17 @@ private fun AuthenticatedOrGuestWorkspace(
                                 }
                             }
                         }
+                        }
                     }
                 }
             }
         }
+
+        AppUpdatePromptDialog(
+            updateState = appUpdateState,
+            onDismissLater = { mainViewModel.dismissAppUpdateDialog(suppressThisReleaseOnLaunch = true) },
+            onDownloadAndInstall = mainViewModel::downloadAndInstallAppUpdate,
+            onInstallReadyApk = mainViewModel::installReadyAppUpdate
+        )
     }
 }

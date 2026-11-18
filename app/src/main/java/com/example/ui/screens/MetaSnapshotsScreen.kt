@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PushPin
@@ -180,19 +183,36 @@ fun MetaSnapshotsScreen(
         groupCompsByTier(displayedComps)
     }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Hero Header
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(148.dp)
-                    .clip(RoundedCornerShape(18.dp))
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val useSideDetail = maxWidth >= 680.dp && inspectedComp != null
+        val cardColumns = when {
+            useSideDetail -> 1
+            maxWidth >= 1080.dp -> 3
+            maxWidth >= 680.dp -> 2
+            else -> 1
+        }
+        val compactHeroHeight = if (maxWidth >= 600.dp && maxHeight < 540.dp) 108.dp else 148.dp
+
+        Row(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = if (useSideDetail) {
+                    Modifier
+                        .weight(0.46f)
+                        .fillMaxHeight()
+                } else {
+                    Modifier.fillMaxSize()
+                },
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Hero Header
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(compactHeroHeight)
+                            .clip(RoundedCornerShape(18.dp))
+                    ) {
                 Image(
                     painter = painterResource(id = R.drawable.img_hextech_banner),
                     contentDescription = "Set 18 Hextech Arena Banner",
@@ -631,51 +651,144 @@ fun MetaSnapshotsScreen(
                 }
 
                 if (isTierExpanded) {
-                    items(
-                        items = tierComps,
-                        key = { "${tier.name}_${it.id}" },
-                        contentType = { "comp_card" }
-                    ) { comp ->
-                        val isFav = favoriteIds.contains(comp.id)
-                        val isPinned = pinnedIds.contains(comp.id)
-                        MetaCompCard(
-                            comp = comp,
-                            isFavorite = isFav,
-                            isPinned = isPinned,
-                            onCardClick = { inspectedComp = comp },
-                            onToggleFavorite = { onToggleFavorite(comp) },
-                            onTogglePin = {
-                                if (!isFav) onToggleFavorite(comp)
-                                else onTogglePin(comp.id, !isPinned)
+                    if (cardColumns > 1) {
+                        items(
+                            items = tierComps.chunked(cardColumns),
+                            key = { row -> "${tier.name}_row_${row.joinToString("_") { it.id }}" },
+                            contentType = { "comp_card_row" }
+                        ) { rowComps ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                rowComps.forEach { comp ->
+                                    val isFav = favoriteIds.contains(comp.id)
+                                    val isPinned = pinnedIds.contains(comp.id)
+                                    MetaCompCard(
+                                        comp = comp,
+                                        isFavorite = isFav,
+                                        isPinned = isPinned,
+                                        onCardClick = { inspectedComp = comp },
+                                        onToggleFavorite = { onToggleFavorite(comp) },
+                                        onTogglePin = {
+                                            if (!isFav) onToggleFavorite(comp)
+                                            else onTogglePin(comp.id, !isPinned)
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                repeat(cardColumns - rowComps.size) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
                             }
-                        )
+                        }
+                    } else {
+                        items(
+                            items = tierComps,
+                            key = { "${tier.name}_${it.id}" },
+                            contentType = { "comp_card" }
+                        ) { comp ->
+                            val isFav = favoriteIds.contains(comp.id)
+                            val isPinned = pinnedIds.contains(comp.id)
+                            MetaCompCard(
+                                comp = comp,
+                                isFavorite = isFav,
+                                isPinned = isPinned,
+                                onCardClick = { inspectedComp = comp },
+                                onToggleFavorite = { onToggleFavorite(comp) },
+                                onTogglePin = {
+                                    if (!isFav) onToggleFavorite(comp)
+                                    else onTogglePin(comp.id, !isPinned)
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
 
         item { Spacer(Modifier.height(24.dp)) }
-    }
+            }
 
-    inspectedComp?.let { comp ->
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        val isFav = favoriteIds.contains(comp.id)
-        val isPinned = pinnedIds.contains(comp.id)
-        ModalBottomSheet(
-            onDismissRequest = { inspectedComp = null },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            CompDetailSheetContent(
-                comp = comp,
-                isFavorite = isFav,
-                isPinned = isPinned,
-                onToggleFavorite = { onToggleFavorite(comp) },
-                onTogglePin = {
-                    if (!isFav) onToggleFavorite(comp)
-                    else onTogglePin(comp.id, !isPinned)
+            if (useSideDetail) {
+                val sideComp = inspectedComp
+                if (sideComp != null) {
+                    val isFav = favoriteIds.contains(sideComp.id)
+                    val isPinned = pinnedIds.contains(sideComp.id)
+                    HextechPanelCard(
+                        accentBorder = true,
+                        modifier = Modifier
+                            .weight(0.54f)
+                            .fillMaxHeight()
+                            .padding(top = 16.dp, end = 16.dp, bottom = 16.dp)
+                            .testTag("meta_side_detail_pane")
+                    ) {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp, end = 8.dp, top = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Composition Details",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                IconButton(
+                                    onClick = { inspectedComp = null },
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .testTag("meta_side_detail_close")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Close detail panel",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            CompDetailSheetContent(
+                                comp = sideComp,
+                                isFavorite = isFav,
+                                isPinned = isPinned,
+                                onToggleFavorite = { onToggleFavorite(sideComp) },
+                                onTogglePin = {
+                                    if (!isFav) onToggleFavorite(sideComp)
+                                    else onTogglePin(sideComp.id, !isPinned)
+                                }
+                            )
+                        }
+                    }
                 }
-            )
+            }
+        }
+
+        if (!useSideDetail) {
+            inspectedComp?.let { comp ->
+                val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+                val isFav = favoriteIds.contains(comp.id)
+                val isPinned = pinnedIds.contains(comp.id)
+                ModalBottomSheet(
+                    onDismissRequest = { inspectedComp = null },
+                    sheetState = sheetState,
+                    containerColor = MaterialTheme.colorScheme.surface
+                ) {
+                    CompDetailSheetContent(
+                        comp = comp,
+                        isFavorite = isFav,
+                        isPinned = isPinned,
+                        onToggleFavorite = { onToggleFavorite(comp) },
+                        onTogglePin = {
+                            if (!isFav) onToggleFavorite(comp)
+                            else onTogglePin(comp.id, !isPinned)
+                        }
+                    )
+                }
+            }
         }
     }
 

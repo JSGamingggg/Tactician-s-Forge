@@ -7,6 +7,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -149,11 +150,18 @@ fun ChampionTierListScreen(
             .sortedWith(compareBy<AugmentTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
     }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val columns = when {
+            maxWidth >= 1040.dp -> 3
+            maxWidth >= 660.dp -> 2
+            else -> 1
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
         item {
             AnimatedContent(
                 targetState = environment,
@@ -323,6 +331,31 @@ fun ChampionTierListScreen(
                             )
                         )
                     }
+                } else if (columns > 1) {
+                    items(
+                        items = filteredChampions.chunked(columns),
+                        key = { row -> "champ_row_${row.joinToString("_") { it.id }}" },
+                        contentType = { "champion_tier_row" }
+                    ) { rowChamps ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            rowChamps.forEach { champ ->
+                                val isExpanded = expandedId == champ.id
+                                ChampionTierCard(
+                                    champ = champ,
+                                    expanded = isExpanded,
+                                    onClick = { expandedId = if (isExpanded) null else champ.id },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            repeat(columns - rowChamps.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
                 } else {
                     items(filteredChampions, key = { it.id }, contentType = { "champion_tier" }) { champ ->
                         val isExpanded = expandedId == champ.id
@@ -348,6 +381,28 @@ fun ChampionTierListScreen(
                             )
                         )
                     }
+                } else if (columns > 1) {
+                    items(
+                        items = filteredItems.chunked(columns),
+                        key = { row -> "item_row_${row.joinToString("_") { it.id }}" },
+                        contentType = { "item_tier_row" }
+                    ) { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            rowItems.forEach { itemEntry ->
+                                ItemTierCard(
+                                    item = itemEntry,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            repeat(columns - rowItems.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
                 } else {
                     items(filteredItems, key = { it.id }, contentType = { "item_tier" }) { itemEntry ->
                         ItemTierCard(item = itemEntry)
@@ -368,6 +423,28 @@ fun ChampionTierListScreen(
                             )
                         )
                     }
+                } else if (columns > 1) {
+                    items(
+                        items = filteredAugments.chunked(columns),
+                        key = { row -> "aug_row_${row.joinToString("_") { it.id }}" },
+                        contentType = { "augment_tier_row" }
+                    ) { rowAugs ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            rowAugs.forEach { augment ->
+                                AugmentTierCard(
+                                    augment = augment,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            repeat(columns - rowAugs.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
                 } else {
                     items(filteredAugments, key = { it.id }, contentType = { "augment_tier" }) { augment ->
                         AugmentTierCard(augment = augment)
@@ -377,6 +454,7 @@ fun ChampionTierListScreen(
         }
 
         item { Spacer(Modifier.height(24.dp)) }
+        }
     }
 }
 

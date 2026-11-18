@@ -109,9 +109,8 @@ fun AuthWelcomeScreen(
         if (isLandscapeSplit) {
             Row(
                 modifier = Modifier
-                    .widthIn(max = 920.dp)
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {

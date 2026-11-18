@@ -114,18 +114,9 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
     }
 
     private fun schedulePatchMonitor() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val request = PeriodicWorkRequestBuilder<PatchMonitorWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .build()
-
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            PATCH_MONITOR_WORK_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            request
+        PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
+            context = this,
+            triggerImmediateCheck = false
         )
     }
 
@@ -134,12 +125,13 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
         runCatching {
             Firebase.messaging.subscribeToTopic("tft_patches")
             Firebase.messaging.subscribeToTopic("tft_trending_comps")
+            Firebase.messaging.subscribeToTopic("tft_app_updates")
         }.onFailure {
             Log.d("TacticiansForgeApp", "FCM topic subscription deferred: ${it.message}")
         }
     }
 
     companion object {
-        const val PATCH_MONITOR_WORK_NAME = "tft_patch_monitor_worker"
+        const val PATCH_MONITOR_WORK_NAME = PatchMonitorWorker.PERIODIC_WORK_NAME
     }
 }

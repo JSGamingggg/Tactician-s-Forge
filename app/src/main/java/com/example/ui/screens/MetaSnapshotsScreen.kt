@@ -107,6 +107,7 @@ import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
 import com.example.ui.components.environmentSlideTransitionSpec
+import com.example.ui.components.sanitizeExternalSourceMentions
 import com.example.ui.theme.LocalHextechColors
 import com.example.ui.viewmodel.UiState
 import java.util.Locale
@@ -439,20 +440,17 @@ fun MetaSnapshotsScreen(
                     if (compsByTier.isEmpty()) {
                         item(key = "empty_comps_${environment.name}", contentType = "empty_state") {
                             val awaitingInitialSync = !showFavoritesOnly && comps.isEmpty()
-                            val isPbeEnv = environment == TftEnvironment.PBE
-                            val sourceSiteLabel = if (isPbeEnv) "TFTactics" else "TFTAcademy"
-                            val sourceSiteUrlText = if (isPbeEnv) "tftactics.gg/tierlist/team-comps/" else "tftacademy.com/tierlist/comps"
                             HextechEmptyState(
                                 icon = Icons.Default.AutoAwesome,
                                 title = when {
                                     showFavoritesOnly -> "No Saved Favorites in ${environment.label}"
-                                    awaitingInitialSync && isRefreshing -> "Syncing Comps from $sourceSiteLabel..."
-                                    awaitingInitialSync -> "$sourceSiteLabel Comps Not Cached Yet"
+                                    awaitingInitialSync && isRefreshing -> "Syncing ${environment.label} Comps..."
+                                    awaitingInitialSync -> "${environment.label} Comps Not Cached Yet"
                                     else -> "No Matching Compositions"
                                 },
                                 subtitle = when {
                                     showFavoritesOnly -> "Star a ${environment.label} composition or tap Custom to craft your own board."
-                                    awaitingInitialSync -> "Compositions load from $sourceSiteUrlText. Tap Sync to pull the latest tier list."
+                                    awaitingInitialSync -> "Tap Sync to load the latest ${environment.label} tier list and hex boards."
                                     else -> "Try clearing your search or switching between LIVE and PBE snapshots."
                                 },
                                 action = if (awaitingInitialSync && !isRefreshing) {
@@ -461,7 +459,7 @@ fun MetaSnapshotsScreen(
                                             onClick = onRefreshSync,
                                             modifier = Modifier.height(48.dp)
                                         ) {
-                                            Text("Sync $sourceSiteLabel Comps")
+                                            Text("Sync ${environment.label} Comps")
                                         }
                                     }
                                 } else {
@@ -816,6 +814,14 @@ private fun MetaCompCard(
                     fontWeight = FontWeight.SemiBold
                 )
                 if (comp.isTrending) {
+                    val cleanTrend = remember(comp.trendDelta) {
+                        val stripped = sanitizeExternalSourceMentions(comp.trendDelta)
+                        if (stripped.isBlank() || stripped.equals("LIVE", ignoreCase = true) || stripped.equals("PBE", ignoreCase = true)) {
+                            "Top Meta"
+                        } else {
+                            stripped
+                        }
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.AutoMirrored.Filled.TrendingUp,
@@ -825,7 +831,7 @@ private fun MetaCompCard(
                         )
                         Spacer(Modifier.width(3.dp))
                         Text(
-                            text = comp.trendDelta,
+                            text = cleanTrend,
                             style = MaterialTheme.typography.labelSmall,
                             color = hextech.buff
                         )
@@ -1070,6 +1076,13 @@ private fun CompDetailSheetContent(
             }
         }
 
+        val cleanLevelingGuide = remember(comp.levelingGuide, comp.playstyle, comp.setName, comp.patchTag) {
+            sanitizeExternalSourceMentions(comp.levelingGuide)
+                .ifBlank { "${comp.playstyle} • ${comp.setName} (${comp.patchTag})" }
+        }
+        val cleanNotes = remember(comp.notes) {
+            sanitizeExternalSourceMentions(comp.notes)
+        }
         HextechPanelCard {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
@@ -1078,13 +1091,13 @@ private fun CompDetailSheetContent(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = comp.levelingGuide,
+                    text = cleanLevelingGuide,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (comp.notes.isNotBlank()) {
+                if (cleanNotes.isNotBlank()) {
                     Text(
-                        text = comp.notes,
+                        text = cleanNotes,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )

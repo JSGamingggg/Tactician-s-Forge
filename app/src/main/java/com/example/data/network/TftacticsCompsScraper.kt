@@ -435,11 +435,10 @@ class TftacticsCompsScraper(
                 if (description.isNotBlank()) add(description)
                 if (midUnits.isNotEmpty()) add("Early/Mid: ${midUnits.joinToString(", ")}")
                 if (replacements.isNotBlank()) add("Subs: $replacements")
-            }.joinToString(" • ").ifBlank { "TFTactics $playstyle • $setLabel ($pbePatchVersion)" }
+            }.joinToString(" • ").ifBlank { "$playstyle • $setLabel ($pbePatchVersion)" }
 
             val notes = buildList {
                 if (carouselNotes.isNotBlank()) add("Carousel: $carouselNotes")
-                add("Synced from tftactics.gg/tierlist/team-comps/ ($setLabel)")
             }.joinToString(" • ")
 
             val slug = title.lowercase(Locale.US)
@@ -477,7 +476,7 @@ class TftacticsCompsScraper(
                     pickRate = 7.0,
                     trendDelta = when {
                         obj.optBoolean("tier_up", false) -> "Rising PBE"
-                        else -> "TFTactics PBE"
+                        else -> "Top Meta"
                     },
                     isTrending = tier == TierRank.S || obj.optBoolean("tier_up", false),
                     patchTag = pbePatchVersion,
@@ -585,7 +584,7 @@ class TftacticsCompsScraper(
                     },
                     winRate = 14.0,
                     pickRate = 7.0,
-                    trendDelta = "TFTactics PBE",
+                    trendDelta = "Top Meta",
                     isTrending = tier == TierRank.S,
                     patchTag = pbePatchVersion,
                     carryName = carry.name,
@@ -593,8 +592,8 @@ class TftacticsCompsScraper(
                     coreUnits = units.map { it.name },
                     hexPlacements = placements,
                     augmentPriorities = emptyList(),
-                    levelingGuide = "TFTactics $playstyle • $setLabel ($pbePatchVersion)",
-                    notes = "Synced from tftactics.gg/tierlist/team-comps/ ($setLabel).",
+                    levelingGuide = "$playstyle • $setLabel ($pbePatchVersion)",
+                    notes = "",
                     setName = setLabel,
                     sourceUrl = TFTACTICS_COMPS_URL
                 )

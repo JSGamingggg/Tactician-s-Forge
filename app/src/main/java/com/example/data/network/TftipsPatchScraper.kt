@@ -206,7 +206,7 @@ class TftipsPatchScraper(
             val headline = if (summaryParts.isNotEmpty()) {
                 "${summaryParts.joinToString(", ")} — $topTargetsPreview"
             } else {
-                "TFT $version patch changes synced from tftips.app/en/patches."
+                "TFT $version patch balance updates."
             }
 
             val fullUrl = when {
@@ -235,7 +235,7 @@ class TftipsPatchScraper(
                     isMajorPatch = isMajor,
                     headline = headline,
                     highlights = highlights.ifEmpty {
-                        listOf("Tracked live on $fullUrl")
+                        listOf("Patch $version balance updates")
                     },
                     balanceChanges = balanceChanges,
                     trendingCompIds = emptyList(),
@@ -559,7 +559,7 @@ class TftipsPatchScraper(
                             .ifBlank { node.optString("description") }
                             .ifBlank { node.optString("headline") }
                     ).ifBlank {
-                        "Synced from tftips.app/en/patches ($normalizedVer)."
+                        "Patch $normalizedVer balance updates."
                     }
                     val url = if (slugCandidate.isNotBlank()) {
                         "$TFTIPS_PATCHES_URL/${slugCandidate.trimStart('/')}"
@@ -575,7 +575,7 @@ class TftipsPatchScraper(
                             isMajorPatch = !normalizedVer.removeSuffix("-PBE").last().isLetter(),
                             headline = summary,
                             highlights = extractJsonHighlights(node).ifEmpty {
-                                listOf("Synced live from https://tftips.app/en/patches")
+                                listOf("Patch $normalizedVer balance updates")
                             },
                             balanceChanges = emptyList(),
                             trendingCompIds = emptyList(),
@@ -655,12 +655,12 @@ class TftipsPatchScraper(
                     environment = env,
                     version = normalizedVer,
                     title = rawBlock,
-                    releaseDate = if (isPbe) "PBE Update (TFTips)" else "Live Release (TFTips)",
+                    releaseDate = if (isPbe) "PBE Update" else "Live Release",
                     isMajorPatch = !ver.last().isLetter(),
                     headline = bulletHighlights.firstOrNull()
-                        ?: "Latest ${env.label} patch $normalizedVer details synced from tftips.app/en/patches.",
+                        ?: "Latest ${env.label} patch $normalizedVer balance updates.",
                     highlights = bulletHighlights.ifEmpty {
-                        listOf("Patch $normalizedVer tracked via https://tftips.app/en/patches")
+                        listOf("Patch $normalizedVer balance updates")
                     },
                     balanceChanges = balanceChanges,
                     trendingCompIds = emptyList(),

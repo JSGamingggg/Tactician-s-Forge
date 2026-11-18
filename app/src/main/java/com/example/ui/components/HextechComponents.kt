@@ -371,14 +371,16 @@ fun TftHexBoard(
         ) {
             val cols = 7
             val rows = 4
-            val radiusDp = (maxWidth.value / (cols * 2.25f)).coerceAtMost(maxHeight.value / (rows * 2.15f))
+            val radiusDp = (maxWidth.value / (cols * 2.15f)).coerceAtMost(maxHeight.value / (rows * 2.10f))
             val rPx = with(density) { radiusDp.dp.toPx() }
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
-            val dx = rPx * 1.92f
-            val dy = rPx * 1.66f
-            val startX = (widthPx - (cols * dx + dx * 0.5f)) / 2f + rPx
-            val startY = (heightPx - ((rows - 1) * dy + rPx * 2f)) / 2f + rPx
+            val dx = rPx * 1.88f
+            val dy = rPx * 1.65f
+            val totalGridWidth = (cols - 1) * dx + dx * 0.5f + rPx * 2f
+            val totalGridHeight = (rows - 1) * dy + rPx * 2f
+            val startX = (widthPx - totalGridWidth) / 2f + rPx
+            val startY = (heightPx - totalGridHeight) / 2f + rPx
 
             val hexCells = remember(widthPx, heightPx, rPx) {
                 buildList(rows * cols) {
@@ -390,8 +392,8 @@ fun TftHexBoard(
                             val path = Path().apply {
                                 for (i in 0 until 6) {
                                     val angle = Math.toRadians((60 * i - 30).toDouble())
-                                    val px = cx + rPx * 0.9f * cos(angle).toFloat()
-                                    val py = cy + rPx * 0.9f * sin(angle).toFloat()
+                                    val px = cx + rPx * 0.92f * cos(angle).toFloat()
+                                    val py = cy + rPx * 0.92f * sin(angle).toFloat()
                                     if (i == 0) moveTo(px, py) else lineTo(px, py)
                                 }
                                 close()
@@ -423,20 +425,20 @@ fun TftHexBoard(
                 }
             }
 
-            // Champion portrait icons directly on each occupied hex cell
-            val labelBoxSizePx = (rPx * 1.75f).roundToInt().coerceAtLeast(26)
+            // Champion portrait icons centered directly on each occupied hex cell
+            val avatarSizePx = (rPx * 1.48f).roundToInt().coerceIn(24, 68)
+            val avatarSizeDp = with(density) { avatarSizePx.toDp() }
             placements.forEach { unit ->
                 val rowOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
                 val cx = startX + unit.col * dx + rowOffset
                 val cy = startY + unit.row * dy
-                val leftPx = (cx - labelBoxSizePx / 2f).roundToInt()
-                val topPx = (cy - labelBoxSizePx / 2f).roundToInt()
-                val boxSizeDp = with(density) { labelBoxSizePx.toDp() }
+                val leftPx = (cx - avatarSizePx / 2f).roundToInt()
+                val topPx = (cy - avatarSizePx / 2f).roundToInt()
 
                 Box(
                     modifier = Modifier
                         .offset { IntOffset(leftPx, topPx) }
-                        .size(boxSizeDp),
+                        .size(avatarSizeDp),
                     contentAlignment = Alignment.Center
                 ) {
                     TftChampionAvatar(
@@ -444,8 +446,9 @@ fun TftHexBoard(
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = (boxSizeDp - 4.dp).coerceIn(20.dp, 30.dp),
-                        environment = environment
+                        size = avatarSizeDp,
+                        environment = environment,
+                        exactSize = true
                     )
                 }
             }

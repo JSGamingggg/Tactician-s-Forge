@@ -155,6 +155,7 @@ import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftItemIcon
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
+import com.example.ui.components.sanitizeExternalSourceMentions
 import com.example.ui.screens.groupCompsByTier
 import com.example.ui.theme.ArcaneCyan
 import com.example.ui.theme.BrightGold
@@ -2496,9 +2497,12 @@ private fun OverlayCompSideBuildDetails(
             }
         }
     }
-    if (comp.levelingGuide.isNotBlank()) {
+    val cleanLeveling = remember(comp.levelingGuide) {
+        sanitizeExternalSourceMentions(comp.levelingGuide)
+    }
+    if (cleanLeveling.isNotBlank()) {
         Text(
-            text = comp.levelingGuide,
+            text = cleanLeveling,
             fontSize = 10.sp,
             color = Color(0xFFB7C4D8)
         )
@@ -2709,9 +2713,12 @@ private fun OverlayCompCard(
                                     }
                                 }
                             }
-                            if (comp.levelingGuide.isNotBlank()) {
+                            val cleanLeveling = remember(comp.levelingGuide) {
+                                sanitizeExternalSourceMentions(comp.levelingGuide)
+                            }
+                            if (cleanLeveling.isNotBlank()) {
                                 Text(
-                                    text = comp.levelingGuide,
+                                    text = cleanLeveling,
                                     fontSize = 10.sp,
                                     color = Color(0xFFB7C4D8)
                                 )
@@ -2781,10 +2788,13 @@ private fun OverlayCompCard(
                             }
                         }
                     }
-                    if (comp.levelingGuide.isNotBlank()) {
+                    val cleanLeveling = remember(comp.levelingGuide) {
+                        sanitizeExternalSourceMentions(comp.levelingGuide)
+                    }
+                    if (cleanLeveling.isNotBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = comp.levelingGuide,
+                            text = cleanLeveling,
                             fontSize = 10.sp,
                             color = Color(0xFFB7C4D8)
                         )
@@ -2875,17 +2885,21 @@ private fun MiniOverlayHexGrid(
             val rows = 4
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
-            val radius = (widthPx / (cols * 1.85f)).coerceAtMost(heightPx / (rows * 2.05f))
-            val dx = radius * 1.82f
-            val dy = radius * 1.75f
+            val radius = (widthPx / (cols * 2.05f)).coerceAtMost(heightPx / (rows * 2.05f))
+            val dx = radius * 1.86f
+            val dy = radius * 1.65f
+            val totalGridWidth = (cols - 1) * dx + dx * 0.5f + radius * 2f
+            val totalGridHeight = (rows - 1) * dy + radius * 2f
+            val startX = (widthPx - totalGridWidth) / 2f + radius
+            val startY = (heightPx - totalGridHeight) / 2f + radius
             val occupied = placements.associateBy { it.row to it.col }
 
             Canvas(modifier = Modifier.matchParentSize()) {
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {
                         val xOffset = if (r % 2 == 1) dx * 0.5f else 0f
-                        val cx = radius * 1.15f + c * dx + xOffset
-                        val cy = radius * 1.05f + r * dy
+                        val cx = startX + c * dx + xOffset
+                        val cy = startY + r * dy
                         val unit = occupied[r to c]
                         val path = Path().apply {
                             for (i in 0 until 6) {
@@ -2913,31 +2927,28 @@ private fun MiniOverlayHexGrid(
                 }
             }
 
-            val boxPx = (radius * 1.6f).roundToInt().coerceAtLeast(20)
-            val boxDp = with(density) { boxPx.toDp() }
+            val avatarSizePx = (radius * 1.48f).roundToInt().coerceIn(20, 56)
+            val avatarSizeDp = with(density) { avatarSizePx.toDp() }
             placements.forEach { unit ->
                 val xOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
-                val cx = radius * 1.15f + unit.col * dx + xOffset
-                val cy = radius * 1.05f + unit.row * dy
+                val cx = startX + unit.col * dx + xOffset
+                val cy = startY + unit.row * dy
+                val leftPx = (cx - avatarSizePx / 2f).roundToInt()
+                val topPx = (cy - avatarSizePx / 2f).roundToInt()
                 Box(
                     modifier = Modifier
-                        .offset {
-                            IntOffset(
-                                (cx - (boxDp + 20.dp).toPx() / 2f).roundToInt(),
-                                (cy - boxPx / 2f).roundToInt()
-                            )
-                        }
-                        .width(boxDp + 20.dp)
-                        .height(boxDp + 22.dp),
-                    contentAlignment = Alignment.TopCenter
+                        .offset { IntOffset(leftPx, topPx) }
+                        .size(avatarSizeDp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    TftChampionTile(
+                    TftChampionAvatar(
                         name = unit.unitName,
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = boxDp.coerceIn(16.dp, 30.dp),
-                        environment = environment
+                        size = avatarSizeDp,
+                        environment = environment,
+                        exactSize = true
                     )
                 }
             }

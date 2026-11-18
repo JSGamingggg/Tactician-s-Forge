@@ -78,6 +78,7 @@ import com.example.ui.components.TftAugmentIcon
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemIcon
 import com.example.ui.components.environmentSlideTransitionSpec
+import com.example.ui.components.sanitizeExternalSourceMentions
 import com.example.update.AppUpdateUiState
 import com.example.update.GitHubReleaseInfo
 import com.google.firebase.auth.FirebaseUser
@@ -144,7 +145,7 @@ fun PatchAlertsScreen(
                     Text(
                         text = liveVersionInfo?.let {
                             "LIVE ${it.livePatchVersion} • PBE ${it.pbePatchVersion}"
-                        } ?: "Checking https://tftips.app/en/patches...",
+                        } ?: "Checking latest LIVE & PBE patches...",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.secondary
                     )
@@ -647,12 +648,6 @@ fun PatchAlertsScreen(
                         color = MaterialTheme.colorScheme.secondary,
                         textAlign = TextAlign.Center
                     )
-                    Text(
-                        text = "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftactics.gg",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
                 }
             }
         }
@@ -687,7 +682,15 @@ private fun PatchUpdateCard(
     patch: PatchUpdateRecord,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
+    val cleanReleaseDate = remember(patch.releaseDate) {
+        sanitizeExternalSourceMentions(patch.releaseDate).ifBlank { patch.releaseDate }
+    }
+    val cleanHeadline = remember(patch.headline, patch.version) {
+        sanitizeExternalSourceMentions(patch.headline).ifBlank { "Patch ${patch.version} balance updates." }
+    }
+    val cleanHighlights = remember(patch.highlights) {
+        patch.highlights.map { sanitizeExternalSourceMentions(it) }.filter { it.isNotBlank() }
+    }
     HextechPanelCard(modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -707,44 +710,11 @@ private fun PatchUpdateCard(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = patch.releaseDate,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Surface(
-                        onClick = {
-                            runCatching {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(patch.sourceUrl)))
-                            }
-                        },
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "tftips.app",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                contentDescription = "Open patch notes on tftips.app/en/patches",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(11.dp)
-                            )
-                        }
-                    }
-                }
+                Text(
+                    text = cleanReleaseDate,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Text(
@@ -753,12 +723,12 @@ private fun PatchUpdateCard(
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = patch.headline,
+                text = cleanHeadline,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            patch.highlights.forEach { hl ->
+            cleanHighlights.forEach { hl ->
                 Text(
                     text = "• $hl",
                     style = MaterialTheme.typography.bodySmall,

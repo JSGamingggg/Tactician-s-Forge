@@ -30,7 +30,7 @@ data class OfflineMetaBundle(
     val liveVersionInfo: LiveVersionInfo = LiveVersionInfo(
         livePatchVersion = "18.7",
         pbePatchVersion = "19.1-PBE",
-        source = "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftactics.gg",
+        source = "Tactician's Forge Live Meta Sync",
         checkedAtMillis = System.currentTimeMillis()
     ),
     val liveComps: List<MetaComp> = MetaCatalogData.liveComps,
@@ -91,7 +91,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 14
+        const val CURRENT_CACHE_VERSION = 15
     }
 }
 

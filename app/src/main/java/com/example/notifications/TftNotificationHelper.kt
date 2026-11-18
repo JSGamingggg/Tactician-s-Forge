@@ -42,9 +42,11 @@ object TftNotificationHelper {
         val trendingChannel = NotificationChannel(
             CHANNEL_TRENDING_COMPS,
             context.getString(R.string.channel_trending_comps_name),
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = context.getString(R.string.channel_trending_comps_desc)
+            enableLights(true)
+            enableVibration(true)
         }
 
         val overlayChannel = NotificationChannel(
@@ -147,10 +149,10 @@ object TftNotificationHelper {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_TRENDING_COMPS)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("${environment.label} Trending S-Tier: $compTitle")
+            .setContentTitle("${environment.label} New Comp: $compTitle")
             .setContentText(summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
@@ -191,7 +193,7 @@ object TftNotificationHelper {
             .setContentTitle(title)
             .setContentText(shortBody)
             .setStyle(NotificationCompat.BigTextStyle().bigText(expandedBody))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()

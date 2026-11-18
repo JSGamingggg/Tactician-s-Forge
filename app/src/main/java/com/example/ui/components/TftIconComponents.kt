@@ -182,6 +182,26 @@ fun formatRiotAssetLabel(rawId: String): String {
     return formatted
 }
 
+private val EXTERNAL_SOURCE_SENTENCE_REGEX = Regex(
+    """(?i)(?:\s*•\s*)?(?:sourced|synced|tracked(?:\s+live)?)\s+(?:live\s+)?(?:from|on|via)\s+(?:https?://)?(?:tftacademy\.com|tftactics\.gg|tftips\.app)[^\n•.]*\.?"""
+)
+private val EXTERNAL_SOURCE_BRAND_REGEX = Regex(
+    """(?i)\b(?:TFTAcademy|TFTactics|TFTips|tftacademy\.com(?:/tierlist/comps)?|tftactics\.gg(?:/tierlist/team-comps/?)?|tftips\.app(?:/en/patches)?|Data\s*Dragon)\b\s*"""
+)
+
+fun sanitizeExternalSourceMentions(raw: String): String {
+    if (raw.isBlank()) return ""
+    val cleaned = raw
+        .replace(EXTERNAL_SOURCE_SENTENCE_REGEX, "")
+        .replace(EXTERNAL_SOURCE_BRAND_REGEX, "")
+        .replace(Regex("""\(\s*\)"""), "")
+        .replace(Regex("""\s*•\s*•\s*"""), " • ")
+        .trim()
+        .trim('•', ' ', '-')
+        .trim()
+    return cleaned
+}
+
 @Composable
 fun TftChampionAvatar(
     name: String,
@@ -190,6 +210,7 @@ fun TftChampionAvatar(
     stars: Int = 2,
     size: Dp = 36.dp,
     environment: TftEnvironment? = null,
+    exactSize: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -198,18 +219,22 @@ fun TftChampionAvatar(
     val iconUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
         TftAssetIconResolver.resolveChampionIconUrl(name, environment)
     }
-    val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(48) }
+    val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(64) }
     val color = championCostColor(cost)
     val borderColor = if (isCarry) MaterialTheme.colorScheme.primary else color
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(if (exactSize) (size * 0.28f).coerceIn(6.dp, 10.dp) else 8.dp)
+    val outerBoxSize = if (exactSize) size else (size + 4.dp)
 
-    Box(modifier = modifier.size(size + 4.dp)) {
+    Box(
+        modifier = modifier.size(outerBoxSize),
+        contentAlignment = Alignment.Center
+    ) {
         Box(
             modifier = Modifier
                 .size(size)
                 .align(Alignment.Center)
                 .clip(shape)
-                .background(color.copy(alpha = 0.20f))
+                .background(color.copy(alpha = 0.24f))
                 .border(
                     width = if (isCarry) 2.dp else 1.5.dp,
                     color = borderColor,
@@ -230,6 +255,7 @@ fun TftChampionAvatar(
                     model = request,
                     contentDescription = "$cleanName champion icon",
                     contentScale = ContentScale.Crop,
+                    alignment = Alignment.Center,
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(shape)
@@ -238,9 +264,10 @@ fun TftChampionAvatar(
         }
 
         if (isCarry) {
+            val badgeSize = (size * 0.38f).coerceIn(11.dp, 15.dp)
             Box(
                 modifier = Modifier
-                    .size((size * 0.42f).coerceIn(13.dp, 17.dp))
+                    .size(badgeSize)
                     .align(Alignment.TopEnd)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),
@@ -250,13 +277,14 @@ fun TftChampionAvatar(
                     imageVector = Icons.Default.WorkspacePremium,
                     contentDescription = "Main Carry",
                     tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size((size * 0.28f).coerceIn(9.dp, 12.dp))
+                    modifier = Modifier.size((badgeSize * 0.68f).coerceIn(7.dp, 11.dp))
                 )
             }
         } else if (stars >= 3) {
+            val badgeSize = (size * 0.36f).coerceIn(10.dp, 14.dp)
             Box(
                 modifier = Modifier
-                    .size((size * 0.38f).coerceIn(12.dp, 15.dp))
+                    .size(badgeSize)
                     .align(Alignment.TopEnd)
                     .clip(CircleShape)
                     .background(Color(0xFFF0B949)),
@@ -266,7 +294,7 @@ fun TftChampionAvatar(
                     imageVector = Icons.Default.Star,
                     contentDescription = "3-Star Unit",
                     tint = Color(0xFF0B0E14),
-                    modifier = Modifier.size((size * 0.26f).coerceIn(8.dp, 10.dp))
+                    modifier = Modifier.size((badgeSize * 0.68f).coerceIn(7.dp, 10.dp))
                 )
             }
         }

@@ -389,7 +389,7 @@ class MainViewModel(
                         _snackbarMessage.value = "Updated LIVE & PBE meta: ${updates.joinToString(", ")}"
                     } else if (!onlyNotifyOnChanges) {
                         _snackbarMessage.value = if (sync.syncedFromNetwork) {
-                            "Synced patches (tftips.app), LIVE (tftacademy.com), and PBE (tftactics.gg)."
+                            "Synced latest LIVE & PBE patches and compositions."
                         } else {
                             "Offline mode — using persistent device cache."
                         }

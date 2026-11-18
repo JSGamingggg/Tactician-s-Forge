@@ -27,12 +27,18 @@ class TftMessagingService : FirebaseMessagingService() {
         val env = TftEnvironment.fromRaw(data["environment"])
         val type = data["type"] ?: "patch_update"
         val title = data["title"] ?: message.notification?.title ?: "TFT Meta & Patch Update"
-        val body = data["body"] ?: message.notification?.body ?: "Tap to view the latest balance updates from tftips.app/en/patches."
-        val version = data["version"] ?: if (env == TftEnvironment.PBE) "18.7-PBE" else "18.6b"
+        val body = data["body"] ?: message.notification?.body ?: "Tap to view the latest balance and composition updates."
+        val version = data["version"] ?: if (env == TftEnvironment.PBE) "19.1-PBE" else "18.7"
 
         val metaRepo = MetaRepository(applicationContext)
 
         when (type) {
+            "app_update" -> {
+                PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
+                    context = applicationContext,
+                    triggerImmediateCheck = true
+                )
+            }
             "trending_comp", "new_comp" -> {
                 val carry = data["carry"] ?: "Flex Carry"
                 val units = data["units"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
@@ -112,10 +118,11 @@ class TftMessagingService : FirebaseMessagingService() {
             }
         }
 
-        // Trigger immediate sync from https://tftips.app/en/patches
         runCatching {
-            WorkManager.getInstance(applicationContext)
-                .enqueue(OneTimeWorkRequestBuilder<PatchMonitorWorker>().build())
+            PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
+                context = applicationContext,
+                triggerImmediateCheck = true
+            )
         }
     }
 

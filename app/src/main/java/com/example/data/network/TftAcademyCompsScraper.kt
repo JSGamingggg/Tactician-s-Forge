@@ -975,13 +975,13 @@ class TftAcademyCompsScraper(
                                     .ifBlank { node.optString("gameplan") }
                                     .ifBlank { node.optString("howToPlay") }
                                     .ifBlank { formatTipsArray(node.optJSONArray("tips")) }
-                            ).ifBlank { "TFTAcademy $playstyle • $resolvedSet ($patchTag)" }
+                            ).ifBlank { "$playstyle • $resolvedSet ($patchTag)" }
                             val compNotes = cleanText(
                                 node.optString("notes")
                                     .ifBlank { node.optString("summary") }
                                     .ifBlank { node.optString("description") }
                                     .ifBlank { node.optString("augmentsTip") }
-                            ).ifBlank { "Sourced from tftacademy.com/tierlist/comps ($resolvedSet)." }
+                            )
 
                             out.add(
                                 MetaComp(
@@ -994,7 +994,7 @@ class TftAcademyCompsScraper(
                                     top4Rate = top4,
                                     winRate = win,
                                     pickRate = pick,
-                                    trendDelta = "TFTAcademy ${targetEnv.label}",
+                                    trendDelta = "Top Meta",
                                     isTrending = tier == TierRank.S,
                                     patchTag = patchTag,
                                     carryName = carry,
@@ -1232,7 +1232,7 @@ class TftAcademyCompsScraper(
                         TierRank.X -> 10.5
                     },
                     pickRate = 7.0,
-                    trendDelta = "TFTAcademy ${targetEnv.label}",
+                    trendDelta = "Top Meta",
                     isTrending = tier == TierRank.S,
                     patchTag = patchTag,
                     carryName = carry,
@@ -1240,8 +1240,8 @@ class TftAcademyCompsScraper(
                     coreUnits = unitNames,
                     hexPlacements = placements,
                     augmentPriorities = emptyList(),
-                    levelingGuide = "TFTAcademy $playstyle • $cardSet ($patchTag)",
-                    notes = "Synced from tftacademy.com/tierlist/comps ($cardSet).",
+                    levelingGuide = "$playstyle • $cardSet ($patchTag)",
+                    notes = "",
                     setName = cardSet,
                     sourceUrl = TFTACADEMY_COMPS_URL
                 )

@@ -241,7 +241,7 @@ private fun AuthHeroBanner(bannerHeight: Dp) {
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Set 18 LIVE & PBE Meta • tftips.app/en/patches",
+                text = "Set 18 LIVE & Set 19 PBE Tactical Companion",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -261,7 +261,7 @@ private fun AuthFeaturesCard() {
                 icon = Icons.Default.AutoAwesome,
                 tint = MaterialTheme.colorScheme.primary,
                 title = "LIVE & PBE Meta Snapshots",
-                subtitle = "LIVE comps from tftacademy.com, PBE comps from tftactics.gg, 4×7 hex boards, BIS items, and patch alerts from tftips.app."
+                subtitle = "LIVE & PBE meta compositions, 4×7 hex boards, carry BIS items, and real-time patch alerts."
             )
             FeatureRow(
                 icon = Icons.Default.MilitaryTech,

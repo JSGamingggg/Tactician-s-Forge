@@ -1,12 +1,16 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -72,6 +76,7 @@ import com.example.data.model.ThemeMode
 import com.example.data.repository.FirestoreUserRepository
 import com.example.data.repository.LocalPreferencesStore
 import com.example.data.repository.MetaRepository
+import com.example.notifications.PatchMonitorWorker
 import com.example.notifications.TftNotificationHelper
 import com.example.overlay.OverlayController
 import com.example.ui.auth.GoogleAuthHelper
@@ -283,12 +288,36 @@ private fun AuthenticatedOrGuestWorkspace(
         )
     }
 
-    // Automatically check for newly released patches & team comps when returning to the app
+    var requestedNotifPermissionOnLaunch by rememberSaveable { mutableStateOf(false) }
+    val startupNotifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { _ ->
+            PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
+        }
+    )
+
+    LaunchedEffect(Unit) {
+        PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
+        if (!requestedNotifPermissionOnLaunch &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !TftNotificationHelper.hasNotificationPermission(context)
+        ) {
+            requestedNotifPermissionOnLaunch = true
+            runCatching {
+                startupNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    // Automatically check for newly released patches & team comps when returning to the app,
+    // and ensure background monitoring is scheduled whenever the app moves to the background.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, mainViewModel) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                mainViewModel.onAppResumed()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> mainViewModel.onAppResumed()
+                Lifecycle.Event.ON_STOP -> PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

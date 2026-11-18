@@ -44,13 +44,15 @@ object MetaUpdateNotifier {
 
         if (prefs.patchAlertsEnabled && shouldNotifyLive) {
             val latestLivePatch = bundle.livePatches.firstOrNull()
+            val cleanHeadline = latestLivePatch?.headline?.takeIf { it.isNotBlank() }
+                ?: "New LIVE patch ${versionInfo.livePatchVersion} balance updates are now available."
             val highlightsText = latestLivePatch?.highlights?.joinToString("\n• ", prefix = "• ").orEmpty()
             TftNotificationHelper.postPatchOrBalanceNotification(
                 context = context,
-                title = "TFT LIVE Patch ${versionInfo.livePatchVersion} Update",
-                shortBody = latestLivePatch?.headline ?: "New LIVE patch synced from tftips.app/en/patches.",
+                title = "TFT LIVE Patch ${versionInfo.livePatchVersion} Released",
+                shortBody = cleanHeadline,
                 expandedBody = buildString {
-                    append(latestLivePatch?.headline ?: "New LIVE patch detected on tftips.app/en/patches.")
+                    append(cleanHeadline)
                     if (highlightsText.isNotBlank()) {
                         append("\n")
                         append(highlightsText)
@@ -70,13 +72,15 @@ object MetaUpdateNotifier {
 
         if (prefs.pbeAlertsEnabled && shouldNotifyPbe) {
             val latestPbePatch = bundle.pbePatches.firstOrNull()
+            val cleanHeadline = latestPbePatch?.headline?.takeIf { it.isNotBlank() }
+                ?: "New PBE patch ${versionInfo.pbePatchVersion} balance updates are now available."
             val highlightsText = latestPbePatch?.highlights?.joinToString("\n• ", prefix = "• ").orEmpty()
             TftNotificationHelper.postPatchOrBalanceNotification(
                 context = context,
-                title = "TFT PBE Patch ${versionInfo.pbePatchVersion} Update",
-                shortBody = latestPbePatch?.headline ?: "New PBE update synced from tftips.app/en/patches.",
+                title = "TFT PBE Patch ${versionInfo.pbePatchVersion} Released",
+                shortBody = cleanHeadline,
                 expandedBody = buildString {
-                    append(latestPbePatch?.headline ?: "New PBE build detected on tftips.app/en/patches.")
+                    append(cleanHeadline)
                     if (highlightsText.isNotBlank()) {
                         append("\n")
                         append(highlightsText)
@@ -125,8 +129,25 @@ object MetaUpdateNotifier {
                 }
                 TftNotificationHelper.postNewCompsBatchNotification(
                     context = context,
-                    title = "${prioritized.size} New TFT Comps Synced",
-                    shortBody = "${lead.title} (${lead.tier.label}-Tier) & ${prioritized.size - 1} more from tftacademy.com",
+                    title = "${prioritized.size} New TFT Compositions Released",
+                    shortBody = "${lead.title} (${lead.tier.label}-Tier) & ${prioritized.size - 1} more compositions added",
+                    expandedBody = summaryLines,
+                    environment = lead.environment
+                )
+            }
+        } else if ((prefs.trendingAlertsEnabled || prefs.balanceAlertsEnabled) && syncResult.compsUpdatedDetected) {
+            val topSComps = allComps
+                .sortedWith(compareBy<MetaComp> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+                .take(3)
+            if (topSComps.isNotEmpty()) {
+                val lead = topSComps.first()
+                val summaryLines = topSComps.joinToString("\n") { comp ->
+                    "• [${comp.environment.label} ${comp.tier.label}] ${comp.title} (Carry: ${comp.carryName})"
+                }
+                TftNotificationHelper.postNewCompsBatchNotification(
+                    context = context,
+                    title = "TFT Meta Compositions Updated",
+                    shortBody = "Tier list & builds updated — Lead: ${lead.title} (${lead.tier.label}-Tier)",
                     expandedBody = summaryLines,
                     environment = lead.environment
                 )

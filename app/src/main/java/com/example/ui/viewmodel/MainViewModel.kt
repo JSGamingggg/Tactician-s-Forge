@@ -256,7 +256,7 @@ class MainViewModel(
             } else if (!outcome.updateAvailable && userInitiated) {
                 val repo = AppUpdateCoordinator.uiState.value.configuredRepo
                 if (repo != null && AppUpdateCoordinator.uiState.value.status !is com.example.update.AppUpdateStatus.Error) {
-                    _snackbarMessage.value = "Tactician's Forge is up to date with github.com/$repo."
+                    _snackbarMessage.value = "HexTome is up to date with github.com/$repo."
                 }
             }
         }

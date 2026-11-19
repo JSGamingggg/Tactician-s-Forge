@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "TacticiansForge"
+rootProject.name = "HexTome"
 
 include(":app")

@@ -204,7 +204,7 @@ private fun AuthHeroBanner(bannerHeight: Dp) {
     ) {
         Image(
             painter = painterResource(id = R.drawable.img_hextech_banner),
-            contentDescription = "Tactician's Forge Hextech Arena",
+            contentDescription = "HexTome Hextech Arena",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
@@ -227,8 +227,8 @@ private fun AuthHeroBanner(bannerHeight: Dp) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Image(
-                painter = painterResource(id = R.drawable.ic_forge_emblem),
-                contentDescription = "Tactician's Forge Emblem",
+                painter = painterResource(id = R.drawable.ic_hextome_emblem),
+                contentDescription = "HexTome Emblem",
                 modifier = Modifier
                     .size(56.dp)
                     .clip(CircleShape)

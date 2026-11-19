@@ -323,7 +323,7 @@ object GitHubReleaseParser {
             GitHubReleaseInfo(
                 releaseId = syntheticId,
                 tagName = tagName,
-                releaseTitle = "Tactician's Forge ${parsedVersionName?.let { "v$it" } ?: tagName}",
+                releaseTitle = "HexTome ${parsedVersionName?.let { "v$it" } ?: tagName}",
                 body = buildString {
                     parsedVersionName?.let { appendLine("Version: $it") }
                     parsedVersionCode?.let { appendLine("BuildCode: $it") }

@@ -34,6 +34,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,6 +48,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -98,6 +100,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -1202,16 +1206,23 @@ private fun OverlayFloatingBauble(
                 .testTag("overlay_bubble_button")
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = if (isDrawerOpen) Icons.Default.CloseFullscreen else Icons.Default.AutoAwesome,
-                    contentDescription = if (isDrawerOpen) {
-                        "Close Live Match Overlay Drawer"
-                    } else {
-                        "Open Live Match Overlay Drawer"
-                    },
-                    tint = if (isDrawerOpen) ArcaneCyan else BrightGold,
-                    modifier = Modifier.size(24.dp)
-                )
+                if (isDrawerOpen) {
+                    Icon(
+                        imageVector = Icons.Default.CloseFullscreen,
+                        contentDescription = "Close HexTome Live Match Overlay",
+                        tint = ArcaneCyan,
+                        modifier = Modifier.size(24.dp)
+                    )
+                } else {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_hextome_emblem),
+                        contentDescription = "Open HexTome Live Match Overlay",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                    )
+                }
                 if (badgeCount > 0 && !isDrawerOpen) {
                     Box(
                         modifier = Modifier

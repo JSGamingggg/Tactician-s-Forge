@@ -65,11 +65,52 @@ object MetaCatalogSyncHelper {
         )
     }
 
+    fun refreshPbeCatalog(
+        existingChampions: List<ChampionTierEntry>,
+        existingItems: List<ItemTierEntry>,
+        existingAugments: List<AugmentTierEntry>,
+        pbeComps: List<MetaComp>,
+        academyTiers: TftAcademyCatalogTiers?
+    ): LiveCatalogRefreshResult {
+        if (pbeComps.isEmpty() && academyTiers == null) {
+            return LiveCatalogRefreshResult(existingChampions, existingItems, existingAugments)
+        }
+        val updatedChampions = refreshLiveChampions(
+            existing = existingChampions,
+            liveComps = pbeComps,
+            liveSetNumber = 19,
+            ddragonChampJson = null,
+            targetEnv = TftEnvironment.PBE
+        )
+        val updatedItems = refreshLiveItems(
+            existing = existingItems,
+            liveComps = pbeComps,
+            liveSetNumber = 19,
+            ddragonItemJson = null,
+            academyTiers = academyTiers,
+            targetEnv = TftEnvironment.PBE
+        )
+        val updatedAugments = refreshLiveAugments(
+            existing = existingAugments,
+            liveComps = pbeComps,
+            liveSetNumber = 19,
+            ddragonAugmentJson = null,
+            academyTiers = academyTiers,
+            targetEnv = TftEnvironment.PBE
+        )
+        return LiveCatalogRefreshResult(
+            champions = updatedChampions,
+            items = updatedItems,
+            augments = updatedAugments
+        )
+    }
+
     private fun refreshLiveChampions(
         existing: List<ChampionTierEntry>,
         liveComps: List<MetaComp>,
         liveSetNumber: Int,
-        ddragonChampJson: String?
+        ddragonChampJson: String?,
+        targetEnv: TftEnvironment = TftEnvironment.LIVE
     ): List<ChampionTierEntry> {
         val compsByUnit = LinkedHashMap<String, MutableList<MetaComp>>()
         val itemFreqByUnit = LinkedHashMap<String, MutableMap<String, Int>>()
@@ -178,7 +219,8 @@ object MetaCatalogSyncHelper {
         liveComps: List<MetaComp>,
         liveSetNumber: Int,
         ddragonItemJson: String?,
-        academyTiers: TftAcademyCatalogTiers?
+        academyTiers: TftAcademyCatalogTiers?,
+        targetEnv: TftEnvironment = TftEnvironment.LIVE
     ): List<ItemTierEntry> {
         val holdersByItem = LinkedHashMap<String, MutableList<String>>()
         liveComps.forEach { comp ->
@@ -255,7 +297,9 @@ object MetaCatalogSyncHelper {
             }
         }
 
-        // Guarantee any item listed in live TFTAcademy item tierlist is represented
+        // Guarantee any item listed in TFTAcademy item tierlist is represented
+        val itemPrefix = if (targetEnv == TftEnvironment.PBE) "pbe_item" else "live_item"
+        val envDesc = if (targetEnv == TftEnvironment.PBE) "PBE item" else "live item"
         academyTiers?.itemTiersByKey?.forEach { (rawOrNorm, rank) ->
             val label = formatRiotAssetLabel(rawOrNorm)
             val norm = normKey(label)
@@ -263,13 +307,13 @@ object MetaCatalogSyncHelper {
             if (rawOrNorm == norm) return@forEach // skip duplicate normalized keys; only iterate raw IDs
             val avg = tierToAvg(rank)
             byNormName[norm] = ItemTierEntry(
-                id = "live_item_$norm",
+                id = "${itemPrefix}_$norm",
                 name = label,
                 tier = rank,
-                environment = TftEnvironment.LIVE,
+                environment = targetEnv,
                 category = classifyItemCategory(label),
                 components = emptyList(),
-                statsSummary = "$label — Set $liveSetNumber live item.",
+                statsSummary = "$label — Set $liveSetNumber $envDesc.",
                 avgPlacement = avg,
                 top4Rate = avgToTop4(avg),
                 bestHolders = holdersByItem[norm]?.distinct()?.take(4).orEmpty()
@@ -288,7 +332,8 @@ object MetaCatalogSyncHelper {
         liveComps: List<MetaComp>,
         liveSetNumber: Int,
         ddragonAugmentJson: String?,
-        academyTiers: TftAcademyCatalogTiers?
+        academyTiers: TftAcademyCatalogTiers?,
+        targetEnv: TftEnvironment = TftEnvironment.LIVE
     ): List<AugmentTierEntry> {
         val compsByAugment = LinkedHashMap<String, MutableList<String>>()
         liveComps.forEach { comp ->
@@ -365,7 +410,9 @@ object MetaCatalogSyncHelper {
             }
         }
 
-        // Guarantee any augment in live TFTAcademy augment tierlist is represented
+        // Guarantee any augment in TFTAcademy augment tierlist is represented
+        val augPrefix = if (targetEnv == TftEnvironment.PBE) "pbe_aug" else "live_aug"
+        val envAugDesc = if (targetEnv == TftEnvironment.PBE) "PBE augment" else "live augment"
         academyTiers?.augmentTiersByKey?.forEach { (rawOrNorm, rank) ->
             val label = formatRiotAssetLabel(rawOrNorm)
             val norm = normKey(label)
@@ -374,11 +421,11 @@ object MetaCatalogSyncHelper {
             val avg = tierToAvg(rank)
             val augTier = academyTiers.augmentRanksByKey[rawOrNorm] ?: AugmentTier.GOLD
             byNormName[norm] = AugmentTierEntry(
-                id = "live_aug_$norm",
+                id = "${augPrefix}_$norm",
                 name = label,
                 tier = rank,
                 augmentTier = augTier,
-                environment = TftEnvironment.LIVE,
+                environment = targetEnv,
                 category = if (label.contains("Emblem", true) || label.contains("Crest", true) || label.contains("Crown", true)) {
                     "Trait / Emblem"
                 } else {
@@ -386,7 +433,7 @@ object MetaCatalogSyncHelper {
                 },
                 avgPlacement = avg,
                 top4Rate = avgToTop4(avg),
-                description = "$label — Set $liveSetNumber live augment.",
+                description = "$label — Set $liveSetNumber $envAugDesc.",
                 synergyComps = compsByAugment[norm]?.distinct()?.take(3).orEmpty()
             )
         }
@@ -398,25 +445,36 @@ object MetaCatalogSyncHelper {
         )
     }
 
-    private fun classifyItemCategory(name: String): ItemCategory {
+    fun classifyItemCategory(name: String, desc: String = ""): ItemCategory {
         val n = name.lowercase(Locale.US)
+        val d = desc.lowercase(Locale.US)
         return when {
             n.contains("guinsoo") || n.contains("nashor") || n.contains("red buff") ||
                 n.contains("kraken") || n.contains("statikk") || n.contains("recurve") ||
-                n.contains("flicker") || n.contains("rapid firecannon") -> ItemCategory.ATTACK_SPEED
+                n.contains("flicker") || n.contains("rapid firecannon") || n.contains("wit's end") -> ItemCategory.ATTACK_SPEED
             n.contains("warmog") || n.contains("gargoyle") || n.contains("bramble") ||
                 n.contains("dragon's claw") || n.contains("sunfire") || n.contains("spirit visage") ||
                 n.contains("steadfast") || n.contains("protector's vow") || n.contains("evenshroud") ||
                 n.contains("adaptive helm") || n.contains("quicksilver") || n.contains("vest") ||
-                n.contains("cloak") || n.contains("belt") -> ItemCategory.TANK
+                n.contains("cloak") || n.contains("belt") || n.contains("hullcrusher") ||
+                n.contains("mogul") || n.contains("lightshield") || n.contains("eternal pact") -> ItemCategory.TANK
             n.contains("blue buff") || n.contains("shojin") || n.contains("jeweled") ||
                 n.contains("rabadon") || n.contains("archangel") || n.contains("morello") ||
                 n.contains("ionic") || n.contains("crownguard") || n.contains("hextech") ||
                 n.contains("void staff") || n.contains("rod") || n.contains("tear") ||
+                n.contains("zhonya") || n.contains("lich bane") || n.contains("blighting") ||
                 n.contains("dawncore") || n.contains("luden") -> ItemCategory.AP
             n.contains("infinity edge") || n.contains("last whisper") || n.contains("giant slayer") ||
                 n.contains("deathblade") || n.contains("striker") || n.contains("guardbreaker") ||
-                n.contains("runaan") || n.contains("b.f. sword") || n.contains("collector") -> ItemCategory.AD
+                n.contains("runaan") || n.contains("b.f. sword") || n.contains("collector") ||
+                n.contains("prowler") || n.contains("fishbones") -> ItemCategory.AD
+            n.contains("bloodthirster") || n.contains("titan") || n.contains("sterak") ||
+                n.contains("hand of justice") || n.contains("edge of night") ||
+                n.contains("death's defiance") || n.contains("tactician") -> ItemCategory.FIGHTER
+            d.contains("ability power") || d.contains("mana") -> ItemCategory.AP
+            d.contains("attack speed") -> ItemCategory.ATTACK_SPEED
+            d.contains("armor") || d.contains("magic resist") || d.contains("health") -> ItemCategory.TANK
+            d.contains("attack damage") || d.contains("crit") -> ItemCategory.AD
             else -> ItemCategory.FIGHTER
         }
     }

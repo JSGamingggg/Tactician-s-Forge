@@ -13,7 +13,6 @@ import com.example.data.model.PatchUpdateRecord
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.data.network.TftAcademyCompsScraper
-import com.example.data.network.TftacticsCompsScraper
 import com.example.ui.components.TftAssetIconResolver
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -91,7 +90,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 15
+        const val CURRENT_CACHE_VERSION = 16
     }
 }
 
@@ -105,6 +104,18 @@ class OfflineMetaCacheStore(context: Context) {
         val items: List<ItemTierEntry>,
         val augments: List<AugmentTierEntry>,
         val ddragonVersion: String
+    )
+
+    private data class PreloadedSet19PbeCatalogData(
+        val detectedPbeSet: String,
+        val champions: List<ChampionTierEntry>,
+        val items: List<ItemTierEntry>,
+        val augments: List<AugmentTierEntry>,
+        val championIcons: Map<String, String>,
+        val traitIcons: Map<String, String>,
+        val itemIcons: Map<String, String>,
+        val championCosts: Map<String, Int>,
+        val championTraits: Map<String, List<String>>
     )
 
     fun peekInMemoryOrSeed(): OfflineMetaBundle = sharedBundlesByPath[cacheKey] ?: OfflineMetaBundle()
@@ -173,9 +184,7 @@ class OfflineMetaCacheStore(context: Context) {
                         loadPreloadedTftAcademyComps(parsed.liveVersionInfo.livePatchVersion)
                     }
                     val cleanPbe = parsed.pbeComps.filter { pbe ->
-                        pbe.sourceUrl.contains("tftactics.gg", ignoreCase = true) || pbe.id.startsWith("custom_")
-                    }.ifEmpty {
-                        loadPreloadedTftacticsPbeData(parsed.liveVersionInfo.pbePatchVersion)?.pbeComps.orEmpty()
+                        pbe.sourceUrl.contains("tftacademy.com", ignoreCase = true) || pbe.id.startsWith("custom_")
                     }
                     val cleanLivePatches = parsed.livePatches.filter {
                         it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true)
@@ -217,15 +226,15 @@ class OfflineMetaCacheStore(context: Context) {
         val baseSeed = OfflineMetaBundle()
         val preloadedCatalog = loadPreloadedSet18CatalogData()
         val preloadedLive = loadPreloadedTftAcademyComps(baseSeed.liveVersionInfo.livePatchVersion)
-        val preloadedPbeData = loadPreloadedTftacticsPbeData(baseSeed.liveVersionInfo.pbePatchVersion)
-        val preloadedPbeComps = preloadedPbeData?.pbeComps.orEmpty()
-        val preloadedPbeChamps = preloadedPbeData?.pbeChampionTiers.orEmpty()
-        val preloadedPbeItems = preloadedPbeData?.pbeItemTiers.orEmpty()
-        val preloadedPbeAugments = preloadedPbeData?.pbeAugmentTiers.orEmpty()
+        val preloadedPbeCatalog = loadPreloadedSet19PbeCatalogData()
+        val preloadedPbeComps = emptyList<MetaComp>()
+        val preloadedPbeChamps = preloadedPbeCatalog?.champions.orEmpty()
+        val preloadedPbeItems = preloadedPbeCatalog?.items.orEmpty()
+        val preloadedPbeAugments = preloadedPbeCatalog?.augments.orEmpty()
 
         val seeded = baseSeed.copy(
             liveVersionInfo = baseSeed.liveVersionInfo.copy(
-                pbeSetName = preloadedPbeData?.detectedPbeSet ?: baseSeed.liveVersionInfo.pbeSetName
+                pbeSetName = preloadedPbeCatalog?.detectedPbeSet ?: baseSeed.liveVersionInfo.pbeSetName
             ),
             ddragonVersion = preloadedCatalog?.ddragonVersion ?: baseSeed.ddragonVersion,
             liveComps = preloadedLive.ifEmpty { baseSeed.liveComps },
@@ -240,11 +249,11 @@ class OfflineMetaCacheStore(context: Context) {
             pbeItems = preloadedPbeItems.ifEmpty { baseSeed.pbeItems },
             liveAugments = preloadedCatalog?.augments?.takeIf { it.isNotEmpty() } ?: baseSeed.liveAugments,
             pbeAugments = preloadedPbeAugments.ifEmpty { baseSeed.pbeAugments },
-            pbeChampionIcons = preloadedPbeData?.pbeChampionIcons.orEmpty(),
-            pbeTraitIcons = preloadedPbeData?.pbeTraitIcons.orEmpty(),
-            pbeItemIcons = preloadedPbeData?.pbeItemIcons.orEmpty(),
-            pbeChampionCosts = preloadedPbeData?.pbeChampionCosts.orEmpty(),
-            pbeChampionTraits = preloadedPbeData?.pbeChampionTraits.orEmpty()
+            pbeChampionIcons = preloadedPbeCatalog?.championIcons.orEmpty(),
+            pbeTraitIcons = preloadedPbeCatalog?.traitIcons.orEmpty(),
+            pbeItemIcons = preloadedPbeCatalog?.itemIcons.orEmpty(),
+            pbeChampionCosts = preloadedPbeCatalog?.championCosts.orEmpty(),
+            pbeChampionTraits = preloadedPbeCatalog?.championTraits.orEmpty()
         )
         writeBundle(seeded)
         if (!skipResolverSync) {
@@ -284,17 +293,13 @@ class OfflineMetaCacheStore(context: Context) {
             }
         }
         if (!TftAssetIconResolver.isPbeCatalogApplied()) {
-            runCatching {
-                val rawPbeJson = appContext.assets.open(PBE_PRELOAD_ASSET_FILE)
-                    .bufferedReader(Charsets.UTF_8)
-                    .use { it.readText() }
-                val parsedPbe = TftacticsCompsScraper().parsePreloadJson(rawPbeJson, "19.1-PBE")
+            loadPreloadedSet19PbeCatalogData()?.let { parsedPbe ->
                 TftAssetIconResolver.updatePbeSetCatalog(
-                    championIcons = parsedPbe.pbeChampionIcons,
-                    championCosts = parsedPbe.pbeChampionCosts,
-                    championTraits = parsedPbe.pbeChampionTraits,
-                    traitIcons = parsedPbe.pbeTraitIcons,
-                    itemIcons = parsedPbe.pbeItemIcons
+                    championIcons = parsedPbe.championIcons,
+                    championCosts = parsedPbe.championCosts,
+                    championTraits = parsedPbe.championTraits,
+                    traitIcons = parsedPbe.traitIcons,
+                    itemIcons = parsedPbe.itemIcons
                 )
             }
         }
@@ -404,22 +409,251 @@ class OfflineMetaCacheStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
-    private fun loadPreloadedTftacticsPbeData(
-        pbePatchVersion: String
-    ): com.example.data.network.TftacticsPbeFetchResult? {
+    private fun loadPreloadedSet19PbeCatalogData(): PreloadedSet19PbeCatalogData? {
         return runCatching {
             val rawJson = appContext.assets.open(PBE_PRELOAD_ASSET_FILE).bufferedReader(Charsets.UTF_8).use {
                 it.readText()
             }
-            val parsed = TftacticsCompsScraper().parsePreloadJson(rawJson, pbePatchVersion)
-            TftAssetIconResolver.updatePbeSetCatalog(
-                championIcons = parsed.pbeChampionIcons,
-                championCosts = parsed.pbeChampionCosts,
-                championTraits = parsed.pbeChampionTraits,
-                traitIcons = parsed.pbeTraitIcons,
-                itemIcons = parsed.pbeItemIcons
+            val root = JSONObject(rawJson)
+            val setNum = root.optInt("pbeSetNumber", 19)
+            val setLabel = root.optString("pbeSetLabel").ifBlank { "Set $setNum (PBE)" }
+
+            fun readStringMap(obj: JSONObject?): Map<String, String> {
+                if (obj == null) return emptyMap()
+                val out = LinkedHashMap<String, String>(obj.length())
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = obj.optString(k)
+                    if (v.isNotBlank()) out[k] = v
+                }
+                return out
+            }
+
+            fun extractStringValues(raw: Any?): List<String> = when (raw) {
+                is org.json.JSONArray -> (0 until raw.length()).mapNotNull { i ->
+                    raw.optString(i).trim().takeIf { it.isNotBlank() }
+                }
+                is String -> listOfNotNull(raw.trim().takeIf { it.isNotBlank() })
+                else -> emptyList()
+            }
+
+            val champIcons = readStringMap(root.optJSONObject("championIcons"))
+            val traitIcons = readStringMap(root.optJSONObject("traitIcons"))
+            val itemIcons = readStringMap(root.optJSONObject("itemIcons"))
+            val champCosts = LinkedHashMap<String, Int>().apply {
+                root.optJSONObject("championCosts")?.let { obj ->
+                    val keys = obj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        val c = obj.optInt(k, 0)
+                        if (c in 1..9) put(k, c)
+                    }
+                }
+            }
+            val champTraits = LinkedHashMap<String, List<String>>().apply {
+                root.optJSONObject("championTraits")?.let { obj ->
+                    val keys = obj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        val list = extractStringValues(obj.optJSONArray(k))
+                        if (list.isNotEmpty()) put(k, list)
+                    }
+                }
+            }
+
+            val detailsObj = root.optJSONObject("championDetails")
+            val champEntries = LinkedHashSet<String>().apply {
+                addAll(champCosts.keys)
+                addAll(champIcons.keys)
+            }.mapNotNull { name ->
+                val cleanName = name.trim()
+                if (cleanName.isBlank()) return@mapNotNull null
+                val cost = (champCosts[cleanName] ?: 3).coerceIn(1, 5)
+                val traits = champTraits[cleanName].orEmpty()
+                val detail = detailsObj?.optJSONObject(cleanName)
+                val tierNum = detail?.optInt("tier", 3) ?: 3
+                val bestItems = extractStringValues(detail?.opt("items")).take(3)
+                val abilityName = detail?.optString("abilityName").orEmpty().trim()
+                val abilityDesc = detail?.optString("abilityDescription").orEmpty().trim()
+                val tier = when {
+                    tierNum <= 1 -> TierRank.S
+                    tierNum == 2 || cost >= 5 -> TierRank.A
+                    cost == 4 -> TierRank.B
+                    else -> TierRank.C
+                }
+                val avg = when {
+                    cost >= 5 -> 3.95
+                    cost == 4 -> 4.18
+                    else -> 4.42
+                }
+                val top4 = kotlin.math.round((100.0 - (avg - 1.5) * 18.0).coerceIn(44.0, 74.0) * 10.0) / 10.0
+                val slug = cleanName.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+                ChampionTierEntry(
+                    id = "pbe_champ_$slug",
+                    name = cleanName,
+                    cost = cost,
+                    tier = tier,
+                    environment = TftEnvironment.PBE,
+                    traits = traits,
+                    role = when {
+                        cost >= 5 -> "5-Cost Flex"
+                        traits.isNotEmpty() -> "${traits.first()} Unit"
+                        else -> "Synergy Unit"
+                    },
+                    avgPlacement = avg,
+                    top4Rate = top4,
+                    bestItems = bestItems,
+                    synergyComps = emptyList(),
+                    abilityName = abilityName,
+                    abilityDescription = abilityDesc
+                )
+            }.sortedWith(
+                compareBy<ChampionTierEntry> { it.tier.sortOrder }
+                    .thenBy { it.avgPlacement }
+                    .thenByDescending { it.cost }
+                    .thenBy { it.name }
             )
-            parsed
+
+            val itemEntries = mutableListOf<ItemTierEntry>()
+            val seenItemNames = LinkedHashSet<String>()
+            val itemsArr = root.optJSONArray("items")
+            if (itemsArr != null) {
+                for (i in 0 until itemsArr.length()) {
+                    val obj = itemsArr.optJSONObject(i) ?: continue
+                    val setArr = obj.optJSONArray("set")
+                    if (setArr != null && setArr.length() > 0) {
+                        var hasSet = false
+                        for (sIdx in 0 until setArr.length()) {
+                            if (setArr.optInt(sIdx, -1) == setNum) {
+                                hasSet = true
+                                break
+                            }
+                        }
+                        if (!hasSet) continue
+                    }
+                    val name = obj.optString("name").trim()
+                    if (name.isBlank() || !seenItemNames.add(name.lowercase(Locale.US))) continue
+                    val combine = extractStringValues(obj.opt("combine"))
+                    val bonusLines = extractStringValues(obj.opt("bonus"))
+                    val statsArr = obj.optJSONArray("stats")
+                    val statTokens = if (statsArr != null) {
+                        (0 until statsArr.length()).mapNotNull { sIdx ->
+                            val st = statsArr.optJSONObject(sIdx) ?: return@mapNotNull null
+                            val sName = st.optString("name").trim().uppercase(Locale.US)
+                            val sVal = st.optString("value").trim()
+                            if (sName.isNotBlank() && sVal.isNotBlank()) "+$sVal $sName" else null
+                        }
+                    } else emptyList()
+                    val statsSummary = buildList {
+                        if (statTokens.isNotEmpty()) add(statTokens.joinToString(", "))
+                        bonusLines.forEach { add(it) }
+                    }.joinToString(" • ").ifBlank { "$name — Set $setNum PBE item." }
+                    val tierNum = obj.optInt("tier", 3)
+                    val tier = when {
+                        tierNum <= 1 -> TierRank.S
+                        tierNum == 2 -> TierRank.A
+                        tierNum == 3 -> TierRank.B
+                        else -> TierRank.C
+                    }
+                    val avg = when (tier) {
+                        TierRank.S -> 3.52
+                        TierRank.A -> 3.84
+                        TierRank.B -> 4.18
+                        TierRank.C -> 4.46
+                        TierRank.X -> 4.30
+                    }
+                    val top4 = kotlin.math.round((100.0 - (avg - 1.5) * 18.0) * 10.0) / 10.0
+                    val slug = name.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+                    val cat = MetaCatalogSyncHelper.classifyItemCategory(name, statsSummary)
+                    itemEntries.add(
+                        ItemTierEntry(
+                            id = "pbe_item_$slug",
+                            name = name,
+                            tier = tier,
+                            environment = TftEnvironment.PBE,
+                            category = cat,
+                            components = combine,
+                            statsSummary = statsSummary,
+                            avgPlacement = avg,
+                            top4Rate = top4,
+                            bestHolders = emptyList()
+                        )
+                    )
+                }
+            }
+
+            val augEntries = mutableListOf<AugmentTierEntry>()
+            val seenAugNames = LinkedHashSet<String>()
+            val augsArr = root.optJSONArray("augments")
+            if (augsArr != null) {
+                for (i in 0 until augsArr.length()) {
+                    val obj = augsArr.optJSONObject(i) ?: continue
+                    val name = obj.optString("name").trim()
+                    if (name.isBlank() || !seenAugNames.add(name.lowercase(Locale.US))) continue
+                    val augTier = AugmentTier.fromRaw(obj.optString("tier"))
+                    val desc = obj.optString("bonus").trim().ifBlank { "$name — PBE augment." }
+                    val tierListNum = obj.optInt("tierlist", 3)
+                    val tier = when {
+                        tierListNum <= 1 -> TierRank.S
+                        tierListNum == 2 -> TierRank.A
+                        tierListNum == 3 -> TierRank.B
+                        else -> TierRank.C
+                    }
+                    val avg = when (tier) {
+                        TierRank.S -> 3.48
+                        TierRank.A -> 3.84
+                        TierRank.B -> 4.18
+                        TierRank.C -> 4.48
+                        TierRank.X -> 4.32
+                    }
+                    val top4 = kotlin.math.round((100.0 - (avg - 1.5) * 18.0) * 10.0) / 10.0
+                    val cat = when {
+                        name.contains("Crown", true) || name.contains("Crest", true) || name.contains("Emblem", true) ||
+                            desc.contains("Emblem", true) -> "Trait / Emblem"
+                        desc.contains("gold", true) || desc.contains("XP", false) || desc.contains("reroll", true) -> "Economy / XP"
+                        else -> "Combat / Items"
+                    }
+                    val slug = (obj.optString("id").ifBlank { name })
+                        .lowercase(Locale.US)
+                        .replace(Regex("[^a-z0-9]+"), "_")
+                        .trim('_')
+                    augEntries.add(
+                        AugmentTierEntry(
+                            id = "pbe_aug_$slug",
+                            name = name,
+                            tier = tier,
+                            augmentTier = augTier,
+                            environment = TftEnvironment.PBE,
+                            category = cat,
+                            avgPlacement = avg,
+                            top4Rate = top4,
+                            description = desc,
+                            synergyComps = emptyList()
+                        )
+                    )
+                }
+            }
+
+            TftAssetIconResolver.updatePbeSetCatalog(
+                championIcons = champIcons,
+                championCosts = champCosts,
+                championTraits = champTraits,
+                traitIcons = traitIcons,
+                itemIcons = itemIcons
+            )
+
+            PreloadedSet19PbeCatalogData(
+                detectedPbeSet = setLabel,
+                champions = champEntries,
+                items = itemEntries.sortedWith(compareBy<ItemTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement }.thenBy { it.name }),
+                augments = augEntries.sortedWith(compareBy<AugmentTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement }.thenBy { it.name }),
+                championIcons = champIcons,
+                traitIcons = traitIcons,
+                itemIcons = itemIcons,
+                championCosts = champCosts,
+                championTraits = champTraits
+            )
         }.getOrNull()
     }
 
@@ -428,7 +662,7 @@ class OfflineMetaCacheStore(context: Context) {
             it.sourceUrl.contains("tftacademy.com", ignoreCase = true) || it.id.startsWith("custom_")
         }
         val cleanPbe = bundle.pbeComps.filter {
-            it.sourceUrl.contains("tftactics.gg", ignoreCase = true) || it.id.startsWith("custom_")
+            it.sourceUrl.contains("tftacademy.com", ignoreCase = true) || it.id.startsWith("custom_")
         }
         val normalized = bundle.copy(
             cacheVersion = OfflineMetaBundle.CURRENT_CACHE_VERSION,
@@ -478,7 +712,7 @@ class OfflineMetaCacheStore(context: Context) {
         }
         private const val CACHE_FILE_NAME = "tft_offline_meta_cache_v2.json"
         private const val PRELOAD_ASSET_FILE = "tftacademy_preload.json"
-        private const val PBE_PRELOAD_ASSET_FILE = "tftactics_pbe_preload.json"
+        private const val PBE_PRELOAD_ASSET_FILE = "set19_pbe_catalog_preload.json"
         private const val CATALOG_PRELOAD_ASSET_FILE = "set18_catalog_preload.json"
     }
 }

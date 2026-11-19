@@ -12,7 +12,6 @@ import com.example.data.model.TftEnvironment
 import com.example.data.network.DDragonApi
 import com.example.data.network.RiotApiClientFactory
 import com.example.data.network.TftAcademyCompsScraper
-import com.example.data.network.TftacticsCompsScraper
 import com.example.data.network.TftipsPatchScraper
 import com.example.ui.components.TftAssetIconResolver
 import okhttp3.OkHttpClient
@@ -39,7 +38,6 @@ class MetaRepository(
     private val cacheStore: OfflineMetaCacheStore,
     private val tftipsScraper: TftipsPatchScraper = TftipsPatchScraper(),
     private val tftAcademyScraper: TftAcademyCompsScraper = TftAcademyCompsScraper(),
-    private val tftacticsScraper: TftacticsCompsScraper = TftacticsCompsScraper(),
     private val ddragonApi: DDragonApi = RiotApiClientFactory.ddragonApi,
     private val publicClient: OkHttpClient = RiotApiClientFactory.publicOkHttp
 ) {
@@ -84,9 +82,9 @@ class MetaRepository(
         }
 
     /**
-     * Fetches LIVE & PBE patch updates from https://tftips.app/en/patches and
-     * ALL team compositions exclusively from https://tftacademy.com/tierlist/comps
-     * (enforcing matching Set alignment and mirroring additions/edits/removals cleanly),
+     * Fetches LIVE & PBE patch updates from https://tftips.app/en/patches,
+     * LIVE team compositions from https://tftacademy.com/tierlist/comps, and
+     * PBE Set 19 team compositions exclusively from https://tftacademy.com/tierlist/comps/set19,
      * then persists updates offline.
      */
     suspend fun refreshAndPersistMeta(): MetaSyncResult = withContext(Dispatchers.IO) {
@@ -121,12 +119,22 @@ class MetaRepository(
                     tftAcademyScraper.fetchLiveItemsAndAugmentsTierlist(setNumber = liveSetHint)
                 }.getOrNull()
             }
-            val tftacticsDeferred = async {
+            val pbeSetHint = Regex("""Set\s*(\d+)""", RegexOption.IGNORE_CASE)
+                .find(currentBundle.liveVersionInfo.pbeSetName)
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?.coerceAtLeast(19)
+                ?: 19
+            val tftAcademyPbeDeferred = async {
                 runCatching {
-                    tftacticsScraper.fetchPbeTeamComps(
+                    tftAcademyScraper.fetchPbeTeamComps(
                         pbePatchVersion = pbeVersion,
-                        liveSetNumber = liveSetHint
+                        defaultPbeSetNumber = pbeSetHint
                     )
+                }.getOrNull()
+            }
+            val tftAcademyPbeCatalogDeferred = async {
+                runCatching {
+                    tftAcademyScraper.fetchLiveItemsAndAugmentsTierlist(setNumber = pbeSetHint)
                 }.getOrNull()
             }
 
@@ -206,38 +214,25 @@ class MetaRepository(
 
             val tftAcademyResult = tftAcademyDeferred.await()
             val tftAcademyCatalog = tftAcademyCatalogDeferred.await()
-            val tftacticsResult = tftacticsDeferred.await()
+            val tftAcademyPbeResult = tftAcademyPbeDeferred.await()
+            val tftAcademyPbeCatalog = tftAcademyPbeCatalogDeferred.await()
             if (tftAcademyResult?.fetchedFromNetwork == true ||
                 tftAcademyCatalog?.fetchedFromNetwork == true ||
-                tftacticsResult?.fetchedFromNetwork == true
+                tftAcademyPbeResult?.fetchedFromNetwork == true ||
+                tftAcademyPbeCatalog?.fetchedFromNetwork == true
             ) {
                 syncedFromNetwork = true
-            }
-            if (tftacticsResult != null &&
-                (tftacticsResult.pbeChampionIcons.isNotEmpty() ||
-                    tftacticsResult.pbeTraitIcons.isNotEmpty() ||
-                    tftacticsResult.pbeItemIcons.isNotEmpty())
-            ) {
-                withContext(Dispatchers.Main.immediate) {
-                    TftAssetIconResolver.updatePbeSetCatalog(
-                        championIcons = tftacticsResult.pbeChampionIcons,
-                        championCosts = tftacticsResult.pbeChampionCosts,
-                        championTraits = tftacticsResult.pbeChampionTraits,
-                        traitIcons = tftacticsResult.pbeTraitIcons,
-                        itemIcons = tftacticsResult.pbeItemIcons
-                    )
-                }
             }
 
             val liveSetName = tftAcademyResult?.detectedLiveSet
                 ?: currentBundle.liveVersionInfo.liveSetName
-            val pbeSetName = tftacticsResult?.detectedPbeSet
+            val pbeSetName = tftAcademyPbeResult?.detectedPbeSet
                 ?: currentBundle.liveVersionInfo.pbeSetName
 
             val sourceLabel = if (syncedFromNetwork) {
-                "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftactics.gg"
+                "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftacademy.com/tierlist/comps/set19"
             } else {
-                "Offline Cache (tftips.app, tftacademy.com & tftactics.gg)"
+                "Offline Cache (tftips.app & tftacademy.com)"
             }
 
             val now = System.currentTimeMillis()
@@ -251,15 +246,15 @@ class MetaRepository(
             )
 
             val incomingLiveComps = tftAcademyResult?.liveComps.orEmpty()
-            val incomingPbeComps = tftacticsResult?.pbeComps.orEmpty()
+            val incomingPbeComps = tftAcademyPbeResult?.pbeComps.orEmpty()
 
-            // Mirror TFTAcademy (LIVE) and TFTactics (PBE) authoritatively whenever network comps arrive
+            // Mirror TFTAcademy (LIVE & PBE Set 19) authoritatively whenever network comps arrive
             val resolvedLiveComps = if (tftAcademyResult?.fetchedFromNetwork == true && incomingLiveComps.isNotEmpty()) {
                 incomingLiveComps
             } else {
                 currentBundle.liveComps
             }
-            val resolvedPbeComps = if (tftacticsResult?.fetchedFromNetwork == true && incomingPbeComps.isNotEmpty()) {
+            val resolvedPbeComps = if (tftAcademyPbeResult?.fetchedFromNetwork == true && incomingPbeComps.isNotEmpty()) {
                 incomingPbeComps
             } else {
                 currentBundle.pbeComps
@@ -279,37 +274,25 @@ class MetaRepository(
             } else {
                 null
             }
-            val resolvedPbeChampions = if (tftacticsResult?.fetchedFromNetwork == true &&
-                tftacticsResult.pbeChampionTiers.isNotEmpty()
-            ) {
-                tftacticsResult.pbeChampionTiers
+            val resolvedPbeCatalog = if (syncedFromNetwork) {
+                MetaCatalogSyncHelper.refreshPbeCatalog(
+                    existingChampions = currentBundle.pbeChampions,
+                    existingItems = currentBundle.pbeItems,
+                    existingAugments = currentBundle.pbeAugments,
+                    pbeComps = resolvedPbeComps,
+                    academyTiers = tftAcademyPbeCatalog
+                )
             } else {
-                currentBundle.pbeChampions
+                null
             }
-            val resolvedPbeItems = if (tftacticsResult?.fetchedFromNetwork == true &&
-                tftacticsResult.pbeItemTiers.isNotEmpty()
-            ) {
-                tftacticsResult.pbeItemTiers
-            } else {
-                currentBundle.pbeItems
-            }
-            val resolvedPbeAugments = if (tftacticsResult?.fetchedFromNetwork == true &&
-                tftacticsResult.pbeAugmentTiers.isNotEmpty()
-            ) {
-                tftacticsResult.pbeAugmentTiers
-            } else {
-                currentBundle.pbeAugments
-            }
-            val resolvedPbeChampIcons = tftacticsResult?.pbeChampionIcons?.takeIf { it.isNotEmpty() }
-                ?: currentBundle.pbeChampionIcons
-            val resolvedPbeTraitIcons = tftacticsResult?.pbeTraitIcons?.takeIf { it.isNotEmpty() }
-                ?: currentBundle.pbeTraitIcons
-            val resolvedPbeItemIcons = tftacticsResult?.pbeItemIcons?.takeIf { it.isNotEmpty() }
-                ?: currentBundle.pbeItemIcons
-            val resolvedPbeChampCosts = tftacticsResult?.pbeChampionCosts?.takeIf { it.isNotEmpty() }
-                ?: currentBundle.pbeChampionCosts
-            val resolvedPbeChampTraits = tftacticsResult?.pbeChampionTraits?.takeIf { it.isNotEmpty() }
-                ?: currentBundle.pbeChampionTraits
+            val resolvedPbeChampions = resolvedPbeCatalog?.champions ?: currentBundle.pbeChampions
+            val resolvedPbeItems = resolvedPbeCatalog?.items ?: currentBundle.pbeItems
+            val resolvedPbeAugments = resolvedPbeCatalog?.augments ?: currentBundle.pbeAugments
+            val resolvedPbeChampIcons = currentBundle.pbeChampionIcons
+            val resolvedPbeTraitIcons = currentBundle.pbeTraitIcons
+            val resolvedPbeItemIcons = currentBundle.pbeItemIcons
+            val resolvedPbeChampCosts = currentBundle.pbeChampionCosts
+            val resolvedPbeChampTraits = currentBundle.pbeChampionTraits
 
             val newSignature = TftAcademyCompsScraper.computeCompsSignature(resolvedLiveComps, resolvedPbeComps)
             val compsUpdated = newSignature != currentBundle.compsSignature &&
@@ -430,7 +413,7 @@ class MetaRepository(
             liveVersionInfo = current.liveVersionInfo.copy(
                 livePatchVersion = liveVer,
                 pbePatchVersion = pbeVer,
-                source = "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftactics.gg",
+                source = "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftacademy.com/tierlist/comps/set19",
                 checkedAtMillis = now
             ),
             liveComps = updatedLiveComps,

@@ -197,7 +197,7 @@ private val EXTERNAL_SOURCE_SENTENCE_REGEX = Regex(
     """(?i)(?:\s*•\s*)?(?:sourced|synced|tracked(?:\s+live)?)\s+(?:live\s+)?(?:from|on|via)\s+(?:https?://)?(?:tftacademy\.com|tftactics\.gg|tftips\.app)[^\n•.]*\.?"""
 )
 private val EXTERNAL_SOURCE_BRAND_REGEX = Regex(
-    """(?i)\b(?:TFTAcademy|TFTactics|TFTips|tftacademy\.com(?:/tierlist/comps)?|tftactics\.gg(?:/tierlist/team-comps/?)?|tftips\.app(?:/en/patches)?|Data\s*Dragon)\b\s*"""
+    """(?i)\b(?:TFTAcademy|TFTactics|TFTips|tftacademy\.com(?:/tierlist/comps(?:/set\d+)?)?|tftactics\.gg(?:/tierlist/team-comps/?)?|tftips\.app(?:/en/patches)?|Data\s*Dragon)\b\s*"""
 )
 
 fun sanitizeExternalSourceMentions(raw: String): String {
@@ -447,62 +447,84 @@ private fun traitVisual(traitName: String): Pair<ImageVector, Color> {
     }
 }
 
+fun traitAccentColor(traitName: String): Color = traitVisual(traitName).second
+
+@Composable
+fun TftTraitIcon(
+    traitName: String,
+    environment: TftEnvironment? = null,
+    size: Dp = 16.dp,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val rev = TftAssetIconResolver.catalogRevision
+    val cleanName = remember(traitName, rev) { formatRiotAssetLabel(traitName) }
+    val (fallbackIcon, tint) = remember(cleanName) { traitVisual(cleanName) }
+    val iconUrl = remember(cleanName, environment, TftAssetIconResolver.ddragonVersion, rev) {
+        TftAssetIconResolver.resolveTraitIconUrl(cleanName, environment)
+    }
+    val targetPx = with(LocalDensity.current) { (size + 4.dp).roundToPx().coerceAtLeast(20) }
+
+    Box(
+        modifier = modifier.size(size),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = fallbackIcon,
+            contentDescription = "$cleanName trait icon",
+            tint = tint,
+            modifier = Modifier.size((size * 0.875f).coerceAtLeast(12.dp))
+        )
+        if (iconUrl != null) {
+            val request = remember(iconUrl, targetPx, context) {
+                ImageRequest.Builder(context)
+                    .data(iconUrl)
+                    .size(targetPx)
+                    .crossfade(false)
+                    .build()
+            }
+            AsyncImage(
+                model = request,
+                contentDescription = "$cleanName trait icon",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
+
 @Composable
 fun TftTraitChip(
     traitLabel: String,
     environment: TftEnvironment? = null,
+    selected: Boolean = false,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
     val rev = TftAssetIconResolver.catalogRevision
     val (count, name) = remember(traitLabel, rev) {
         val formatted = formatRiotAssetLabel(traitLabel)
         val countMatch = REGEX_TRAIT_COUNT.find(formatted)
         countMatch?.groupValues?.getOrNull(1) to (countMatch?.groupValues?.getOrNull(2) ?: formatted)
     }
-    val (fallbackIcon, tint) = remember(name) { traitVisual(name) }
-    val iconUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
-        TftAssetIconResolver.resolveTraitIconUrl(name, environment)
-    }
-    val targetPx = with(LocalDensity.current) { 20.dp.roundToPx() }
+    val tint = remember(name) { traitAccentColor(name) }
+    val containerColor = if (selected) tint.copy(alpha = 0.28f) else tint.copy(alpha = 0.14f)
+    val borderStroke = BorderStroke(
+        width = if (selected) 1.5.dp else 1.dp,
+        color = if (selected) tint else tint.copy(alpha = 0.45f)
+    )
 
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = tint.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.45f)),
-        modifier = modifier
-    ) {
+    val chipContent: @Composable () -> Unit = {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Box(
-                modifier = Modifier.size(16.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = fallbackIcon,
-                    contentDescription = "$name trait icon",
-                    tint = tint,
-                    modifier = Modifier.size(14.dp)
-                )
-                if (iconUrl != null) {
-                    val request = remember(iconUrl, targetPx, context) {
-                        ImageRequest.Builder(context)
-                            .data(iconUrl)
-                            .size(targetPx)
-                            .crossfade(false)
-                            .build()
-                    }
-                    AsyncImage(
-                        model = request,
-                        contentDescription = "$name trait icon",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
+            TftTraitIcon(
+                traitName = name,
+                environment = environment,
+                size = 16.dp
+            )
             if (!count.isNullOrBlank()) {
                 Text(
                     text = count,
@@ -515,9 +537,31 @@ fun TftTraitChip(
                 text = name,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+    }
+
+    if (onClick != null) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(8.dp),
+            color = containerColor,
+            border = borderStroke,
+            modifier = modifier
+        ) {
+            chipContent()
+        }
+    } else {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = containerColor,
+            border = borderStroke,
+            modifier = modifier
+        ) {
+            chipContent()
         }
     }
 }
@@ -543,7 +587,7 @@ fun inferItemCategory(itemName: String): ItemCategory {
     }
 }
 
-private fun itemCategoryColor(category: ItemCategory): Color = when (category) {
+fun itemCategoryColor(category: ItemCategory): Color = when (category) {
     ItemCategory.AP -> Color(0xFF0AC8B9)
     ItemCategory.AD -> Color(0xFFEF4444)
     ItemCategory.TANK -> Color(0xFF2ECC71)
@@ -633,19 +677,21 @@ fun TftItemChip(
     categoryOverride: ItemCategory? = null,
     compact: Boolean = false,
     environment: TftEnvironment? = null,
+    selected: Boolean = false,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val rev = TftAssetIconResolver.catalogRevision
     val cleanName = remember(itemName, rev) { formatRiotAssetLabel(itemName) }
     val category = remember(cleanName, categoryOverride) { categoryOverride ?: inferItemCategory(cleanName) }
     val tint = itemCategoryColor(category)
+    val containerColor = if (selected) tint.copy(alpha = 0.28f) else tint.copy(alpha = 0.14f)
+    val borderStroke = BorderStroke(
+        width = if (selected) 1.5.dp else 1.dp,
+        color = if (selected) tint else tint.copy(alpha = 0.45f)
+    )
 
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = tint.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.45f)),
-        modifier = modifier
-    ) {
+    val chipContent: @Composable () -> Unit = {
         Row(
             modifier = Modifier.padding(
                 horizontal = if (compact) 6.dp else 8.dp,
@@ -664,10 +710,31 @@ fun TftItemChip(
                 text = cleanName,
                 style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Medium,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+    }
+
+    if (onClick != null) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(8.dp),
+            color = containerColor,
+            border = borderStroke,
+            modifier = modifier
+        ) {
+            chipContent()
+        }
+    } else {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = containerColor,
+            border = borderStroke,
+            modifier = modifier
+        ) {
+            chipContent()
         }
     }
 }
@@ -684,13 +751,15 @@ fun inferAugmentTier(name: String): AugmentTier {
     }
 }
 
+fun augmentTierColor(tier: AugmentTier): Color = when (tier) {
+    AugmentTier.PRISMATIC -> Color(0xFFC084FC)
+    AugmentTier.GOLD -> Color(0xFFF0B949)
+    AugmentTier.SILVER -> Color(0xFF94A3B8)
+}
+
 private fun augmentVisual(name: String, tier: AugmentTier): Pair<ImageVector, Color> {
     val n = name.lowercase()
-    val color = when (tier) {
-        AugmentTier.PRISMATIC -> Color(0xFFC084FC)
-        AugmentTier.GOLD -> Color(0xFFF0B949)
-        AugmentTier.SILVER -> Color(0xFF94A3B8)
-    }
+    val color = augmentTierColor(tier)
     val icon = when {
         n.contains("crest") || n.contains("crown") || n.contains("emblem") || n.contains("soul") -> Icons.Default.WorkspacePremium
         n.contains("level") || n.contains("fund") || n.contains("budget") || n.contains("ticket") || n.contains("study") || n.contains("cart") -> Icons.Default.AccountBalance

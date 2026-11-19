@@ -388,7 +388,7 @@ object TftAssetIconResolver {
         val cleanName = formatRiotAssetLabel(raw)
         val cleanNorm = normalizeLookupKey(cleanName)
 
-        // 0. For PBE comps/champions, prefer verified TFTactics Set 19 portraits first
+        // 0. For PBE comps/champions, prefer verified Set 19 portraits first
         if (environment == TftEnvironment.PBE) {
             val pbeUrl = pbeChampionImages[norm] ?: pbeChampionImages[cleanNorm]
             if (!pbeUrl.isNullOrBlank()) {

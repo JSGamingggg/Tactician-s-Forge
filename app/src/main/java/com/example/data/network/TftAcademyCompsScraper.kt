@@ -32,11 +32,12 @@ data class TftAcademyCatalogTiers(
 )
 
 /**
- * Fetches ALL team compositions for LIVE and PBE from
- * https://tftacademy.com/tierlist/comps (including Next.js App Router RSC
- * `__next_f` payloads, `__NEXT_DATA__`, `_next/data` JSON routes, API/CDN JSON endpoints,
- * JS bundles, and full-document DOM cards/links), using no-cache headers so updates
- * appear immediately whenever anything changes on TFTAcademy.
+ * Fetches ALL team compositions for LIVE (https://tftacademy.com/tierlist/comps)
+ * and PBE (https://tftacademy.com/tierlist/comps/set19), including SvelteKit
+ * `data-sveltekit-fetched` envelopes, Next.js App Router RSC `__next_f` payloads,
+ * `__NEXT_DATA__`, `_next/data` JSON routes, API/CDN JSON endpoints, JS bundles,
+ * and full-document DOM cards/links, using no-cache headers so updates appear
+ * immediately whenever anything changes on TFTAcademy.
  */
 class TftAcademyCompsScraper(
     private val client: OkHttpClient = RiotApiClientFactory.publicOkHttp
@@ -54,9 +55,9 @@ class TftAcademyCompsScraper(
                 fetchedFromNetwork = false
             )
 
-        // Check if TFTAcademy exposes a dedicated PBE query/path link on /tierlist/comps
-        val pbeUrl = findPbeCompsUrl(baseHtml)
-        val pbeHtml = if (pbeUrl != null && pbeUrl != TFTACADEMY_COMPS_URL) {
+        // Fetch PBE Set 19 comps from https://tftacademy.com/tierlist/comps/set19
+        val pbeUrl = findPbeCompsUrl(baseHtml) ?: TFTACADEMY_PBE_COMPS_URL
+        val pbeHtml = if (pbeUrl != TFTACADEMY_COMPS_URL) {
             fetchUrl(pbeUrl)
         } else {
             null
@@ -92,9 +93,9 @@ class TftAcademyCompsScraper(
         val rawPbeSetNumber = pbeParsed.detectedSetNumber
         val candidatePbeSetNumber = rawPbeSetNumber?.takeIf { liveSetNumber == null || it > liveSetNumber }
             ?: inferSetNumberFromPatch(pbePatchVersion)?.takeIf { liveSetNumber == null || it > liveSetNumber }
+            ?: 19
 
-        // Probe TFTAcademy's PBE set API directly ONLY when a strictly newer PBE set exists (e.g. Set 19 vs Set 18)
-        val probedPbeComps = if (pbeParsed.comps.isEmpty() && pbeHtml == null && candidatePbeSetNumber != null) {
+        val probedPbeComps = if (pbeParsed.comps.isEmpty()) {
             fetchApiSetComps(
                 setNumber = candidatePbeSetNumber,
                 targetEnvironment = TftEnvironment.PBE,
@@ -105,7 +106,8 @@ class TftAcademyCompsScraper(
             emptyList()
         }
 
-        val pbeSetNumber = rawPbeSetNumber ?: candidatePbeSetNumber
+        val pbeSetNumber = rawPbeSetNumber?.takeIf { liveSetNumber == null || it > liveSetNumber }
+            ?: candidatePbeSetNumber
 
         val enforcedLiveComps = enforceSetAlignment(
             comps = liveParsed.comps,
@@ -114,24 +116,19 @@ class TftAcademyCompsScraper(
             patchTag = livePatchVersion
         )
         val candidatePbeComps = if (probedPbeComps.isNotEmpty()) probedPbeComps else pbeParsed.comps
-        val enforcedPbeComps = if (pbeHtml == null && liveSetNumber != null && pbeSetNumber == liveSetNumber && probedPbeComps.isEmpty()) {
-            // Avoid counting the exact same LIVE Set 18 comps twice as PBE
-            emptyList()
-        } else {
-            enforceSetAlignment(
-                comps = candidatePbeComps,
-                expectedSetNumber = pbeSetNumber,
-                targetEnv = TftEnvironment.PBE,
-                patchTag = patchPatchSafe(pbePatchVersion)
-            )
-        }
+        val enforcedPbeComps = enforceSetAlignment(
+            comps = candidatePbeComps,
+            expectedSetNumber = pbeSetNumber,
+            targetEnv = TftEnvironment.PBE,
+            patchTag = patchPatchSafe(pbePatchVersion)
+        )
 
         return TftAcademyCompsFetchResult(
             liveComps = enforcedLiveComps,
             pbeComps = enforcedPbeComps,
             detectedLiveSet = liveParsed.detectedSetLabel ?: liveSetNumber?.let { "Set $it" },
             detectedPbeSet = if (enforcedPbeComps.isNotEmpty()) {
-                pbeParsed.detectedSetLabel ?: pbeSetNumber?.let { "Set $it (PBE)" }
+                pbeParsed.detectedSetLabel ?: "Set $pbeSetNumber (PBE)"
             } else {
                 null
             },
@@ -172,6 +169,64 @@ class TftAcademyCompsScraper(
             pbeComps = emptyList(),
             detectedLiveSet = liveParsed.detectedSetLabel ?: liveSetNumber?.let { "Set $it" },
             detectedPbeSet = null,
+            fetchedFromNetwork = true
+        )
+    }
+
+    /**
+     * Fetches PBE team compositions exclusively from https://tftacademy.com/tierlist/comps/set19.
+     */
+    fun fetchPbeTeamComps(
+        pbePatchVersion: String,
+        defaultPbeSetNumber: Int = 19
+    ): TftAcademyCompsFetchResult {
+        val pbeHtml = fetchUrl(TFTACADEMY_PBE_COMPS_URL)
+            ?: return TftAcademyCompsFetchResult(
+                liveComps = emptyList(),
+                pbeComps = emptyList(),
+                detectedLiveSet = null,
+                detectedPbeSet = null,
+                fetchedFromNetwork = false
+            )
+
+        val pbeParsed = parseCompsDocument(
+            html = pbeHtml,
+            targetEnvironment = TftEnvironment.PBE,
+            patchTag = pbePatchVersion,
+            isDedicatedEnvPage = true,
+            includeRemoteBundles = true
+        )
+        val pbeSetNumber = pbeParsed.detectedSetNumber?.takeIf { it >= defaultPbeSetNumber }
+            ?: inferSetNumberFromPatch(pbePatchVersion)?.takeIf { it >= defaultPbeSetNumber }
+            ?: defaultPbeSetNumber
+
+        val apiFallbackComps = if (pbeParsed.comps.isEmpty()) {
+            fetchApiSetComps(
+                setNumber = pbeSetNumber,
+                targetEnvironment = TftEnvironment.PBE,
+                patchTag = pbePatchVersion,
+                defaultSetLabel = pbeParsed.detectedSetLabel ?: "Set $pbeSetNumber (PBE)"
+            )
+        } else {
+            emptyList()
+        }
+
+        val enforcedPbeComps = enforceSetAlignment(
+            comps = pbeParsed.comps.ifEmpty { apiFallbackComps },
+            expectedSetNumber = pbeSetNumber,
+            targetEnv = TftEnvironment.PBE,
+            patchTag = patchPatchSafe(pbePatchVersion)
+        )
+
+        val detectedLabel = pbeParsed.detectedSetLabel?.let { lbl ->
+            if (lbl.contains("PBE", ignoreCase = true)) lbl else "$lbl (PBE)"
+        } ?: "Set $pbeSetNumber (PBE)"
+
+        return TftAcademyCompsFetchResult(
+            liveComps = emptyList(),
+            pbeComps = enforcedPbeComps,
+            detectedLiveSet = null,
+            detectedPbeSet = detectedLabel,
             fetchedFromNetwork = true
         )
     }
@@ -365,6 +420,7 @@ class TftAcademyCompsScraper(
         targetEnv: TftEnvironment,
         patchTag: String
     ): List<MetaComp> {
+        val envSourceUrl = compUrlForEnvironment(targetEnv)
         return comps
             .filter { comp ->
                 if (comp.environment != targetEnv) return@filter false
@@ -382,12 +438,19 @@ class TftAcademyCompsScraper(
                     environment = targetEnv,
                     patchTag = patchTag,
                     setName = resolvedSetName,
-                    sourceUrl = TFTACADEMY_COMPS_URL
+                    sourceUrl = envSourceUrl
                 )
             }
     }
 
     internal fun detectSetForEnvironment(html: String, env: TftEnvironment): Pair<Int, String>? {
+        fun cleanSetSubtitle(raw: String): String {
+            return raw
+                .replace(Regex("""\s+(?:Tier\s*List|Team\s*Comps|Comps|Guides?|TFTAcademy|PBE)\b.*$""", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("""\s*[-|•].*$"""), "")
+                .trim()
+        }
+
         val envPattern = if (env == TftEnvironment.PBE) {
             Regex(
                 """(?:PBE[^<\n]{0,40}Set\s*(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]+))?|Set\s*(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]+))?[^<\n]{0,30}PBE)""",
@@ -403,8 +466,8 @@ class TftAcademyCompsScraper(
         val envMatch = envPattern.find(html)
         if (envMatch != null) {
             val num = (envMatch.groupValues[1].ifBlank { envMatch.groupValues[3] }).toIntOrNull()
-            val subtitle = (envMatch.groupValues[2].ifBlank { envMatch.groupValues[4] }).trim()
-            if (num != null) {
+            val subtitle = cleanSetSubtitle(envMatch.groupValues[2].ifBlank { envMatch.groupValues[4] })
+            if (num != null && (env != TftEnvironment.PBE || num >= 19)) {
                 val label = if (subtitle.isNotBlank()) "Set $num: $subtitle" else "Set $num"
                 return num to (if (env == TftEnvironment.PBE && !label.contains("PBE", true)) "$label (PBE)" else label)
             }
@@ -414,10 +477,21 @@ class TftAcademyCompsScraper(
         if (genericMatches.isNotEmpty()) {
             val match = if (env == TftEnvironment.PBE) {
                 genericMatches.firstOrNull { m ->
-                    val windowStart = (m.range.first - 40).coerceAtLeast(0)
+                    val windowStart = (m.range.first - 48).coerceAtLeast(0)
                     val windowEnd = (m.range.last + 40).coerceAtMost(html.length)
-                    html.substring(windowStart, windowEnd).contains("pbe", ignoreCase = true)
-                } ?: genericMatches.first()
+                    val window = html.substring(windowStart, windowEnd)
+                    val nearPbe = window.contains("pbe", ignoreCase = true) || window.contains("/set19", ignoreCase = true)
+                    val num = m.groupValues[1].toIntOrNull() ?: 0
+                    nearPbe && num >= 19
+                } ?: genericMatches
+                    .filter { (it.groupValues[1].toIntOrNull() ?: 0) >= 19 }
+                    .maxByOrNull { it.groupValues[1].toIntOrNull() ?: 0 }
+                    ?: genericMatches.firstOrNull { m ->
+                        val windowStart = (m.range.first - 40).coerceAtLeast(0)
+                        val windowEnd = (m.range.last + 40).coerceAtMost(html.length)
+                        html.substring(windowStart, windowEnd).contains("pbe", ignoreCase = true)
+                    }
+                    ?: genericMatches.first()
             } else {
                 genericMatches.firstOrNull { m ->
                     val windowStart = (m.range.first - 40).coerceAtLeast(0)
@@ -427,10 +501,17 @@ class TftAcademyCompsScraper(
             }
             val num = match.groupValues[1].toIntOrNull()
             if (num != null) {
-                val subtitle = match.groupValues.getOrNull(2)?.trim().orEmpty()
+                val subtitle = cleanSetSubtitle(match.groupValues.getOrNull(2).orEmpty())
                 val label = if (subtitle.isNotBlank()) "Set $num: $subtitle" else "Set $num"
                 return num to (if (env == TftEnvironment.PBE && !label.contains("PBE", true)) "$label (PBE)" else label)
             }
+        }
+        if (env == TftEnvironment.PBE) {
+            SET_PATH_OR_JSON_REGEX.findAll(html)
+                .mapNotNull { m -> m.groupValues.drop(1).firstOrNull { it.isNotBlank() }?.toIntOrNull() }
+                .filter { it >= 19 }
+                .maxOrNull()
+                ?.let { setNum -> return setNum to "Set $setNum (PBE)" }
         }
         if (env == TftEnvironment.LIVE) {
             API_SET_QUERY_REGEX.find(html)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { setNum ->
@@ -569,7 +650,7 @@ class TftAcademyCompsScraper(
         val buildId = NEXT_BUILD_ID_REGEX.find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.takeIf { it.isNotBlank() } ?: return emptyList()
         val path = if (targetEnvironment == TftEnvironment.PBE) {
-            "$TFTACADEMY_ORIGIN/_next/data/$buildId/tierlist/comps.json?pbe=true"
+            "$TFTACADEMY_ORIGIN/_next/data/$buildId/tierlist/comps/set19.json"
         } else {
             "$TFTACADEMY_ORIGIN/_next/data/$buildId/tierlist/comps.json"
         }
@@ -877,7 +958,8 @@ class TftAcademyCompsScraper(
                         val parsedUnits = parseUnitsFromArray(
                             unitsArr = unitsArr,
                             mainChampName = explicitCarry,
-                            mainChampCost = mainChampCost
+                            mainChampCost = mainChampCost,
+                            targetEnv = targetEnv
                         )
                         val unitNames = parsedUnits.map { it.name }
                         if (unitNames.size >= 4) {
@@ -902,7 +984,7 @@ class TftAcademyCompsScraper(
                             val traits = if (rawTraits.isNotEmpty()) {
                                 rawTraits
                             } else {
-                                deriveTraitsFromUnits(unitNames)
+                                deriveTraitsFromUnits(unitNames, targetEnv = targetEnv)
                             }
                             val augments = extractStringList(
                                 node.optJSONArray("augments")
@@ -1005,7 +1087,7 @@ class TftAcademyCompsScraper(
                                     levelingGuide = leveling,
                                     notes = compNotes,
                                     setName = resolvedSet,
-                                    sourceUrl = TFTACADEMY_COMPS_URL
+                                    sourceUrl = compUrlForEnvironment(targetEnv)
                                 )
                             )
                         }
@@ -1051,10 +1133,13 @@ class TftAcademyCompsScraper(
         }
     }
 
-    private fun deriveTraitsFromUnits(unitNames: List<String>): List<String> {
+    private fun deriveTraitsFromUnits(
+        unitNames: List<String>,
+        targetEnv: TftEnvironment = TftEnvironment.LIVE
+    ): List<String> {
         val counts = LinkedHashMap<String, Int>()
         unitNames.distinct().forEach { unit ->
-            TftAssetIconResolver.getChampionTraits(unit).forEach { trait ->
+            TftAssetIconResolver.getChampionTraits(unit, targetEnv).forEach { trait ->
                 counts[trait] = (counts[trait] ?: 0) + 1
             }
         }
@@ -1084,15 +1169,18 @@ class TftAcademyCompsScraper(
     private fun parseUnitsFromArray(
         unitsArr: JSONArray,
         mainChampName: String = "",
-        mainChampCost: Int = 3
+        mainChampCost: Int = 3,
+        targetEnv: TftEnvironment = TftEnvironment.LIVE
     ): List<ParsedJsonUnit> {
         return (0 until unitsArr.length().coerceAtMost(16)).mapNotNull { idx ->
             when (val u = unitsArr.opt(idx)) {
                 is String -> cleanText(u).takeIf { it.isNotBlank() }?.let { rawName ->
                     val name = formatRiotAssetLabel(rawName)
+                    val catalogCost = TftAssetIconResolver.getChampionCost(rawName, targetEnv)
+                        ?: TftAssetIconResolver.getChampionCost(name, targetEnv)
                     ParsedJsonUnit(
                         name = name,
-                        cost = if (name.equals(mainChampName, ignoreCase = true)) mainChampCost else 3,
+                        cost = (catalogCost ?: if (name.equals(mainChampName, ignoreCase = true)) mainChampCost else 3).coerceIn(1, 5),
                         items = emptyList(),
                         row = null,
                         col = null,
@@ -1112,8 +1200,8 @@ class TftAcademyCompsScraper(
                     ).takeIf { it.isNotBlank() } ?: return@mapNotNull null
                     val name = formatRiotAssetLabel(rawName)
                     val matchesMainChamp = mainChampName.isNotBlank() && name.equals(mainChampName, ignoreCase = true)
-                    val catalogCost = TftAssetIconResolver.getChampionCost(rawName)
-                        ?: TftAssetIconResolver.getChampionCost(name)
+                    val catalogCost = TftAssetIconResolver.getChampionCost(rawName, targetEnv)
+                        ?: TftAssetIconResolver.getChampionCost(name, targetEnv)
                     val defaultCost = catalogCost ?: if (matchesMainChamp) mainChampCost else 3
                     val explicitCost = if (u.has("cost")) u.optInt("cost", defaultCost) else if (u.has("tier")) u.optInt("tier", defaultCost) else defaultCost
                     val cost = explicitCost.coerceIn(1, 5)
@@ -1199,9 +1287,13 @@ class TftAcademyCompsScraper(
             } ?: defaultSetLabel
             val carry = unitNames.last()
             val placements = buildPlacements(
-                unitNames.map { ParsedJsonUnit(it, if (it == carry) 4 else 3, emptyList(), null, null, it == carry, 2) },
+                unitNames.map {
+                    val cost = TftAssetIconResolver.getChampionCost(it, targetEnv) ?: if (it == carry) 4 else 3
+                    ParsedJsonUnit(it, cost.coerceIn(1, 5), emptyList(), null, null, it == carry, 2)
+                },
                 carry
             )
+            val derivedTraits = deriveTraitsFromUnits(unitNames, targetEnv = targetEnv)
             val slugId = title.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
             comps.add(
                 MetaComp(
@@ -1236,14 +1328,14 @@ class TftAcademyCompsScraper(
                     isTrending = tier == TierRank.S,
                     patchTag = patchTag,
                     carryName = carry,
-                    traits = emptyList(),
+                    traits = derivedTraits,
                     coreUnits = unitNames,
                     hexPlacements = placements,
                     augmentPriorities = emptyList(),
                     levelingGuide = "$playstyle • $cardSet ($patchTag)",
                     notes = "",
                     setName = cardSet,
-                    sourceUrl = TFTACADEMY_COMPS_URL
+                    sourceUrl = compUrlForEnvironment(targetEnv)
                 )
             )
         }
@@ -1404,6 +1496,10 @@ class TftAcademyCompsScraper(
     companion object {
         const val TFTACADEMY_ORIGIN = "https://tftacademy.com"
         const val TFTACADEMY_COMPS_URL = "https://tftacademy.com/tierlist/comps"
+        const val TFTACADEMY_PBE_COMPS_URL = "https://tftacademy.com/tierlist/comps/set19"
+
+        fun compUrlForEnvironment(environment: TftEnvironment): String =
+            if (environment == TftEnvironment.PBE) TFTACADEMY_PBE_COMPS_URL else TFTACADEMY_COMPS_URL
 
         /**
          * Stable SHA-256 fingerprint across all comp fields so ANY change on
@@ -1481,11 +1577,15 @@ class TftAcademyCompsScraper(
             RegexOption.IGNORE_CASE
         )
         private val PBE_LINK_REGEX = Regex(
-            """href=["']([^"']*tierlist/comps[^"']*pbe[^"']*)["']""",
+            """href=["']([^"']*tierlist/comps(?:/set19|[^"']*pbe)[^"']*)["']""",
             RegexOption.IGNORE_CASE
         )
         private val SET_LABEL_REGEX = Regex(
-            """\bSet\s*(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]{2,28}))?""",
+            """\bSet\s+(\d+)(?:\s*:\s*([A-Za-z0-9 '&-]{2,28}))?""",
+            RegexOption.IGNORE_CASE
+        )
+        private val SET_PATH_OR_JSON_REGEX = Regex(
+            """(?:/tierlist/comps/set(\d+)|"set"\s*:\s*(\d+)|/api/tierlist/comps\?[^"'\s]*set=(\d+))""",
             RegexOption.IGNORE_CASE
         )
         private val COMP_BLOCK_START_REGEX = Regex(

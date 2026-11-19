@@ -21,18 +21,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
@@ -40,7 +41,9 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AugmentTier
 import com.example.data.model.AugmentTierEntry
@@ -68,14 +72,16 @@ import com.example.ui.components.HextechPanelCard
 import com.example.ui.components.OfflineCacheStatusBanner
 import com.example.ui.components.PatchTierAlertBanner
 import com.example.ui.components.PatchTierDetailsDialog
+import com.example.ui.components.TftAssetIconResolver
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftTraitChip
-import com.example.ui.components.TftAssetIconResolver
 import com.example.ui.components.TierBadge
+import com.example.ui.components.augmentTierColor
+import com.example.ui.components.championCostColor
 import com.example.ui.components.environmentSlideTransitionSpec
-import androidx.compose.ui.text.style.TextOverflow
+import com.example.ui.components.itemCategoryColor
 import java.util.Locale
 
 private enum class TierCatalogTab(val label: String) {
@@ -104,66 +110,204 @@ fun ChampionTierListScreen(
     var activeSubTab by rememberSaveable { mutableStateOf(TierCatalogTab.CHAMPIONS) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedTier by remember { mutableStateOf<TierRank?>(null) }
-    var selectedCost by remember { mutableStateOf<Int?>(null) }
-    var selectedItemCategory by remember { mutableStateOf<ItemCategory?>(null) }
-    var selectedAugmentTier by remember { mutableStateOf<AugmentTier?>(null) }
+
+    // Champions filter state
+    var selectedCosts by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var selectedTraits by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showAllTraits by rememberSaveable { mutableStateOf(false) }
+
+    // Items filter state
+    var selectedItemCategories by remember { mutableStateOf<Set<ItemCategory>>(emptySet()) }
+    var selectedItemComponents by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showAllItemComponents by rememberSaveable { mutableStateOf(false) }
+
+    // Augments filter state
+    var selectedAugmentTiers by remember { mutableStateOf<Set<AugmentTier>>(emptySet()) }
+    var selectedAugmentCategories by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showAllAugmentCategories by rememberSaveable { mutableStateOf(false) }
+
     var expandedId by remember { mutableStateOf<String?>(null) }
     var showPatchDetailsDialog by remember { mutableStateOf(false) }
     val latestPatch = remember(patches, environment) {
         patches.firstOrNull { it.environment == environment } ?: patches.firstOrNull()
     }
 
-    val filteredChampions = remember(activeSubTab, champions, searchQuery, selectedCost, selectedTier) {
+    val availableCosts = remember(champions) { extractChampionCosts(champions) }
+    val availableTraitOptions = remember(champions, TftAssetIconResolver.catalogRevision) {
+        extractChampionTraitOptions(champions)
+    }
+    val availableItemCategories = remember(items) { extractItemCategoryOptions(items) }
+    val availableItemComponents = remember(items, TftAssetIconResolver.catalogRevision) {
+        extractItemComponentOptions(items)
+    }
+    val availableAugmentRarities = remember(augments) { extractAugmentRarityOptions(augments) }
+    val availableAugmentCategories = remember(augments) { extractAugmentCategoryOptions(augments) }
+
+    LaunchedEffect(
+        environment,
+        availableTraitOptions,
+        availableCosts,
+        availableItemCategories,
+        availableItemComponents,
+        availableAugmentRarities,
+        availableAugmentCategories
+    ) {
+        val validTraitKeys = availableTraitOptions.map { it.name.lowercase(Locale.US) }.toSet()
+        val prunedTraits = selectedTraits.filterTo(linkedSetOf()) {
+            normalizeFilterLabel(it).lowercase(Locale.US) in validTraitKeys
+        }
+        if (prunedTraits != selectedTraits) {
+            selectedTraits = prunedTraits
+        }
+        val validCosts = availableCosts.toSet()
+        val prunedCosts = selectedCosts.filterTo(linkedSetOf()) { it in validCosts }
+        if (prunedCosts != selectedCosts) {
+            selectedCosts = prunedCosts
+        }
+
+        val validCategories = availableItemCategories.map { it.category }.toSet()
+        val prunedItemCategories = selectedItemCategories.filterTo(linkedSetOf()) { it in validCategories }
+        if (prunedItemCategories != selectedItemCategories) {
+            selectedItemCategories = prunedItemCategories
+        }
+        val validComponentKeys = availableItemComponents.map { it.name.lowercase(Locale.US) }.toSet()
+        val prunedComponents = selectedItemComponents.filterTo(linkedSetOf()) {
+            normalizeFilterLabel(it).lowercase(Locale.US) in validComponentKeys
+        }
+        if (prunedComponents != selectedItemComponents) {
+            selectedItemComponents = prunedComponents
+        }
+
+        val validRarities = availableAugmentRarities.map { it.augmentTier }.toSet()
+        val prunedRarities = selectedAugmentTiers.filterTo(linkedSetOf()) { it in validRarities }
+        if (prunedRarities != selectedAugmentTiers) {
+            selectedAugmentTiers = prunedRarities
+        }
+        val validAugCategoryKeys = availableAugmentCategories.map { it.name.lowercase(Locale.US) }.toSet()
+        val prunedAugCategories = selectedAugmentCategories.filterTo(linkedSetOf()) {
+            it.trim().lowercase(Locale.US) in validAugCategoryKeys
+        }
+        if (prunedAugCategories != selectedAugmentCategories) {
+            selectedAugmentCategories = prunedAugCategories
+        }
+    }
+
+    val toggleCostSelection: (Int) -> Unit = { cost ->
+        selectedCosts = if (cost in selectedCosts) selectedCosts - cost else selectedCosts + cost
+    }
+    val toggleTraitSelection: (String) -> Unit = { rawTrait ->
+        val display = normalizeFilterLabel(rawTrait)
+        val existing = selectedTraits.firstOrNull { it.equals(display, ignoreCase = true) }
+        selectedTraits = if (existing != null) selectedTraits - existing else selectedTraits + display
+    }
+    val clearChampionFilters = {
+        searchQuery = ""
+        selectedTier = null
+        selectedCosts = emptySet()
+        selectedTraits = emptySet()
+    }
+    val hasActiveChampionFilters =
+        searchQuery.isNotBlank() || selectedTier != null || selectedCosts.isNotEmpty() || selectedTraits.isNotEmpty()
+
+    val toggleItemCategorySelection: (ItemCategory) -> Unit = { category ->
+        selectedItemCategories =
+            if (category in selectedItemCategories) selectedItemCategories - category
+            else selectedItemCategories + category
+    }
+    val toggleItemComponentSelection: (String) -> Unit = { rawComp ->
+        val display = normalizeFilterLabel(rawComp)
+        val existing = selectedItemComponents.firstOrNull { it.equals(display, ignoreCase = true) }
+        selectedItemComponents =
+            if (existing != null) selectedItemComponents - existing else selectedItemComponents + display
+    }
+    val clearItemFilters = {
+        searchQuery = ""
+        selectedTier = null
+        selectedItemCategories = emptySet()
+        selectedItemComponents = emptySet()
+    }
+    val hasActiveItemFilters =
+        searchQuery.isNotBlank() ||
+            selectedTier != null ||
+            selectedItemCategories.isNotEmpty() ||
+            selectedItemComponents.isNotEmpty()
+
+    val toggleAugmentRaritySelection: (AugmentTier) -> Unit = { rarity ->
+        selectedAugmentTiers =
+            if (rarity in selectedAugmentTiers) selectedAugmentTiers - rarity
+            else selectedAugmentTiers + rarity
+    }
+    val toggleAugmentCategorySelection: (String) -> Unit = { rawCategory ->
+        val cleaned = rawCategory.trim()
+        val existing = selectedAugmentCategories.firstOrNull { it.equals(cleaned, ignoreCase = true) }
+        selectedAugmentCategories =
+            if (existing != null) selectedAugmentCategories - existing else selectedAugmentCategories + cleaned
+    }
+    val clearAugmentFilters = {
+        searchQuery = ""
+        selectedTier = null
+        selectedAugmentTiers = emptySet()
+        selectedAugmentCategories = emptySet()
+    }
+    val hasActiveAugmentFilters =
+        searchQuery.isNotBlank() ||
+            selectedTier != null ||
+            selectedAugmentTiers.isNotEmpty() ||
+            selectedAugmentCategories.isNotEmpty()
+
+    val filteredChampions = remember(activeSubTab, champions, searchQuery, selectedCosts, selectedTier, selectedTraits) {
         if (activeSubTab != TierCatalogTab.CHAMPIONS) {
             emptyList()
         } else {
-            champions
-                .filter { champ ->
-                    val matchesSearch = searchQuery.isBlank() ||
-                        champ.name.contains(searchQuery, ignoreCase = true) ||
-                        champ.traits.any { it.contains(searchQuery, ignoreCase = true) } ||
-                        champ.bestItems.any { it.contains(searchQuery, ignoreCase = true) }
-                    val matchesCost = selectedCost == null || champ.cost == selectedCost
-                    val matchesTier = selectedTier == null || champ.tier == selectedTier
-                    matchesSearch && matchesCost && matchesTier
-                }
-                .sortedWith(compareBy<ChampionTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+            filterChampionTiers(
+                champions = champions,
+                searchQuery = searchQuery,
+                selectedTier = selectedTier,
+                selectedCosts = selectedCosts,
+                selectedTraits = selectedTraits
+            )
         }
     }
 
-    val filteredItems = remember(activeSubTab, items, searchQuery, selectedTier, selectedItemCategory) {
+    val filteredItems = remember(
+        activeSubTab,
+        items,
+        searchQuery,
+        selectedTier,
+        selectedItemCategories,
+        selectedItemComponents
+    ) {
         if (activeSubTab != TierCatalogTab.ITEMS) {
             emptyList()
         } else {
-            items
-                .filter { item ->
-                    val matchesSearch = searchQuery.isBlank() ||
-                        item.name.contains(searchQuery, ignoreCase = true) ||
-                        item.components.any { it.contains(searchQuery, ignoreCase = true) } ||
-                        item.bestHolders.any { it.contains(searchQuery, ignoreCase = true) }
-                    val matchesTier = selectedTier == null || item.tier == selectedTier
-                    val matchesCat = selectedItemCategory == null || item.category == selectedItemCategory
-                    matchesSearch && matchesTier && matchesCat
-                }
-                .sortedWith(compareBy<ItemTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+            filterItemTiers(
+                items = items,
+                searchQuery = searchQuery,
+                selectedTier = selectedTier,
+                selectedCategories = selectedItemCategories,
+                selectedComponents = selectedItemComponents
+            )
         }
     }
 
-    val filteredAugments = remember(activeSubTab, augments, searchQuery, selectedTier, selectedAugmentTier) {
+    val filteredAugments = remember(
+        activeSubTab,
+        augments,
+        searchQuery,
+        selectedTier,
+        selectedAugmentTiers,
+        selectedAugmentCategories
+    ) {
         if (activeSubTab != TierCatalogTab.AUGMENTS) {
             emptyList()
         } else {
-            augments
-                .filter { aug ->
-                    val matchesSearch = searchQuery.isBlank() ||
-                        aug.name.contains(searchQuery, ignoreCase = true) ||
-                        aug.description.contains(searchQuery, ignoreCase = true) ||
-                        aug.category.contains(searchQuery, ignoreCase = true)
-                    val matchesTier = selectedTier == null || aug.tier == selectedTier
-                    val matchesRank = selectedAugmentTier == null || aug.augmentTier == selectedAugmentTier
-                    matchesSearch && matchesTier && matchesRank
-                }
-                .sortedWith(compareBy<AugmentTierEntry> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+            filterAugmentTiers(
+                augments = augments,
+                searchQuery = searchQuery,
+                selectedTier = selectedTier,
+                selectedAugmentTiers = selectedAugmentTiers,
+                selectedCategories = selectedAugmentCategories
+            )
         }
     }
 
@@ -281,20 +425,30 @@ fun ChampionTierListScreen(
         }
 
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
                     placeholder = {
                         Text(
                             when (activeSubTab) {
-                                TierCatalogTab.CHAMPIONS -> "Filter champion, trait, or BIS item..."
+                                TierCatalogTab.CHAMPIONS -> "Filter champion, trait, role, or BIS item..."
                                 TierCatalogTab.ITEMS -> "Filter item, component, or holder..."
                                 TierCatalogTab.AUGMENTS -> "Filter augment, effect, or category..."
                             }
                         )
                     },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search tier list") },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(
+                                onClick = { searchQuery = "" },
+                                modifier = Modifier.testTag("champion_search_clear_button")
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear search query")
+                            }
+                        }
+                    },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
@@ -302,49 +456,74 @@ fun ChampionTierListScreen(
                         .testTag("champion_search_input")
                 )
 
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item {
-                        FilterChip(
-                            selected = selectedTier == null,
-                            onClick = { selectedTier = null },
-                            label = { Text("All Tiers") }
+                when (activeSubTab) {
+                    TierCatalogTab.CHAMPIONS -> {
+                        ChampionFilterPanel(
+                            environment = environment,
+                            totalChampions = champions.size,
+                            filteredCount = filteredChampions.size,
+                            availableCosts = availableCosts,
+                            availableTraits = availableTraitOptions,
+                            selectedTier = selectedTier,
+                            onSelectTier = { tier ->
+                                selectedTier = if (tier != null && selectedTier == tier) null else tier
+                            },
+                            selectedCosts = selectedCosts,
+                            onToggleCost = toggleCostSelection,
+                            onClearCosts = { selectedCosts = emptySet() },
+                            selectedTraits = selectedTraits,
+                            onToggleTrait = toggleTraitSelection,
+                            onClearTraits = { selectedTraits = emptySet() },
+                            showAllTraits = showAllTraits,
+                            onToggleShowAllTraits = { showAllTraits = !showAllTraits },
+                            hasActiveFilters = hasActiveChampionFilters,
+                            onClearAllFilters = clearChampionFilters
                         )
                     }
-                    items(TierRank.entries) { tier ->
-                        FilterChip(
-                            selected = selectedTier == tier,
-                            onClick = { selectedTier = if (selectedTier == tier) null else tier },
-                            label = { Text("${tier.label}-Tier") }
+                    TierCatalogTab.ITEMS -> {
+                        ItemFilterPanel(
+                            environment = environment,
+                            totalItems = items.size,
+                            filteredCount = filteredItems.size,
+                            availableCategories = availableItemCategories,
+                            availableComponents = availableItemComponents,
+                            selectedTier = selectedTier,
+                            onSelectTier = { tier ->
+                                selectedTier = if (tier != null && selectedTier == tier) null else tier
+                            },
+                            selectedCategories = selectedItemCategories,
+                            onToggleCategory = toggleItemCategorySelection,
+                            onClearCategories = { selectedItemCategories = emptySet() },
+                            selectedComponents = selectedItemComponents,
+                            onToggleComponent = toggleItemComponentSelection,
+                            onClearComponents = { selectedItemComponents = emptySet() },
+                            showAllComponents = showAllItemComponents,
+                            onToggleShowAllComponents = { showAllItemComponents = !showAllItemComponents },
+                            hasActiveFilters = hasActiveItemFilters,
+                            onClearAllFilters = clearItemFilters
                         )
                     }
-                    when (activeSubTab) {
-                        TierCatalogTab.CHAMPIONS -> {
-                            items((1..5).toList()) { cost ->
-                                FilterChip(
-                                    selected = selectedCost == cost,
-                                    onClick = { selectedCost = if (selectedCost == cost) null else cost },
-                                    label = { Text("${cost}g") }
-                                )
-                            }
-                        }
-                        TierCatalogTab.ITEMS -> {
-                            items(ItemCategory.entries) { cat ->
-                                FilterChip(
-                                    selected = selectedItemCategory == cat,
-                                    onClick = { selectedItemCategory = if (selectedItemCategory == cat) null else cat },
-                                    label = { Text(cat.label) }
-                                )
-                            }
-                        }
-                        TierCatalogTab.AUGMENTS -> {
-                            items(AugmentTier.entries) { rank ->
-                                FilterChip(
-                                    selected = selectedAugmentTier == rank,
-                                    onClick = { selectedAugmentTier = if (selectedAugmentTier == rank) null else rank },
-                                    label = { Text(rank.label) }
-                                )
-                            }
-                        }
+                    TierCatalogTab.AUGMENTS -> {
+                        AugmentFilterPanel(
+                            totalAugments = augments.size,
+                            filteredCount = filteredAugments.size,
+                            availableRarities = availableAugmentRarities,
+                            availableCategories = availableAugmentCategories,
+                            selectedTier = selectedTier,
+                            onSelectTier = { tier ->
+                                selectedTier = if (tier != null && selectedTier == tier) null else tier
+                            },
+                            selectedRarities = selectedAugmentTiers,
+                            onToggleRarity = toggleAugmentRaritySelection,
+                            onClearRarities = { selectedAugmentTiers = emptySet() },
+                            selectedCategories = selectedAugmentCategories,
+                            onToggleCategory = toggleAugmentCategorySelection,
+                            onClearCategories = { selectedAugmentCategories = emptySet() },
+                            showAllCategories = showAllAugmentCategories,
+                            onToggleShowAllCategories = { showAllAugmentCategories = !showAllAugmentCategories },
+                            hasActiveFilters = hasActiveAugmentFilters,
+                            onClearAllFilters = clearAugmentFilters
+                        )
                     }
                 }
             }
@@ -357,7 +536,19 @@ fun ChampionTierListScreen(
                         HextechEmptyState(
                             icon = Icons.Default.MilitaryTech,
                             title = "No Champions Match Filters",
-                            subtitle = "Clear cost or tier filters to inspect the full ${environment.label} roster.",
+                            subtitle = "Clear cost, trait, search, or tier filters to inspect the full ${environment.label} roster.",
+                            action = if (hasActiveChampionFilters) {
+                                {
+                                    FilledTonalButton(
+                                        onClick = clearChampionFilters,
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("champ_empty_reset_filters_button")
+                                    ) {
+                                        Text("Reset Filters")
+                                    }
+                                }
+                            } else null,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = tween(220),
                                 fadeOutSpec = tween(160),
@@ -381,6 +572,8 @@ fun ChampionTierListScreen(
                                 ChampionTierCard(
                                     champ = champ,
                                     expanded = isExpanded,
+                                    selectedTraits = selectedTraits,
+                                    onTraitClick = toggleTraitSelection,
                                     onClick = { expandedId = if (isExpanded) null else champ.id },
                                     modifier = Modifier.weight(1f)
                                 )
@@ -396,6 +589,8 @@ fun ChampionTierListScreen(
                         ChampionTierCard(
                             champ = champ,
                             expanded = isExpanded,
+                            selectedTraits = selectedTraits,
+                            onTraitClick = toggleTraitSelection,
                             onClick = { expandedId = if (isExpanded) null else champ.id }
                         )
                     }
@@ -407,7 +602,19 @@ fun ChampionTierListScreen(
                         HextechEmptyState(
                             icon = Icons.Default.Build,
                             title = "No Items Match Filters",
-                            subtitle = "Clear category or tier filters to view all ${environment.label} items and recipes.",
+                            subtitle = "Clear category, component, search, or tier filters to view all ${environment.label} items and recipes.",
+                            action = if (hasActiveItemFilters) {
+                                {
+                                    FilledTonalButton(
+                                        onClick = clearItemFilters,
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("item_empty_reset_filters_button")
+                                    ) {
+                                        Text("Reset Filters")
+                                    }
+                                }
+                            } else null,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = tween(220),
                                 fadeOutSpec = tween(160),
@@ -429,6 +636,10 @@ fun ChampionTierListScreen(
                             rowItems.forEach { itemEntry ->
                                 ItemTierCard(
                                     item = itemEntry,
+                                    selectedCategories = selectedItemCategories,
+                                    selectedComponents = selectedItemComponents,
+                                    onCategoryClick = toggleItemCategorySelection,
+                                    onComponentClick = toggleItemComponentSelection,
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -439,7 +650,13 @@ fun ChampionTierListScreen(
                     }
                 } else {
                     items(filteredItems, key = { it.id }, contentType = { "item_tier" }) { itemEntry ->
-                        ItemTierCard(item = itemEntry)
+                        ItemTierCard(
+                            item = itemEntry,
+                            selectedCategories = selectedItemCategories,
+                            selectedComponents = selectedItemComponents,
+                            onCategoryClick = toggleItemCategorySelection,
+                            onComponentClick = toggleItemComponentSelection
+                        )
                     }
                 }
             }
@@ -449,7 +666,19 @@ fun ChampionTierListScreen(
                         HextechEmptyState(
                             icon = Icons.Default.AutoAwesome,
                             title = "No Augments Match Filters",
-                            subtitle = "Clear Silver/Gold/Prismatic filters to view all cached augments.",
+                            subtitle = "Clear Silver/Gold/Prismatic, category, search, or tier filters to view all ${environment.label} augments.",
+                            action = if (hasActiveAugmentFilters) {
+                                {
+                                    FilledTonalButton(
+                                        onClick = clearAugmentFilters,
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("augment_empty_reset_filters_button")
+                                    ) {
+                                        Text("Reset Filters")
+                                    }
+                                }
+                            } else null,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = tween(220),
                                 fadeOutSpec = tween(160),
@@ -471,6 +700,10 @@ fun ChampionTierListScreen(
                             rowAugs.forEach { augment ->
                                 AugmentTierCard(
                                     augment = augment,
+                                    selectedRarities = selectedAugmentTiers,
+                                    selectedCategories = selectedAugmentCategories,
+                                    onRarityClick = toggleAugmentRaritySelection,
+                                    onCategoryClick = toggleAugmentCategorySelection,
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -481,7 +714,13 @@ fun ChampionTierListScreen(
                     }
                 } else {
                     items(filteredAugments, key = { it.id }, contentType = { "augment_tier" }) { augment ->
-                        AugmentTierCard(augment = augment)
+                        AugmentTierCard(
+                            augment = augment,
+                            selectedRarities = selectedAugmentTiers,
+                            selectedCategories = selectedAugmentCategories,
+                            onRarityClick = toggleAugmentRaritySelection,
+                            onCategoryClick = toggleAugmentCategorySelection
+                        )
                     }
                 }
             }
@@ -497,6 +736,8 @@ fun ChampionTierListScreen(
 private fun ChampionTierCard(
     champ: ChampionTierEntry,
     expanded: Boolean,
+    selectedTraits: Set<String> = emptySet(),
+    onTraitClick: ((String) -> Unit)? = null,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -536,7 +777,7 @@ private fun ChampionTierCard(
                             Text(
                                 text = "${champ.cost}g",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = championCostColor(champ.cost),
                                 fontWeight = FontWeight.Bold
                             )
                             TierBadge(champ.tier)
@@ -562,7 +803,13 @@ private fun ChampionTierCard(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 champ.traits.forEach { trait ->
-                    TftTraitChip(traitLabel = trait, environment = champ.environment)
+                    val isTraitSelected = selectedTraits.any { championTraitMatches(trait, it) }
+                    TftTraitChip(
+                        traitLabel = trait,
+                        environment = champ.environment,
+                        selected = isTraitSelected,
+                        onClick = onTraitClick?.let { callback -> { callback(trait) } }
+                    )
                 }
             }
 
@@ -674,8 +921,15 @@ private fun ChampionTierCard(
 @Composable
 private fun ItemTierCard(
     item: ItemTierEntry,
+    selectedCategories: Set<ItemCategory> = emptySet(),
+    selectedComponents: Set<String> = emptySet(),
+    onCategoryClick: ((ItemCategory) -> Unit)? = null,
+    onComponentClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val catTint = itemCategoryColor(item.category)
+    val isCategorySelected = item.category in selectedCategories
+
     HextechPanelCard(
         accentBorder = item.tier == TierRank.S,
         modifier = modifier.testTag("item_tier_${item.id}")
@@ -700,19 +954,38 @@ private fun ItemTierCard(
                 }
             }
 
-            if (item.components.isNotEmpty()) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Surface(
+                    onClick = { onCategoryClick?.invoke(item.category) },
+                    enabled = onCategoryClick != null,
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isCategorySelected) catTint.copy(alpha = 0.26f) else catTint.copy(alpha = 0.12f),
+                    border = BorderStroke(
+                        width = if (isCategorySelected) 1.5.dp else 1.dp,
+                        color = if (isCategorySelected) catTint else catTint.copy(alpha = 0.4f)
+                    )
                 ) {
                     Text(
-                        text = "${item.category.label} • Recipe:",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.align(Alignment.CenterVertically)
+                        text = item.category.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isCategorySelected) MaterialTheme.colorScheme.onSurface else catTint,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
+                }
+                if (item.components.isNotEmpty()) {
                     item.components.forEach { compName ->
-                        TftItemChip(itemName = compName, compact = true, environment = item.environment)
+                        val isCompSelected = selectedComponents.any { itemComponentMatches(compName, it) }
+                        TftItemChip(
+                            itemName = compName,
+                            compact = true,
+                            environment = item.environment,
+                            selected = isCompSelected,
+                            onClick = onComponentClick?.let { cb -> { cb(compName) } }
+                        )
                     }
                 }
             }
@@ -794,8 +1067,17 @@ private fun ItemTierCard(
 @Composable
 private fun AugmentTierCard(
     augment: AugmentTierEntry,
+    selectedRarities: Set<AugmentTier> = emptySet(),
+    selectedCategories: Set<String> = emptySet(),
+    onRarityClick: ((AugmentTier) -> Unit)? = null,
+    onCategoryClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val rarityTint = augmentTierColor(augment.augmentTier)
+    val isRaritySelected = augment.augmentTier in selectedRarities
+    val isCategorySelected = selectedCategories.any { augmentCategoryMatches(augment.category, it) }
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+
     HextechPanelCard(
         accentBorder = augment.tier == TierRank.S,
         modifier = modifier.testTag("augment_tier_${augment.id}")
@@ -820,11 +1102,49 @@ private fun AugmentTierCard(
                 }
             }
 
-            Text(
-                text = "${augment.augmentTier.label} • ${augment.category}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.secondary
-            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Surface(
+                    onClick = { onRarityClick?.invoke(augment.augmentTier) },
+                    enabled = onRarityClick != null,
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isRaritySelected) rarityTint.copy(alpha = 0.28f) else rarityTint.copy(alpha = 0.14f),
+                    border = BorderStroke(
+                        width = if (isRaritySelected) 1.5.dp else 1.dp,
+                        color = if (isRaritySelected) rarityTint else rarityTint.copy(alpha = 0.45f)
+                    )
+                ) {
+                    Text(
+                        text = augment.augmentTier.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isRaritySelected) MaterialTheme.colorScheme.onSurface else rarityTint,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+                if (augment.category.isNotBlank()) {
+                    Surface(
+                        onClick = { onCategoryClick?.invoke(augment.category) },
+                        enabled = onCategoryClick != null,
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isCategorySelected) secondaryColor.copy(alpha = 0.24f) else secondaryColor.copy(alpha = 0.10f),
+                        border = BorderStroke(
+                            width = if (isCategorySelected) 1.5.dp else 1.dp,
+                            color = if (isCategorySelected) secondaryColor else secondaryColor.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        Text(
+                            text = augment.category,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isCategorySelected) MaterialTheme.colorScheme.onSurface else secondaryColor,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
             Text(
                 text = augment.description,
                 style = MaterialTheme.typography.bodySmall,

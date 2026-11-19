@@ -1177,6 +1177,66 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `overlay bauble toggles open and closed repeatedly and clamps drag inside safe screen bounds`() {
+        var state = com.example.overlay.OverlayDisplayState.BUBBLE
+        state = com.example.overlay.toggleOverlayDisplayState(state)
+        assertEquals(com.example.overlay.OverlayDisplayState.EXPANDED, state)
+        // Re-clicking bauble while overlay drawer is open closes drawer cleanly
+        state = com.example.overlay.toggleOverlayDisplayState(state)
+        assertEquals(com.example.overlay.OverlayDisplayState.BUBBLE, state)
+        // Clicking again re-opens drawer
+        state = com.example.overlay.toggleOverlayDisplayState(state)
+        assertEquals(com.example.overlay.OverlayDisplayState.EXPANDED, state)
+
+        val bounds = com.example.overlay.OverlayWindowBounds(
+            widthPx = 2400,
+            heightPx = 1080,
+            safeLeftPx = 96,
+            safeTopPx = 48,
+            safeRightPx = 24,
+            safeBottomPx = 32,
+            density = 2f
+        )
+        val bubblePx = 128
+        val marginPx = 12
+
+        // Dragging past top-left safe boundary clamps to safeLeft + margin, safeTop + margin
+        val topLeftClamp = com.example.overlay.clampBubbleWindowPosition(
+            desiredX = -200,
+            desiredY = -100,
+            viewWidthPx = bubblePx,
+            viewHeightPx = bubblePx,
+            bounds = bounds,
+            marginPx = marginPx
+        )
+        assertEquals(96 + 12, topLeftClamp.first)
+        assertEquals(48 + 12, topLeftClamp.second)
+
+        // Dragging past bottom-right safe boundary clamps inside safeRight & safeBottom
+        val bottomRightClamp = com.example.overlay.clampBubbleWindowPosition(
+            desiredX = 2500,
+            desiredY = 1200,
+            viewWidthPx = bubblePx,
+            viewHeightPx = bubblePx,
+            bounds = bounds,
+            marginPx = marginPx
+        )
+        assertEquals(2400 - 24 - bubblePx - marginPx, bottomRightClamp.first)
+        assertEquals(1080 - 32 - bubblePx - marginPx, bottomRightClamp.second)
+
+        // Mid-screen position passes through unchanged
+        val freePos = com.example.overlay.clampBubbleWindowPosition(
+            desiredX = 820,
+            desiredY = 420,
+            viewWidthPx = bubblePx,
+            viewHeightPx = bubblePx,
+            bounds = bounds,
+            marginPx = marginPx
+        )
+        assertEquals(820 to 420, freePos)
+    }
+
+    @Test
     fun `github release parser normalizes slugs selects matching apk variant and detects newer builds`() {
         assertEquals("owner/tacticians-forge", com.example.update.GitHubReleaseParser.normalizeRepoSlug("https://github.com/owner/tacticians-forge.git"))
         assertEquals("owner/tacticians-forge", com.example.update.GitHubReleaseParser.normalizeRepoSlug("owner/tacticians-forge"))

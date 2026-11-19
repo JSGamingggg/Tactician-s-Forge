@@ -1,8 +1,5 @@
 package com.example.overlay
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.app.Service
@@ -22,11 +19,10 @@ import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.VelocityTracker
+import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
-import android.view.animation.DecelerateInterpolator
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -35,8 +31,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -416,6 +410,31 @@ internal fun computeLeftEdgeResizeResult(
     return clampedWidthDp to newOriginX
 }
 
+internal fun toggleOverlayDisplayState(current: OverlayDisplayState): OverlayDisplayState =
+    if (current == OverlayDisplayState.EXPANDED) {
+        OverlayDisplayState.BUBBLE
+    } else {
+        OverlayDisplayState.EXPANDED
+    }
+
+internal fun clampBubbleWindowPosition(
+    desiredX: Int,
+    desiredY: Int,
+    viewWidthPx: Int,
+    viewHeightPx: Int,
+    bounds: OverlayWindowBounds,
+    marginPx: Int = 0
+): Pair<Int, Int> {
+    val safeW = viewWidthPx.coerceAtLeast(1)
+    val safeH = viewHeightPx.coerceAtLeast(1)
+    val safeMargin = marginPx.coerceAtLeast(0)
+    val minX = bounds.safeLeftPx + safeMargin
+    val maxX = (bounds.widthPx - bounds.safeRightPx - safeW - safeMargin).coerceAtLeast(minX)
+    val minY = bounds.safeTopPx + safeMargin
+    val maxY = (bounds.heightPx - bounds.safeBottomPx - safeH - safeMargin).coerceAtLeast(minY)
+    return desiredX.coerceIn(minX, maxX) to desiredY.coerceIn(minY, maxY)
+}
+
 class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
     private lateinit var windowManager: WindowManager
@@ -425,8 +444,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private lateinit var firestoreRepo: FirestoreUserRepository
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private var overlayView: ComposeView? = null
-    private lateinit var overlayLayoutParams: WindowManager.LayoutParams
+    private var drawerView: ComposeView? = null
+    private lateinit var drawerLayoutParams: WindowManager.LayoutParams
+    private var bubbleView: ComposeView? = null
+    private lateinit var bubbleLayoutParams: WindowManager.LayoutParams
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val store = ViewModelStore()
@@ -438,13 +459,12 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private val customWidthDpState = mutableStateOf<Float?>(null)
     private val customHeightDpState = mutableStateOf<Float?>(null)
     private var savedExpandedOriginPx: Pair<Int, Int>? = null
+    private var savedBubblePosPx: Pair<Int, Int>? = null
     private val configurationVersion = mutableIntStateOf(0)
-    private var savedBubbleAnchorY = 220
     private val allCompsState = mutableStateOf<List<MetaComp>>(emptyList())
     private val favoriteDocsState = mutableStateOf<List<FavoriteCompDoc>>(emptyList())
     private var favoritesObserverJob: Job? = null
     private var activeOverlaySyncJob: Job? = null
-    private var windowSnapAnimator: ValueAnimator? = null
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
@@ -629,7 +649,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         val notification = NotificationCompat.Builder(this, TftNotificationHelper.CHANNEL_OVERLAY)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Live Match Overlay Active")
-            .setContentText("Tap bubble to expand comps or drag/dock to screen edge while playing.")
+            .setContentText("Tap floating bauble to open or close overlay; drag to move it anywhere.")
             .setOngoing(true)
             .setContentIntent(openAppIntent)
             .addAction(0, getString(R.string.overlay_action_stop), stopIntent)
@@ -665,7 +685,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     private fun activeExpandedHeightDpValue(bounds: OverlayWindowBounds = currentWindowBounds()): Float {
         customHeightDpState.value?.let { return it }
-        val measuredPx = overlayView?.height?.takeIf { it > 0 }
+        val measuredPx = drawerView?.height?.takeIf { it > 0 }
         if (measuredPx != null) {
             val sizeBounds = currentSizeBounds(bounds)
             return (measuredPx / bounds.density).coerceIn(sizeBounds.minHeightDp, sizeBounds.maxHeightDp)
@@ -679,7 +699,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         targetX: Int? = null,
         targetY: Int? = null
     ) {
-        if (!::overlayLayoutParams.isInitialized) return
+        if (!::drawerLayoutParams.isInitialized) return
         val bounds = currentWindowBounds()
         val sizeBounds = currentSizeBounds(bounds)
         val defaultDims = currentDrawerDimensions(bounds)
@@ -695,23 +715,23 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         val minTopY = bounds.safeTopPx + dpToPx(8)
         val maxTopY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - dpToPx(8)).coerceAtLeast(minTopY)
 
-        overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
-        overlayLayoutParams.width = effectiveWpx
-        overlayLayoutParams.height = if (clampedH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
-        val candidateX = targetX ?: savedExpandedOriginPx?.first ?: overlayLayoutParams.x
-        val candidateY = targetY ?: savedExpandedOriginPx?.second ?: overlayLayoutParams.y
+        drawerLayoutParams.gravity = Gravity.TOP or Gravity.START
+        drawerLayoutParams.width = effectiveWpx
+        drawerLayoutParams.height = if (clampedH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
+        val candidateX = targetX ?: savedExpandedOriginPx?.first ?: drawerLayoutParams.x
+        val candidateY = targetY ?: savedExpandedOriginPx?.second ?: drawerLayoutParams.y
         val clampedX = candidateX.coerceIn(minLeftX, maxLeftX)
         val clampedY = candidateY.coerceIn(minTopY, maxTopY)
-        overlayLayoutParams.x = clampedX
-        overlayLayoutParams.y = clampedY
+        drawerLayoutParams.x = clampedX
+        drawerLayoutParams.y = clampedY
         if (savedExpandedOriginPx != null || targetX != null || targetY != null) {
             savedExpandedOriginPx = clampedX to clampedY
         }
 
-        overlayView?.let { view ->
+        drawerView?.let { view ->
             if (view.isAttachedToWindow) {
                 runCatching {
-                    windowManager.updateViewLayout(view, overlayLayoutParams)
+                    windowManager.updateViewLayout(view, drawerLayoutParams)
                     view.requestLayout()
                 }
             }
@@ -719,7 +739,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     }
 
     private fun extendExpandedToFullWidth() {
-        if (!::overlayLayoutParams.isInitialized) return
+        if (!::drawerLayoutParams.isInitialized) return
         val bounds = currentWindowBounds()
         val sizeBounds = currentSizeBounds(bounds)
         val minLeftX = bounds.safeLeftPx + dpToPx(8)
@@ -727,7 +747,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             widthDp = sizeBounds.maxWidthDp,
             heightDp = customHeightDpState.value,
             targetX = minLeftX,
-            targetY = savedExpandedOriginPx?.second ?: overlayLayoutParams.y
+            targetY = savedExpandedOriginPx?.second ?: drawerLayoutParams.y
         )
     }
 
@@ -745,11 +765,81 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     }
 
     private fun clampOverlayPositionForCurrentBounds() {
-        if (!::overlayLayoutParams.isInitialized) return
         val bounds = currentWindowBounds()
         val expandedMarginPx = dpToPx(8)
-        val minY = bounds.safeTopPx + dpToPx(8)
-        val maxCompactY = (bounds.heightPx - bounds.safeBottomPx - dpToPx(88)).coerceAtLeast(minY)
+        val minY = bounds.safeTopPx + expandedMarginPx
+
+        if (::drawerLayoutParams.isInitialized) {
+            val defaultDims = currentDrawerDimensions(bounds)
+            val sizeBounds = currentSizeBounds(bounds)
+            val (activeW, activeH) = clampOverlayCustomSize(
+                customWidthDpState.value,
+                customHeightDpState.value,
+                defaultDims,
+                sizeBounds
+            )
+            if (customWidthDpState.value != null) customWidthDpState.value = activeW.value
+            if (customHeightDpState.value != null) customHeightDpState.value = activeH?.value
+
+            val effectiveWpx = (activeW.value * bounds.density).roundToInt()
+            val effectiveHpx = ((activeH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
+            val minExpandedX = bounds.safeLeftPx + expandedMarginPx
+            val maxExpandedX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - expandedMarginPx).coerceAtLeast(minExpandedX)
+            val maxExpandedY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - expandedMarginPx).coerceAtLeast(minY)
+
+            drawerLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.EXPANDED)
+            drawerLayoutParams.gravity = Gravity.TOP or Gravity.START
+            drawerLayoutParams.width = effectiveWpx
+            drawerLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
+            val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
+            val preferredY = savedExpandedOriginPx?.second ?: (bounds.safeTopPx + dpToPx(72))
+            drawerLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
+            drawerLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
+
+            drawerView?.let { view ->
+                if (view.isAttachedToWindow) {
+                    runCatching {
+                        windowManager.updateViewLayout(view, drawerLayoutParams)
+                        view.requestLayout()
+                    }
+                }
+            }
+        }
+
+        if (::bubbleLayoutParams.isInitialized) {
+            val viewW = bubbleView?.width?.takeIf { it > 0 } ?: dpToPx(64)
+            val viewH = bubbleView?.height?.takeIf { it > 0 } ?: dpToPx(64)
+            val targetX = savedBubblePosPx?.first ?: bubbleLayoutParams.x
+            val targetY = savedBubblePosPx?.second ?: bubbleLayoutParams.y
+            val (clampedX, clampedY) = clampBubbleWindowPosition(
+                desiredX = targetX,
+                desiredY = targetY,
+                viewWidthPx = viewW,
+                viewHeightPx = viewH,
+                bounds = bounds,
+                marginPx = dpToPx(6)
+            )
+            bubbleLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.BUBBLE)
+            bubbleLayoutParams.x = clampedX
+            bubbleLayoutParams.y = clampedY
+            savedBubblePosPx = clampedX to clampedY
+
+            bubbleView?.let { view ->
+                if (view.isAttachedToWindow) {
+                    runCatching {
+                        windowManager.updateViewLayout(view, bubbleLayoutParams)
+                        view.requestLayout()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun syncDrawerWindowState(isOpen: Boolean) {
+        if (!::drawerLayoutParams.isInitialized) return
+        val bounds = currentWindowBounds()
+        val expandedMarginPx = dpToPx(8)
+        val minY = bounds.safeTopPx + expandedMarginPx
         val defaultDims = currentDrawerDimensions(bounds)
         val sizeBounds = currentSizeBounds(bounds)
         val (activeW, activeH) = clampOverlayCustomSize(
@@ -758,49 +848,34 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             defaultDims,
             sizeBounds
         )
-        if (customWidthDpState.value != null) customWidthDpState.value = activeW.value
-        if (customHeightDpState.value != null) customHeightDpState.value = activeH?.value
-
         val effectiveWpx = (activeW.value * bounds.density).roundToInt()
         val effectiveHpx = ((activeH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
         val minExpandedX = bounds.safeLeftPx + expandedMarginPx
         val maxExpandedX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - expandedMarginPx).coerceAtLeast(minExpandedX)
         val maxExpandedY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - expandedMarginPx).coerceAtLeast(minY)
 
-        savedBubbleAnchorY = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
-        overlayLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(displayState.value)
-
-        when (displayState.value) {
-            OverlayDisplayState.EDGE_COLLAPSED -> {
-                val edgeGravity = if (dockEdgeState.value == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
-                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = if (dockEdgeState.value == OverlayDockEdge.LEFT) bounds.safeLeftPx else bounds.safeRightPx
-                overlayLayoutParams.y = savedBubbleAnchorY
-            }
-            OverlayDisplayState.BUBBLE -> {
-                val minX = bounds.safeLeftPx
-                val maxX = (bounds.widthPx - bounds.safeRightPx - dpToPx(72)).coerceAtLeast(minX)
-                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.x = overlayLayoutParams.x.coerceIn(minX, maxX)
-                overlayLayoutParams.y = savedBubbleAnchorY
-            }
-            OverlayDisplayState.EXPANDED -> {
-                overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
-                overlayLayoutParams.width = effectiveWpx
-                overlayLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
-                val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
-                val preferredY = savedExpandedOriginPx?.second ?: savedBubbleAnchorY
-                overlayLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
-                overlayLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
-            }
+        drawerLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(displayState.value)
+        drawerLayoutParams.gravity = Gravity.TOP or Gravity.START
+        drawerLayoutParams.width = effectiveWpx
+        drawerLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
+        drawerLayoutParams.flags = if (isOpen) {
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        } else {
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
-        overlayView?.let { view ->
+
+        if (isOpen) {
+            val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
+            val preferredY = savedExpandedOriginPx?.second ?: (bounds.safeTopPx + dpToPx(72))
+            drawerLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
+            drawerLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
+        }
+
+        drawerView?.let { view ->
+            view.visibility = if (isOpen) View.VISIBLE else View.GONE
             if (view.isAttachedToWindow) {
                 runCatching {
-                    windowManager.updateViewLayout(view, overlayLayoutParams)
+                    windowManager.updateViewLayout(view, drawerLayoutParams)
                     view.requestLayout()
                 }
             }
@@ -811,103 +886,15 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         targetState: OverlayDisplayState,
         dockEdge: OverlayDockEdge = dockEdgeState.value
     ) {
-        val prevState = displayState.value
-        if (prevState != OverlayDisplayState.EXPANDED) {
-            savedBubbleAnchorY = overlayLayoutParams.y
-        }
-
         dockEdgeState.value = dockEdge
         displayState.value = targetState
-        overlayLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(targetState)
-
-        val bounds = currentWindowBounds()
-        val edgeGravity = if (dockEdge == OverlayDockEdge.LEFT) Gravity.START else Gravity.END
-        val edgeSafeMargin = if (dockEdge == OverlayDockEdge.LEFT) bounds.safeLeftPx else bounds.safeRightPx
-        val marginPx = dpToPx(12)
-        val expandedMarginPx = dpToPx(8)
-        val minY = bounds.safeTopPx + dpToPx(8)
-        val maxCompactY = (bounds.heightPx - bounds.safeBottomPx - dpToPx(88)).coerceAtLeast(minY)
-        val defaultDims = currentDrawerDimensions(bounds)
-        val sizeBounds = currentSizeBounds(bounds)
-        val (activeW, activeH) = clampOverlayCustomSize(
-            customWidthDpState.value,
-            customHeightDpState.value,
-            defaultDims,
-            sizeBounds
-        )
-        val effectiveWpx = (activeW.value * bounds.density).roundToInt()
-        val effectiveHpx = ((activeH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
-        val minExpandedX = bounds.safeLeftPx + expandedMarginPx
-        val maxExpandedX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - expandedMarginPx).coerceAtLeast(minExpandedX)
-        val maxExpandedY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - expandedMarginPx).coerceAtLeast(minY)
-
-        when (targetState) {
-            OverlayDisplayState.EDGE_COLLAPSED -> {
-                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = edgeSafeMargin
-                overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
-            }
-            OverlayDisplayState.BUBBLE -> {
-                overlayLayoutParams.width = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT
-                overlayLayoutParams.gravity = Gravity.TOP or edgeGravity
-                overlayLayoutParams.x = edgeSafeMargin + marginPx
-                overlayLayoutParams.y = savedBubbleAnchorY.coerceIn(minY, maxCompactY)
-            }
-            OverlayDisplayState.EXPANDED -> {
-                overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
-                overlayLayoutParams.width = effectiveWpx
-                overlayLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
-                val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
-                val preferredY = savedExpandedOriginPx?.second ?: savedBubbleAnchorY
-                overlayLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
-                overlayLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
-            }
-        }
-
-        overlayView?.let { view ->
-            if (view.isAttachedToWindow) {
-                runCatching {
-                    windowManager.updateViewLayout(view, overlayLayoutParams)
-                    view.requestLayout()
-                }
-            }
-        }
+        val isOpen = targetState == OverlayDisplayState.EXPANDED
+        syncDrawerWindowState(isOpen)
     }
 
-    private fun animateOverlayXTo(
-        view: ComposeView,
-        fromX: Int,
-        toX: Int,
-        onComplete: () -> Unit = {}
-    ) {
-        windowSnapAnimator?.cancel()
-        if (fromX == toX || !view.isAttachedToWindow) {
-            onComplete()
-            return
-        }
-        windowSnapAnimator = ValueAnimator.ofInt(fromX, toX).apply {
-            duration = 210L
-            interpolator = DecelerateInterpolator(1.6f)
-            addUpdateListener { anim ->
-                overlayLayoutParams.x = anim.animatedValue as Int
-                if (view.isAttachedToWindow) {
-                    runCatching { windowManager.updateViewLayout(view, overlayLayoutParams) }
-                }
-            }
-            addListener(object : AnimatorListenerAdapter() {
-                private var cancelled = false
-                override fun onAnimationCancel(animation: Animator) {
-                    cancelled = true
-                }
-                override fun onAnimationEnd(animation: Animator) {
-                    if (!cancelled) onComplete()
-                }
-            })
-            start()
-        }
+    private fun toggleDrawerExpanded() {
+        val nextState = toggleOverlayDisplayState(displayState.value)
+        transitionDisplayState(nextState)
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -920,141 +907,43 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         }
 
         val initialBounds = currentWindowBounds()
-        val initialMarginPx = dpToPx(12)
-        savedBubbleAnchorY = (initialBounds.safeTopPx + dpToPx(28))
-            .coerceIn(initialBounds.safeTopPx + dpToPx(8), (initialBounds.heightPx - initialBounds.safeBottomPx - dpToPx(88)).coerceAtLeast(initialBounds.safeTopPx + dpToPx(8)))
-        overlayLayoutParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
+        val initialDrawerDims = currentDrawerDimensions(initialBounds)
+        val initialDrawerWpx = (initialDrawerDims.widthDp.value * initialBounds.density).roundToInt()
+        val initialMarginPx = dpToPx(8)
+        val initialDrawerY = (initialBounds.safeTopPx + dpToPx(72))
+            .coerceAtMost((initialBounds.heightPx - initialBounds.safeBottomPx - dpToPx(200)).coerceAtLeast(initialBounds.safeTopPx + initialMarginPx))
+
+        drawerLayoutParams = WindowManager.LayoutParams(
+            initialDrawerWpx,
             WindowManager.LayoutParams.WRAP_CONTENT,
             windowType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = initialBounds.safeLeftPx + initialMarginPx
-            y = savedBubbleAnchorY
-            screenOrientation = resolveOverlayWindowScreenOrientation(displayState.value)
+            y = initialDrawerY
+            screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.EXPANDED)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
 
-        val composeView = ComposeView(this).apply {
+        val drawerComposeView = ComposeView(this).apply {
+            visibility = View.GONE
             setViewTreeLifecycleOwner(this@OverlayService)
             setViewTreeViewModelStoreOwner(this@OverlayService)
             setViewTreeSavedStateRegistryOwner(this@OverlayService)
-
-            var startLeftPx = 0
-            var initialY = 0
-            var initialTouchX = 0f
-            var initialTouchY = 0f
-            var moved = false
-            var velocityTracker: VelocityTracker? = null
-            val touchSlopPx = ViewConfiguration.get(this@OverlayService).scaledTouchSlop.coerceAtLeast(8)
-            val edgeSnapThresholdPx = dpToPx(28)
-            val uncollapseDragThresholdPx = dpToPx(30)
-
-            setOnTouchListener { view, event ->
-                val activeState = displayState.value
-                if (activeState == OverlayDisplayState.EXPANDED) return@setOnTouchListener false
-
-                val viewW = view.width.takeIf { it > 0 } ?: dpToPx(60)
-                val bounds = currentWindowBounds()
-                val minLeftX = bounds.safeLeftPx
-                val maxLeftX = (bounds.widthPx - bounds.safeRightPx - viewW).coerceAtLeast(minLeftX)
-                val minY = bounds.safeTopPx + dpToPx(8)
-                val maxY = (bounds.heightPx - bounds.safeBottomPx - dpToPx(88)).coerceAtLeast(minY)
-
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        windowSnapAnimator?.cancel()
-                        velocityTracker?.recycle()
-                        velocityTracker = VelocityTracker.obtain().apply { addMovement(event) }
-                        val isEndGravity = (overlayLayoutParams.gravity and Gravity.END) == Gravity.END
-                        startLeftPx = if (isEndGravity) {
-                            (bounds.widthPx - viewW - overlayLayoutParams.x).coerceIn(minLeftX, maxLeftX)
-                        } else {
-                            overlayLayoutParams.x.coerceIn(minLeftX, maxLeftX)
-                        }
-                        initialY = overlayLayoutParams.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
-                        moved = false
-                        isDraggingState.value = false
-                        false
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        velocityTracker?.addMovement(event)
-                        val dx = (event.rawX - initialTouchX).toInt()
-                        val dy = (event.rawY - initialTouchY).toInt()
-                        if (abs(dx) > touchSlopPx || abs(dy) > touchSlopPx) {
-                            moved = true
-                            isDraggingState.value = true
-                            val clampedY = (initialY + dy).coerceIn(minY, maxY)
-                            savedBubbleAnchorY = clampedY
-
-                            if (displayState.value == OverlayDisplayState.EDGE_COLLAPSED) {
-                                val pulledAway = (dockEdgeState.value == OverlayDockEdge.LEFT && dx > uncollapseDragThresholdPx) ||
-                                    (dockEdgeState.value == OverlayDockEdge.RIGHT && dx < -uncollapseDragThresholdPx)
-                                if (pulledAway) {
-                                    displayState.value = OverlayDisplayState.BUBBLE
-                                    overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
-                                    overlayLayoutParams.x = (startLeftPx + dx).coerceIn(minLeftX, maxLeftX)
-                                    overlayLayoutParams.y = clampedY
-                                } else {
-                                    // Stay flush to the docked safe edge while sliding vertically
-                                    overlayLayoutParams.x = if (dockEdgeState.value == OverlayDockEdge.LEFT) bounds.safeLeftPx else bounds.safeRightPx
-                                    overlayLayoutParams.y = clampedY
-                                }
-                            } else {
-                                overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
-                                overlayLayoutParams.x = (startLeftPx + dx).coerceIn(minLeftX, maxLeftX)
-                                overlayLayoutParams.y = clampedY
-                            }
-                            if (this.isAttachedToWindow) {
-                                runCatching { windowManager.updateViewLayout(this, overlayLayoutParams) }
-                            }
-                        }
-                        moved
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        isDraggingState.value = false
-                        velocityTracker?.addMovement(event)
-                        velocityTracker?.computeCurrentVelocity(1000)
-                        val vx = velocityTracker?.xVelocity ?: 0f
-                        velocityTracker?.recycle()
-                        velocityTracker = null
-
-                        if (moved && displayState.value == OverlayDisplayState.BUBBLE) {
-                            val currentLeft = overlayLayoutParams.x
-                            val safeMarginLeft = minLeftX
-                            val safeMarginRight = maxLeftX
-                            val clampedTarget = currentLeft.coerceIn(safeMarginLeft, safeMarginRight)
-                            if (clampedTarget != currentLeft) {
-                                overlayLayoutParams.x = clampedTarget
-                                if (this.isAttachedToWindow) {
-                                    runCatching { windowManager.updateViewLayout(this, overlayLayoutParams) }
-                                }
-                            }
-                        }
-                        moved
-                    }
-                    else -> false
-                }
-            }
-
             setContent {
                 TacticiansForgeTheme {
-                    OverlayRootContent(
-                        displayState = displayState.value,
-                        dockEdge = dockEdgeState.value,
-                        isDragging = isDraggingState.value,
+                    OverlayDrawerContent(
+                        isOpen = displayState.value == OverlayDisplayState.EXPANDED,
                         configVersion = configurationVersion.intValue,
                         customWidthDp = customWidthDpState.value,
                         customHeightDp = customHeightDpState.value,
                         allComps = allCompsState.value,
                         favoriteDocs = favoriteDocsState.value,
-                        windowOriginProvider = { overlayLayoutParams.x to overlayLayoutParams.y },
+                        windowOriginProvider = { drawerLayoutParams.x to drawerLayoutParams.y },
                         windowSizeProvider = {
                             val b = currentWindowBounds()
                             val activeW = customWidthDpState.value ?: currentDrawerDimensions(b).widthDp.value
@@ -1079,17 +968,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         },
                         onExtendFullWidth = ::extendExpandedToFullWidth,
                         onResetExpandedSize = ::resetExpandedSizeAndPosition,
-                        onExpandDrawer = {
-                            windowSnapAnimator?.cancel()
-                            transitionDisplayState(OverlayDisplayState.EXPANDED)
-                        },
-                        onMinimizeToBubble = {
-                            windowSnapAnimator?.cancel()
+                        onCloseDrawer = {
                             transitionDisplayState(OverlayDisplayState.BUBBLE)
-                        },
-                        onCollapseToEdge = {
-                            windowSnapAnimator?.cancel()
-                            transitionDisplayState(OverlayDisplayState.EDGE_COLLAPSED)
                         },
                         onRefresh = {
                             reloadCompsFromCache()
@@ -1097,30 +977,157 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                             syncOverlayMetaFromNetwork()
                         },
                         onToggleFavorite = ::toggleFavoriteInOverlay,
-                        onCloseOverlay = { stopSelf() }
+                        onStopOverlay = { stopSelf() }
                     )
                 }
             }
         }
 
-        overlayView = composeView
-        windowManager.addView(composeView, overlayLayoutParams)
+        val defaultBubbleSizePx = dpToPx(64)
+        val (initialBubbleX, initialBubbleY) = clampBubbleWindowPosition(
+            desiredX = initialBounds.safeLeftPx + dpToPx(12),
+            desiredY = initialBounds.safeTopPx + dpToPx(18),
+            viewWidthPx = defaultBubbleSizePx,
+            viewHeightPx = defaultBubbleSizePx,
+            bounds = initialBounds,
+            marginPx = dpToPx(6)
+        )
+        savedBubblePosPx = initialBubbleX to initialBubbleY
+
+        bubbleLayoutParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            windowType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = initialBubbleX
+            y = initialBubbleY
+            screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.BUBBLE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+
+        val bubbleComposeView = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@OverlayService)
+            setViewTreeViewModelStoreOwner(this@OverlayService)
+            setViewTreeSavedStateRegistryOwner(this@OverlayService)
+
+            var startX = initialBubbleX
+            var startY = initialBubbleY
+            var initialTouchX = 0f
+            var initialTouchY = 0f
+            var moved = false
+            val touchSlopPx = ViewConfiguration.get(this@OverlayService).scaledTouchSlop.coerceAtLeast(8)
+
+            setOnTouchListener { view, event ->
+                val viewW = view.width.takeIf { it > 0 } ?: defaultBubbleSizePx
+                val viewH = view.height.takeIf { it > 0 } ?: defaultBubbleSizePx
+                val bounds = currentWindowBounds()
+
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        startX = bubbleLayoutParams.x
+                        startY = bubbleLayoutParams.y
+                        initialTouchX = event.rawX
+                        initialTouchY = event.rawY
+                        moved = false
+                        isDraggingState.value = false
+                        // Return false so Compose Surface(onClick = ::toggleDrawerExpanded) receives taps
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = (event.rawX - initialTouchX).roundToInt()
+                        val dy = (event.rawY - initialTouchY).roundToInt()
+                        if (moved || abs(dx) > touchSlopPx || abs(dy) > touchSlopPx) {
+                            moved = true
+                            isDraggingState.value = true
+                            val (clampedX, clampedY) = clampBubbleWindowPosition(
+                                desiredX = startX + dx,
+                                desiredY = startY + dy,
+                                viewWidthPx = viewW,
+                                viewHeightPx = viewH,
+                                bounds = bounds,
+                                marginPx = dpToPx(6)
+                            )
+                            bubbleLayoutParams.gravity = Gravity.TOP or Gravity.START
+                            bubbleLayoutParams.x = clampedX
+                            bubbleLayoutParams.y = clampedY
+                            savedBubblePosPx = clampedX to clampedY
+                            if (this.isAttachedToWindow) {
+                                runCatching { windowManager.updateViewLayout(this, bubbleLayoutParams) }
+                            }
+                        }
+                        moved
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        isDraggingState.value = false
+                        if (moved) {
+                            val (clampedX, clampedY) = clampBubbleWindowPosition(
+                                desiredX = bubbleLayoutParams.x,
+                                desiredY = bubbleLayoutParams.y,
+                                viewWidthPx = viewW,
+                                viewHeightPx = viewH,
+                                bounds = bounds,
+                                marginPx = dpToPx(6)
+                            )
+                            if (clampedX != bubbleLayoutParams.x || clampedY != bubbleLayoutParams.y) {
+                                bubbleLayoutParams.x = clampedX
+                                bubbleLayoutParams.y = clampedY
+                                if (this.isAttachedToWindow) {
+                                    runCatching { windowManager.updateViewLayout(this, bubbleLayoutParams) }
+                                }
+                            }
+                            savedBubblePosPx = bubbleLayoutParams.x to bubbleLayoutParams.y
+                        }
+                        moved
+                    }
+                    else -> false
+                }
+            }
+
+            setContent {
+                TacticiansForgeTheme {
+                    OverlayFloatingBauble(
+                        isDrawerOpen = displayState.value == OverlayDisplayState.EXPANDED,
+                        isDragging = isDraggingState.value,
+                        allCompsCount = allCompsState.value.size,
+                        favoritesCount = favoriteDocsState.value.size,
+                        onToggleDrawer = ::toggleDrawerExpanded
+                    )
+                }
+            }
+        }
+
+        // Attach drawer first, then bubble second so the bauble always remains visible above the drawer
+        drawerView = drawerComposeView
+        windowManager.addView(drawerComposeView, drawerLayoutParams)
+        bubbleView = bubbleComposeView
+        windowManager.addView(bubbleComposeView, bubbleLayoutParams)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         displayManager?.unregisterDisplayListener(displayListener)
         displayManager = null
-        windowSnapAnimator?.cancel()
         serviceScope.cancel()
         OverlayController.setRunning(false)
-        overlayView?.let { view ->
+        bubbleView?.let { view ->
             runCatching { view.disposeComposition() }
             if (view.isAttachedToWindow) {
                 runCatching { windowManager.removeView(view) }
             }
         }
-        overlayView = null
+        bubbleView = null
+        drawerView?.let { view ->
+            runCatching { view.disposeComposition() }
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.removeView(view) }
+            }
+        }
+        drawerView = null
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
@@ -1139,12 +1146,95 @@ private enum class OverlayBrowseMode {
     FAVORITES
 }
 
+@Composable
+private fun OverlayFloatingBauble(
+    isDrawerOpen: Boolean,
+    isDragging: Boolean,
+    allCompsCount: Int,
+    favoritesCount: Int,
+    onToggleDrawer: () -> Unit
+) {
+    val badgeCount = if (favoritesCount > 0) favoritesCount else allCompsCount
+    val dragScale by animateFloatAsState(
+        targetValue = if (isDragging) 1.09f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+        label = "overlayBubbleDragScale"
+    )
+    val borderBrush = Brush.linearGradient(
+        when {
+            isDragging -> listOf(ArcaneCyan, BrightGold)
+            isDrawerOpen -> listOf(ArcaneCyan, BrightGold, ArcaneCyan)
+            else -> listOf(BrightGold, ArcaneCyan)
+        }
+    )
+
+    Box(
+        modifier = Modifier
+            .padding(2.dp)
+            .graphicsLayer {
+                scaleX = dragScale
+                scaleY = dragScale
+            }
+    ) {
+        Surface(
+            onClick = onToggleDrawer,
+            shape = CircleShape,
+            color = if (isDrawerOpen) DeepSlate.copy(alpha = 0.98f) else ObsidianVoid.copy(alpha = 0.96f),
+            border = BorderStroke(
+                width = if (isDragging || isDrawerOpen) 2.5.dp else 2.dp,
+                brush = borderBrush
+            ),
+            shadowElevation = if (isDragging || isDrawerOpen) 16.dp else 10.dp,
+            modifier = Modifier
+                .size(58.dp)
+                .testTag("overlay_bubble_button")
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = if (isDrawerOpen) Icons.Default.CloseFullscreen else Icons.Default.AutoAwesome,
+                    contentDescription = if (isDrawerOpen) {
+                        "Close Live Match Overlay Drawer"
+                    } else {
+                        "Open Live Match Overlay Drawer"
+                    },
+                    tint = if (isDrawerOpen) ArcaneCyan else BrightGold,
+                    modifier = Modifier.size(24.dp)
+                )
+                if (badgeCount > 0 && !isDrawerOpen) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(5.dp)
+                            .size(18.dp)
+                            .background(ArcaneCyan, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = badgeCount.coerceAtMost(99).toString(),
+                            color = ObsidianVoid,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else if (isDrawerOpen) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 5.dp)
+                            .width(16.dp)
+                            .height(3.dp)
+                            .background(BrightGold, RoundedCornerShape(2.dp))
+                    )
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalComposeUiApi::class)
 @Composable
-private fun OverlayRootContent(
-    displayState: OverlayDisplayState,
-    dockEdge: OverlayDockEdge,
-    isDragging: Boolean,
+private fun OverlayDrawerContent(
+    isOpen: Boolean,
     configVersion: Int,
     customWidthDp: Float?,
     customHeightDp: Float?,
@@ -1157,12 +1247,10 @@ private fun OverlayRootContent(
     onResizeExpandedWindow: (Float?, Float?, Int?) -> Unit,
     onExtendFullWidth: () -> Unit,
     onResetExpandedSize: () -> Unit,
-    onExpandDrawer: () -> Unit,
-    onMinimizeToBubble: () -> Unit,
-    onCollapseToEdge: () -> Unit,
+    onCloseDrawer: () -> Unit,
     onRefresh: () -> Unit,
     onToggleFavorite: (MetaComp) -> Unit,
-    onCloseOverlay: () -> Unit
+    onStopOverlay: () -> Unit
 ) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -1193,6 +1281,7 @@ private fun OverlayRootContent(
         useTwoColumnCards = activeWidthDp >= 430.dp
     )
     val isCustomResized = customWidthDp != null || customHeightDp != null
+    if (!isOpen) return
     val favoriteIds = remember(favoriteDocs) {
         favoriteDocs.map { it.compId.ifBlank { it.id } }.toSet()
     }
@@ -1207,442 +1296,237 @@ private fun OverlayRootContent(
         }
         byId.values.toList()
     }
-    val dragScale by animateFloatAsState(
-        targetValue = if (isDragging) 1.09f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
-        label = "overlayDragScale"
-    )
 
-    AnimatedContent(
-        targetState = displayState,
-        transitionSpec = {
-            (fadeIn(tween(180)) + scaleIn(initialScale = 0.94f, animationSpec = tween(180))) togetherWith
-                (fadeOut(tween(120)) + scaleOut(targetScale = 0.94f, animationSpec = tween(120)))
-        },
-        label = "overlayDisplayStateTransition"
-    ) { state ->
-        when (state) {
-            OverlayDisplayState.EDGE_COLLAPSED -> {
-                val badgeCount = if (favoriteDocs.isNotEmpty()) favoriteDocs.size else mergedAllComps.size
-                val isLeft = dockEdge == OverlayDockEdge.LEFT
-                val tabShape = if (isLeft) {
-                    RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 16.dp, bottomEnd = 16.dp)
-                } else {
-                    RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp, topEnd = 0.dp, bottomEnd = 0.dp)
-                }
-                val pullIcon = if (isLeft) {
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight
-                } else {
-                    Icons.AutoMirrored.Filled.KeyboardArrowLeft
-                }
+    var browseMode by remember { mutableStateOf(OverlayBrowseMode.ALL_COMPS) }
+    var envFilter by remember { mutableStateOf(TftEnvironment.LIVE) }
+    var tierFilter by remember { mutableStateOf<TierRank?>(null) }
+    var selectedCompId by remember { mutableStateOf<String?>(null) }
 
-                // 48dp accessible hit box while visible Hextech tab stays slim flush against screen edge
-                Box(
-                    modifier = Modifier
-                        .width(48.dp)
-                        .height(74.dp)
-                        .graphicsLayer {
-                            scaleX = dragScale
-                            scaleY = dragScale
-                        }
-                        .clip(tabShape)
-                        .clickable(onClick = onExpandDrawer)
-                        .testTag("overlay_edge_tab"),
-                    contentAlignment = if (isLeft) Alignment.CenterStart else Alignment.CenterEnd
-                ) {
-                    Surface(
-                        shape = tabShape,
-                        color = ObsidianVoid.copy(alpha = 0.90f),
-                        border = BorderStroke(
-                            width = 1.5.dp,
-                            brush = Brush.verticalGradient(listOf(BrightGold, ArcaneCyan))
-                        ),
-                        shadowElevation = 8.dp,
-                        modifier = Modifier
-                            .width(30.dp)
-                            .height(68.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(vertical = 6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Icon(
-                                imageVector = pullIcon,
-                                contentDescription = "Open edge-docked Live Match Overlay",
-                                tint = BrightGold,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .width(3.dp)
-                                    .height(14.dp)
-                                    .background(
-                                        Brush.verticalGradient(listOf(BrightGold, ArcaneCyan)),
-                                        RoundedCornerShape(2.dp)
-                                    )
-                            )
-                            if (badgeCount > 0) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(17.dp)
-                                        .background(ArcaneCyan, CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = badgeCount.coerceAtMost(99).toString(),
-                                        color = ObsidianVoid,
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = ArcaneCyan,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
-                        }
-                    }
-                }
+    val favoriteComps = remember(mergedAllComps, favoriteDocs, favoriteIds) {
+        val matched = mergedAllComps.filter { favoriteIds.contains(it.id) }
+        val extra = favoriteDocs
+            .filter { doc -> matched.none { it.id == doc.compId || it.id == doc.id } }
+            .map { it.toMetaComp() }
+        matched + extra
+    }
+
+    val envScopedCompsCount = remember(mergedAllComps, envFilter) {
+        mergedAllComps.count { it.environment == envFilter }
+    }
+    val envScopedFavoritesCount = remember(favoriteComps, envFilter) {
+        favoriteComps.count { it.environment == envFilter }
+    }
+
+    val displayed = remember(mergedAllComps, favoriteComps, browseMode, envFilter, tierFilter) {
+        val source = if (browseMode == OverlayBrowseMode.FAVORITES) favoriteComps else mergedAllComps
+        source.filter { comp ->
+            val matchesEnv = comp.environment == envFilter
+            val matchesTier = tierFilter == null || comp.tier == tierFilter
+            matchesEnv && matchesTier
+        }
+    }
+    val displayedByTier = remember(displayed) {
+        groupCompsByTier(displayed)
+    }
+    val selectedComp = remember(displayed, selectedCompId) {
+        displayed.firstOrNull { it.id == selectedCompId }
+    }
+    // All tier sub-headers in the Live Match Drawer start closed until opened
+    var expandedOverlayTiers by remember(browseMode, envFilter) {
+        mutableStateOf(emptySet<TierRank>())
+    }
+
+    var moveStartOrigin by remember { mutableStateOf(0 to 0) }
+    var moveStartRaw by remember { mutableStateOf(0f to 0f) }
+    var resizeStartSize by remember { mutableStateOf(drawerDims.widthDp.value to drawerDims.maxHeightDp.value) }
+    var resizeStartRaw by remember { mutableStateOf(0f to 0f) }
+
+    val surfaceSizeModifier = if (activeHeightDp != null) {
+        Modifier
+            .width(activeWidthDp)
+            .height(activeHeightDp)
+    } else {
+        Modifier
+            .width(activeWidthDp)
+            .heightIn(max = drawerDims.maxHeightDp)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = ObsidianVoid.copy(alpha = 0.96f),
+        border = BorderStroke(
+            width = 1.6.dp,
+            brush = Brush.linearGradient(listOf(BrightGold, ArcaneCyan))
+        ),
+        shadowElevation = 16.dp,
+        modifier = surfaceSizeModifier.testTag("overlay_expanded_drawer")
+    ) {
+        Box(
+            modifier = if (activeHeightDp != null) {
+                Modifier.fillMaxWidth().fillMaxHeight()
+            } else {
+                Modifier.fillMaxWidth()
             }
-
-            OverlayDisplayState.BUBBLE -> {
-                val badgeCount = if (favoriteDocs.isNotEmpty()) favoriteDocs.size else mergedAllComps.size
-                val collapseArrow = if (dockEdge == OverlayDockEdge.LEFT) {
-                    Icons.AutoMirrored.Filled.KeyboardArrowLeft
+        ) {
+            Column(
+                modifier = (if (activeHeightDp != null) {
+                    Modifier.fillMaxWidth().fillMaxHeight()
                 } else {
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight
-                }
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.graphicsLayer {
-                        scaleX = dragScale
-                        scaleY = dragScale
-                    }
+                    Modifier.fillMaxWidth()
+                })
+                    .padding(
+                        start = 14.dp,
+                        end = 14.dp,
+                        top = 8.dp,
+                        bottom = 12.dp
+                    )
+            ) {
+                val inlineBrowseChips = drawerDims.widthDp >= 430.dp
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Surface(
-                        onClick = onExpandDrawer,
-                        shape = CircleShape,
-                        color = ObsidianVoid.copy(alpha = 0.96f),
-                        border = BorderStroke(
-                            width = if (isDragging) 2.5.dp else 2.dp,
-                            brush = Brush.linearGradient(
-                                if (isDragging) listOf(ArcaneCyan, BrightGold) else listOf(BrightGold, ArcaneCyan)
-                            )
-                        ),
-                        shadowElevation = if (isDragging) 16.dp else 10.dp,
-                        modifier = Modifier
-                            .size(58.dp)
-                            .testTag("overlay_bubble_button")
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = "Expand Live Match Comps & Favorites Drawer",
-                                tint = BrightGold,
-                                modifier = Modifier.size(25.dp)
-                            )
-                            if (badgeCount > 0) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(5.dp)
-                                        .size(18.dp)
-                                        .background(ArcaneCyan, CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = badgeCount.coerceAtMost(99).toString(),
-                                        color = ObsidianVoid,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Dedicated 1-tap Collapse-to-Edge handle underneath the bubble
-                    Surface(
-                        onClick = onCollapseToEdge,
-                        shape = RoundedCornerShape(10.dp),
-                        color = ObsidianVoid.copy(alpha = 0.90f),
-                        border = BorderStroke(1.dp, BrushedGold.copy(alpha = 0.78f)),
-                        shadowElevation = 6.dp,
-                        modifier = Modifier
-                            .height(24.dp)
-                            .testTag("overlay_bubble_collapse_button")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            modifier = Modifier
+                                .pointerInteropFilter { event ->
+                                    when (event.actionMasked) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            moveStartOrigin = windowOriginProvider()
+                                            moveStartRaw = event.rawX to event.rawY
+                                            true
+                                        }
+                                        MotionEvent.ACTION_MOVE -> {
+                                            val dx = (event.rawX - moveStartRaw.first).roundToInt()
+                                            val dy = (event.rawY - moveStartRaw.second).roundToInt()
+                                            onMoveExpandedWindow(
+                                                moveStartOrigin.first + dx,
+                                                moveStartOrigin.second + dy
+                                            )
+                                            true
+                                        }
+                                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                                        else -> false
+                                    }
+                                }
+                                .testTag("overlay_drag_move_header")
                         ) {
                             Icon(
-                                imageVector = collapseArrow,
-                                contentDescription = "Collapse overlay to screen edge",
+                                imageVector = Icons.Default.DragIndicator,
+                                contentDescription = "Drag to move overlay",
+                                tint = Color(0xFF93A1B8),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
                                 tint = BrightGold,
-                                modifier = Modifier.size(13.dp)
+                                modifier = Modifier.size(15.dp)
                             )
+                            Spacer(Modifier.width(4.dp))
                             Text(
-                                text = "Dock",
-                                fontSize = 9.sp,
+                                text = "LIVE MATCH",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = BrightGold,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFFF3F7FF)
+                                maxLines = 1
+                            )
+                        }
+                        if (inlineBrowseChips) {
+                            OverlayEnvChip(
+                                label = "${envFilter.label} ($envScopedCompsCount)",
+                                selected = browseMode == OverlayBrowseMode.ALL_COMPS,
+                                icon = Icons.AutoMirrored.Filled.FormatListBulleted,
+                                onClick = {
+                                    browseMode = OverlayBrowseMode.ALL_COMPS
+                                    selectedCompId = null
+                                }
+                            )
+                            OverlayEnvChip(
+                                label = "Favs ($envScopedFavoritesCount)",
+                                selected = browseMode == OverlayBrowseMode.FAVORITES,
+                                icon = Icons.Filled.Star,
+                                onClick = {
+                                    browseMode = OverlayBrowseMode.FAVORITES
+                                    selectedCompId = null
+                                }
                             )
                         }
                     }
-                }
-            }
-
-            OverlayDisplayState.EXPANDED -> {
-                var browseMode by remember { mutableStateOf(OverlayBrowseMode.ALL_COMPS) }
-                var envFilter by remember { mutableStateOf(TftEnvironment.LIVE) }
-                var tierFilter by remember { mutableStateOf<TierRank?>(null) }
-                var selectedCompId by remember { mutableStateOf<String?>(null) }
-                val collapseArrow = if (dockEdge == OverlayDockEdge.LEFT) {
-                    Icons.AutoMirrored.Filled.KeyboardArrowLeft
-                } else {
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight
-                }
-
-                val favoriteComps = remember(mergedAllComps, favoriteDocs, favoriteIds) {
-                    val matched = mergedAllComps.filter { favoriteIds.contains(it.id) }
-                    val extra = favoriteDocs
-                        .filter { doc -> matched.none { it.id == doc.compId || it.id == doc.id } }
-                        .map { it.toMetaComp() }
-                    matched + extra
-                }
-
-                val envScopedCompsCount = remember(mergedAllComps, envFilter) {
-                    mergedAllComps.count { it.environment == envFilter }
-                }
-                val envScopedFavoritesCount = remember(favoriteComps, envFilter) {
-                    favoriteComps.count { it.environment == envFilter }
-                }
-
-                val displayed = remember(mergedAllComps, favoriteComps, browseMode, envFilter, tierFilter) {
-                    val source = if (browseMode == OverlayBrowseMode.FAVORITES) favoriteComps else mergedAllComps
-                    source.filter { comp ->
-                        val matchesEnv = comp.environment == envFilter
-                        val matchesTier = tierFilter == null || comp.tier == tierFilter
-                        matchesEnv && matchesTier
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val isAtFullWidth = activeWidthDp.value >= sizeBounds.maxWidthDp - 6f
+                        IconButton(
+                            onClick = {
+                                if (isAtFullWidth) {
+                                    val compactW = (sizeBounds.maxWidthDp * 0.62f)
+                                        .coerceAtLeast(sizeBounds.minWidthDp)
+                                    onResizeExpandedWindow(compactW, customHeightDp, null)
+                                } else {
+                                    onExtendFullWidth()
+                                }
+                            },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("overlay_extend_full_width_button")
+                        ) {
+                            Icon(
+                                if (isAtFullWidth) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
+                                contentDescription = if (isAtFullWidth) {
+                                    "Compact overlay width"
+                                } else {
+                                    "Extend overlay across full device width"
+                                },
+                                tint = ArcaneCyan,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        if (isCustomResized) {
+                            IconButton(
+                                onClick = onResetExpandedSize,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .testTag("overlay_reset_size_button")
+                            ) {
+                                Icon(
+                                    Icons.Default.RestartAlt,
+                                    contentDescription = "Reset overlay to default landscape size",
+                                    tint = BrightGold,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = onRefresh,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("overlay_refresh_button")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh comps & favorites", tint = ArcaneCyan, modifier = Modifier.size(16.dp))
+                        }
+                        IconButton(
+                            onClick = onCloseDrawer,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("overlay_minimize_bubble_button")
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close overlay drawer (keep bauble visible)", tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(
+                            onClick = onStopOverlay,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("overlay_close_button")
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Stop overlay", tint = Color(0xFFE74C3C), modifier = Modifier.size(16.dp))
+                        }
                     }
                 }
-                val displayedByTier = remember(displayed) {
-                    groupCompsByTier(displayed)
-                }
-                val selectedComp = remember(displayed, selectedCompId) {
-                    displayed.firstOrNull { it.id == selectedCompId }
-                }
-                // All tier sub-headers in the Live Match Drawer start closed until opened
-                var expandedOverlayTiers by remember(browseMode, envFilter) {
-                    mutableStateOf(emptySet<TierRank>())
-                }
-
-                var moveStartOrigin by remember { mutableStateOf(0 to 0) }
-                var moveStartRaw by remember { mutableStateOf(0f to 0f) }
-                var resizeStartSize by remember { mutableStateOf(drawerDims.widthDp.value to drawerDims.maxHeightDp.value) }
-                var resizeStartRaw by remember { mutableStateOf(0f to 0f) }
-
-                val surfaceSizeModifier = if (activeHeightDp != null) {
-                    Modifier
-                        .width(activeWidthDp)
-                        .height(activeHeightDp)
-                } else {
-                    Modifier
-                        .width(activeWidthDp)
-                        .heightIn(max = drawerDims.maxHeightDp)
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = ObsidianVoid.copy(alpha = 0.96f),
-                    border = BorderStroke(
-                        width = 1.6.dp,
-                        brush = Brush.linearGradient(listOf(BrightGold, ArcaneCyan))
-                    ),
-                    shadowElevation = 16.dp,
-                    modifier = surfaceSizeModifier.testTag("overlay_expanded_drawer")
-                ) {
-                    Box(
-                        modifier = if (activeHeightDp != null) {
-                            Modifier.fillMaxWidth().fillMaxHeight()
-                        } else {
-                            Modifier.fillMaxWidth()
-                        }
-                    ) {
-                        Column(
-                            modifier = (if (activeHeightDp != null) {
-                                Modifier.fillMaxWidth().fillMaxHeight()
-                            } else {
-                                Modifier.fillMaxWidth()
-                            })
-                                .padding(
-                                    start = 14.dp,
-                                    end = 14.dp,
-                                    top = 8.dp,
-                                    bottom = 12.dp
-                                )
-                        ) {
-                            val inlineBrowseChips = drawerDims.widthDp >= 430.dp
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .pointerInteropFilter { event ->
-                                                when (event.actionMasked) {
-                                                    MotionEvent.ACTION_DOWN -> {
-                                                        moveStartOrigin = windowOriginProvider()
-                                                        moveStartRaw = event.rawX to event.rawY
-                                                        true
-                                                    }
-                                                    MotionEvent.ACTION_MOVE -> {
-                                                        val dx = (event.rawX - moveStartRaw.first).roundToInt()
-                                                        val dy = (event.rawY - moveStartRaw.second).roundToInt()
-                                                        onMoveExpandedWindow(
-                                                            moveStartOrigin.first + dx,
-                                                            moveStartOrigin.second + dy
-                                                        )
-                                                        true
-                                                    }
-                                                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
-                                                    else -> false
-                                                }
-                                            }
-                                            .testTag("overlay_drag_move_header")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.DragIndicator,
-                                            contentDescription = "Drag to move overlay",
-                                            tint = Color(0xFF93A1B8),
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Icon(
-                                            imageVector = Icons.Default.AutoAwesome,
-                                            contentDescription = null,
-                                            tint = BrightGold,
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(
-                                            text = "LIVE MATCH",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = BrightGold,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1
-                                        )
-                                    }
-                                    if (inlineBrowseChips) {
-                                        OverlayEnvChip(
-                                            label = "${envFilter.label} ($envScopedCompsCount)",
-                                            selected = browseMode == OverlayBrowseMode.ALL_COMPS,
-                                            icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                                            onClick = {
-                                                browseMode = OverlayBrowseMode.ALL_COMPS
-                                                selectedCompId = null
-                                            }
-                                        )
-                                        OverlayEnvChip(
-                                            label = "Favs ($envScopedFavoritesCount)",
-                                            selected = browseMode == OverlayBrowseMode.FAVORITES,
-                                            icon = Icons.Filled.Star,
-                                            onClick = {
-                                                browseMode = OverlayBrowseMode.FAVORITES
-                                                selectedCompId = null
-                                            }
-                                        )
-                                    }
-                                }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    val isAtFullWidth = activeWidthDp.value >= sizeBounds.maxWidthDp - 6f
-                                    IconButton(
-                                        onClick = {
-                                            if (isAtFullWidth) {
-                                                val compactW = (sizeBounds.maxWidthDp * 0.62f)
-                                                    .coerceAtLeast(sizeBounds.minWidthDp)
-                                                onResizeExpandedWindow(compactW, customHeightDp, null)
-                                            } else {
-                                                onExtendFullWidth()
-                                            }
-                                        },
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .testTag("overlay_extend_full_width_button")
-                                    ) {
-                                        Icon(
-                                            if (isAtFullWidth) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
-                                            contentDescription = if (isAtFullWidth) {
-                                                "Compact overlay width"
-                                            } else {
-                                                "Extend overlay across full device width"
-                                            },
-                                            tint = ArcaneCyan,
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                    }
-                                    if (isCustomResized) {
-                                        IconButton(
-                                            onClick = onResetExpandedSize,
-                                            modifier = Modifier
-                                                .size(32.dp)
-                                                .testTag("overlay_reset_size_button")
-                                        ) {
-                                            Icon(
-                                                Icons.Default.RestartAlt,
-                                                contentDescription = "Reset overlay to default landscape size",
-                                                tint = BrightGold,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    }
-                                    IconButton(
-                                        onClick = onRefresh,
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .testTag("overlay_refresh_button")
-                                    ) {
-                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh comps & favorites", tint = ArcaneCyan, modifier = Modifier.size(16.dp))
-                                    }
-                                    IconButton(
-                                        onClick = onCollapseToEdge,
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .testTag("overlay_collapse_edge_button")
-                                    ) {
-                                        Icon(collapseArrow, contentDescription = "Collapse to screen edge", tint = BrightGold, modifier = Modifier.size(18.dp))
-                                    }
-                                    IconButton(
-                                        onClick = onMinimizeToBubble,
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .testTag("overlay_minimize_bubble_button")
-                                    ) {
-                                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize to floating bubble", tint = Color.White, modifier = Modifier.size(18.dp))
-                                    }
-                                    IconButton(
-                                        onClick = onCloseOverlay,
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .testTag("overlay_close_button")
-                                    ) {
-                                        Icon(Icons.Default.Close, contentDescription = "Stop overlay", tint = Color(0xFFE74C3C), modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            }
 
                         // Compact single filter strip while browsing comps list
                         if (selectedComp == null) {
@@ -2074,9 +1958,6 @@ private fun OverlayRootContent(
                                 )
                             }
                         }
-                    }
-                }
-            }
         }
     }
 }

@@ -55,7 +55,8 @@ data class MetaComp(
     val levelingGuide: String,
     val notes: String,
     val setName: String = environment.setName,
-    val sourceUrl: String = "https://tftacademy.com/tierlist/comps"
+    val sourceUrl: String = "https://tftacademy.com/tierlist/comps",
+    val teamPlannerCode: String = ""
 )
 
 data class ChampionTierEntry(

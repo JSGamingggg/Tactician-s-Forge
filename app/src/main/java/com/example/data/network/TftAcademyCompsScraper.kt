@@ -1064,6 +1064,16 @@ class TftAcademyCompsScraper(
                                     .ifBlank { node.optString("description") }
                                     .ifBlank { node.optString("augmentsTip") }
                             )
+                            val rawTeamCode = listOf(
+                                node.optString("teamCode"),
+                                node.optString("team_code"),
+                                node.optString("teamPlannerCode"),
+                                node.optString("team_planner_code"),
+                                node.optString("plannerCode"),
+                                node.optString("teamBuilderCode")
+                            ).firstOrNull {
+                                com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(it)
+                            }?.trim().orEmpty()
 
                             out.add(
                                 MetaComp(
@@ -1087,7 +1097,8 @@ class TftAcademyCompsScraper(
                                     levelingGuide = leveling,
                                     notes = compNotes,
                                     setName = resolvedSet,
-                                    sourceUrl = compUrlForEnvironment(targetEnv)
+                                    sourceUrl = compUrlForEnvironment(targetEnv),
+                                    teamPlannerCode = rawTeamCode
                                 )
                             )
                         }

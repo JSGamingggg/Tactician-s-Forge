@@ -3,6 +3,8 @@ package com.example.overlay
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -24,6 +26,7 @@ import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -70,8 +73,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloseFullscreen
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -88,11 +93,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -147,6 +154,7 @@ import com.example.data.repository.FirestoreUserRepository
 import com.example.data.repository.LocalPreferencesStore
 import com.example.data.repository.MetaCacheUpdates
 import com.example.data.repository.MetaRepository
+import com.example.data.teamplanner.TftTeamPlannerCodeEncoder
 import com.example.notifications.MetaUpdateNotifier
 import com.example.notifications.TftNotificationHelper
 import com.example.ui.components.ChampionDetailSheetContent
@@ -475,6 +483,10 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private val allChampionsState = mutableStateOf<List<ChampionTierEntry>>(emptyList())
     private val allItemsState = mutableStateOf<List<ItemTierEntry>>(emptyList())
     private val favoriteDocsState = mutableStateOf<List<FavoriteCompDoc>>(emptyList())
+    private val sessionState = OverlaySessionState()
+    private val copiedCompIdState = mutableStateOf<String?>(null)
+    private val copyBannerMessageState = mutableStateOf<String?>(null)
+    private var copyFeedbackClearJob: Job? = null
     private var favoritesObserverJob: Job? = null
     private var activeOverlaySyncJob: Job? = null
 
@@ -511,11 +523,43 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         reloadCompsFromCache()
         observeCacheAndFavorites()
         startOverlayAutoSyncLoop()
+        warmTeamPlannerMappings()
 
         TftNotificationHelper.ensureChannels(this)
         startCompliantForeground()
         attachOverlayView()
         OverlayController.setRunning(true)
+    }
+
+    private fun warmTeamPlannerMappings() {
+        serviceScope.launch {
+            runCatching {
+                TftTeamPlannerCodeEncoder.ensureMappingLoaded(applicationContext, TftEnvironment.LIVE)
+                TftTeamPlannerCodeEncoder.ensureMappingLoaded(applicationContext, TftEnvironment.PBE)
+            }
+        }
+    }
+
+    private fun copyCompTeamCode(comp: MetaComp) {
+        copyFeedbackClearJob?.cancel()
+        copyBannerMessageState.value = "Generating Team Planner code for ${comp.title}…"
+        serviceScope.launch {
+            val result = TftTeamPlannerCodeEncoder.resolveTeamCode(applicationContext, comp)
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            clipboard?.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
+            copiedCompIdState.value = comp.id
+            copyBannerMessageState.value = if (result.isVerifiedRiotMapping) {
+                "Copied Team Planner code for ${comp.title} • Paste in TFT"
+            } else {
+                "Copied code for ${comp.title} (offline IDs — sync online to verify)"
+            }
+            copyFeedbackClearJob?.cancel()
+            copyFeedbackClearJob = serviceScope.launch {
+                delay(2600L)
+                copiedCompIdState.value = null
+                copyBannerMessageState.value = null
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -964,6 +1008,9 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         allChampions = allChampionsState.value,
                         allItems = allItemsState.value,
                         favoriteDocs = favoriteDocsState.value,
+                        sessionState = sessionState,
+                        copiedCompId = copiedCompIdState.value,
+                        copyBannerMessage = copyBannerMessageState.value,
                         windowOriginProvider = { drawerLayoutParams.x to drawerLayoutParams.y },
                         windowSizeProvider = {
                             val b = currentWindowBounds()
@@ -998,6 +1045,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                             syncOverlayMetaFromNetwork()
                         },
                         onToggleFavorite = ::toggleFavoriteInOverlay,
+                        onCopyCompCode = ::copyCompTeamCode,
                         onStopOverlay = { stopSelf() }
                     )
                 }
@@ -1134,6 +1182,11 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         super.onDestroy()
         displayManager?.unregisterDisplayListener(displayListener)
         displayManager = null
+        copyFeedbackClearJob?.cancel()
+        copiedCompIdState.value = null
+        copyBannerMessageState.value = null
+        // Clear remembered filters and composition only when overlay is fully closed off
+        sessionState.reset()
         serviceScope.cancel()
         OverlayController.setRunning(false)
         bubbleView?.let { view ->
@@ -1161,11 +1214,6 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         private const val ACTIVE_OVERLAY_SYNC_INTERVAL_MS = 60_000L
         const val ACTION_STOP_OVERLAY = "com.example.overlay.ACTION_STOP"
     }
-}
-
-private enum class OverlayBrowseMode {
-    ALL_COMPS,
-    FAVORITES
 }
 
 @Composable
@@ -1271,6 +1319,9 @@ private fun OverlayDrawerContent(
     allChampions: List<ChampionTierEntry> = emptyList(),
     allItems: List<ItemTierEntry> = emptyList(),
     favoriteDocs: List<FavoriteCompDoc>,
+    sessionState: OverlaySessionState,
+    copiedCompId: String?,
+    copyBannerMessage: String?,
     windowOriginProvider: () -> Pair<Int, Int>,
     windowSizeProvider: () -> Pair<Float, Float>,
     densityProvider: () -> Float,
@@ -1281,6 +1332,7 @@ private fun OverlayDrawerContent(
     onCloseDrawer: () -> Unit,
     onRefresh: () -> Unit,
     onToggleFavorite: (MetaComp) -> Unit,
+    onCopyCompCode: (MetaComp) -> Unit,
     onStopOverlay: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1328,11 +1380,13 @@ private fun OverlayDrawerContent(
         byId.values.toList()
     }
 
-    var browseMode by remember { mutableStateOf(OverlayBrowseMode.ALL_COMPS) }
-    var envFilter by remember { mutableStateOf(TftEnvironment.LIVE) }
-    var tierFilter by remember { mutableStateOf<TierRank?>(null) }
-    var selectedCompId by remember { mutableStateOf<String?>(null) }
-    var inspectedOverlayChampion by remember { mutableStateOf<Pair<String, Int?>?>(null) }
+    // All user inputs and selected composition live in OverlaySessionState until full close
+    val browseMode = sessionState.browseMode
+    val envFilter = sessionState.envFilter
+    val tierFilter = sessionState.tierFilter
+    val selectedCompId = sessionState.selectedCompId
+    val inspectedOverlayChampion = sessionState.inspectedChampion
+    val expandedOverlayTiers = sessionState.expandedTiers
 
     val favoriteComps = remember(mergedAllComps, favoriteDocs, favoriteIds) {
         val matched = mergedAllComps.filter { favoriteIds.contains(it.id) }
@@ -1360,12 +1414,10 @@ private fun OverlayDrawerContent(
     val displayedByTier = remember(displayed) {
         groupCompsByTier(displayed)
     }
-    val selectedComp = remember(displayed, selectedCompId) {
-        displayed.firstOrNull { it.id == selectedCompId }
-    }
-    // All tier sub-headers in the Live Match Drawer start closed until opened
-    var expandedOverlayTiers by remember(browseMode, envFilter) {
-        mutableStateOf(emptySet<TierRank>())
+    val selectedComp = remember(displayed, mergedAllComps, selectedCompId) {
+        if (selectedCompId == null) null
+        else displayed.firstOrNull { it.id == selectedCompId }
+            ?: mergedAllComps.firstOrNull { it.id == selectedCompId }
     }
 
     var moveStartOrigin by remember { mutableStateOf(0 to 0) }
@@ -1476,8 +1528,7 @@ private fun OverlayDrawerContent(
                                 selected = browseMode == OverlayBrowseMode.ALL_COMPS,
                                 icon = Icons.AutoMirrored.Filled.FormatListBulleted,
                                 onClick = {
-                                    browseMode = OverlayBrowseMode.ALL_COMPS
-                                    selectedCompId = null
+                                    sessionState.selectBrowseMode(OverlayBrowseMode.ALL_COMPS)
                                 }
                             )
                             OverlayEnvChip(
@@ -1485,8 +1536,7 @@ private fun OverlayDrawerContent(
                                 selected = browseMode == OverlayBrowseMode.FAVORITES,
                                 icon = Icons.Filled.Star,
                                 onClick = {
-                                    browseMode = OverlayBrowseMode.FAVORITES
-                                    selectedCompId = null
+                                    sessionState.selectBrowseMode(OverlayBrowseMode.FAVORITES)
                                 }
                             )
                         }
@@ -1576,8 +1626,7 @@ private fun OverlayDrawerContent(
                                         selected = browseMode == OverlayBrowseMode.ALL_COMPS,
                                         icon = Icons.AutoMirrored.Filled.FormatListBulleted,
                                         onClick = {
-                                            browseMode = OverlayBrowseMode.ALL_COMPS
-                                            selectedCompId = null
+                                            sessionState.selectBrowseMode(OverlayBrowseMode.ALL_COMPS)
                                         }
                                     )
                                     OverlayEnvChip(
@@ -1585,18 +1634,15 @@ private fun OverlayDrawerContent(
                                         selected = browseMode == OverlayBrowseMode.FAVORITES,
                                         icon = Icons.Filled.Star,
                                         onClick = {
-                                            browseMode = OverlayBrowseMode.FAVORITES
-                                            selectedCompId = null
+                                            sessionState.selectBrowseMode(OverlayBrowseMode.FAVORITES)
                                         }
                                     )
                                 }
                                 OverlayEnvChip("LIVE", envFilter == TftEnvironment.LIVE, Icons.Default.Bolt) {
-                                    envFilter = TftEnvironment.LIVE
-                                    selectedCompId = null
+                                    sessionState.selectEnvironment(TftEnvironment.LIVE)
                                 }
                                 OverlayEnvChip("PBE", envFilter == TftEnvironment.PBE, Icons.Default.Science) {
-                                    envFilter = TftEnvironment.PBE
-                                    selectedCompId = null
+                                    sessionState.selectEnvironment(TftEnvironment.PBE)
                                 }
                                 TierRank.entries.forEach { t ->
                                     val tColor = when (t) {
@@ -1612,7 +1658,7 @@ private fun OverlayDrawerContent(
                                         accentColor = tColor,
                                         icon = if (t == TierRank.S) Icons.Default.WorkspacePremium else null
                                     ) {
-                                        tierFilter = if (tierFilter == t) null else t
+                                        sessionState.toggleTierFilter(t)
                                     }
                                 }
                                 if (displayedByTier.isNotEmpty()) {
@@ -1622,11 +1668,10 @@ private fun OverlayDrawerContent(
                                         selected = anyOpen,
                                         accentColor = ArcaneCyan
                                     ) {
-                                        expandedOverlayTiers = if (anyOpen) {
-                                            emptySet()
-                                        } else {
-                                            displayedByTier.map { it.first }.toSet()
-                                        }
+                                        sessionState.setExpandedTiers(
+                                            if (anyOpen) emptySet()
+                                            else displayedByTier.map { it.first }.toSet()
+                                        )
                                     }
                                 }
                             }
@@ -1685,7 +1730,7 @@ private fun OverlayDrawerContent(
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 Surface(
-                                                    onClick = { inspectedOverlayChampion = null },
+                                                    onClick = { sessionState.closeChampionInspector() },
                                                     shape = RoundedCornerShape(8.dp),
                                                     color = SlateElevated,
                                                     border = BorderStroke(1.dp, ArcaneCyan.copy(alpha = 0.65f)),
@@ -1717,7 +1762,7 @@ private fun OverlayDrawerContent(
                                                     fontWeight = FontWeight.Bold
                                                 )
                                                 IconButton(
-                                                    onClick = { inspectedOverlayChampion = null },
+                                                    onClick = { sessionState.closeChampionInspector() },
                                                     modifier = Modifier.size(32.dp)
                                                 ) {
                                                     Icon(
@@ -1732,12 +1777,10 @@ private fun OverlayDrawerContent(
                                                 profile = profile,
                                                 onClose = null,
                                                 onSelectChampion = { nextName, nextCost ->
-                                                    inspectedOverlayChampion = nextName to nextCost
+                                                    sessionState.inspectChampion(nextName, nextCost)
                                                 },
                                                 onOpenComp = { targetComp ->
-                                                    envFilter = targetComp.environment
-                                                    selectedCompId = targetComp.id
-                                                    inspectedOverlayChampion = null
+                                                    sessionState.openCompInEnvironment(targetComp.id, targetComp.environment)
                                                 }
                                             )
                                         }
@@ -1760,10 +1803,14 @@ private fun OverlayDrawerContent(
                                         OverlayCompLeftDetailPane(
                                             comp = selectedComp,
                                             isFavorite = favoriteIds.contains(selectedComp.id),
+                                            isCodeCopied = copiedCompId == selectedComp.id,
+                                            initialScrollOffset = sessionState.detailScrollOffset,
+                                            onScrollChanged = { sessionState.updateDetailScroll(it) },
+                                            onCopyCode = { onCopyCompCode(selectedComp) },
                                             onToggleFavorite = { onToggleFavorite(selectedComp) },
-                                            onBackToComps = { selectedCompId = null },
+                                            onBackToComps = { sessionState.selectComp(null) },
                                             onChampionClick = { unitName, cost ->
-                                                inspectedOverlayChampion = unitName to cost
+                                                sessionState.inspectChampion(unitName, cost)
                                             },
                                             modifier = Modifier
                                                 .weight(leftWeight)
@@ -1774,7 +1821,7 @@ private fun OverlayDrawerContent(
                                             fillAvailableHeight = activeHeightDp != null,
                                             maxPaneHeightDp = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp),
                                             onChampionClick = { unitName, cost ->
-                                                inspectedOverlayChampion = unitName to cost
+                                                sessionState.inspectChampion(unitName, cost)
                                             },
                                             modifier = Modifier
                                                 .weight(rightWeight)
@@ -1799,7 +1846,17 @@ private fun OverlayDrawerContent(
                                         )
                                     }
                                 } else {
-                                    val listState = rememberLazyListState()
+                                    val listState = rememberLazyListState(
+                                        initialFirstVisibleItemIndex = sessionState.listScrollIndex,
+                                        initialFirstVisibleItemScrollOffset = sessionState.listScrollOffset
+                                    )
+                                    LaunchedEffect(listState) {
+                                        snapshotFlow {
+                                            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+                                        }.collect { (idx, off) ->
+                                            sessionState.updateListScroll(idx, off)
+                                        }
+                                    }
                                     val useFullWidthTwoColGrid = drawerDims.widthDp >= 640.dp
 
                                     LazyColumn(
@@ -1818,11 +1875,7 @@ private fun OverlayDrawerContent(
                                                     comps = tierComps,
                                                     expanded = isTierOpen,
                                                     onClick = {
-                                                        expandedOverlayTiers = if (isTierOpen) {
-                                                            expandedOverlayTiers - tier
-                                                        } else {
-                                                            expandedOverlayTiers + tier
-                                                        }
+                                                        sessionState.toggleTierExpanded(tier)
                                                     },
                                                     modifier = Modifier.animateItem(
                                                         fadeInSpec = tween(180),
@@ -1854,14 +1907,16 @@ private fun OverlayDrawerContent(
                                                                 OverlayCompCard(
                                                                     comp = comp,
                                                                     isFavorite = isFav,
+                                                                    isCodeCopied = copiedCompId == comp.id,
                                                                     selected = false,
                                                                     expanded = false,
                                                                     opensInSidePane = true,
                                                                     useTwoColumnLayout = false,
-                                                                    onCardClick = { selectedCompId = comp.id },
+                                                                    onCardClick = { sessionState.selectComp(comp.id) },
                                                                     onChampionClick = { unitName, cost ->
-                                                                        inspectedOverlayChampion = unitName to cost
+                                                                        sessionState.inspectChampion(unitName, cost)
                                                                     },
+                                                                    onCopyCode = { onCopyCompCode(comp) },
                                                                     onToggleFavorite = { onToggleFavorite(comp) },
                                                                     modifier = Modifier.weight(1f)
                                                                 )
@@ -1881,14 +1936,16 @@ private fun OverlayDrawerContent(
                                                         OverlayCompCard(
                                                             comp = comp,
                                                             isFavorite = isFav,
+                                                            isCodeCopied = copiedCompId == comp.id,
                                                             selected = false,
                                                             expanded = false,
                                                             opensInSidePane = true,
                                                             useTwoColumnLayout = false,
-                                                            onCardClick = { selectedCompId = comp.id },
+                                                            onCardClick = { sessionState.selectComp(comp.id) },
                                                             onChampionClick = { unitName, cost ->
-                                                                inspectedOverlayChampion = unitName to cost
+                                                                sessionState.inspectChampion(unitName, cost)
                                                             },
+                                                            onCopyCode = { onCopyCompCode(comp) },
                                                             onToggleFavorite = { onToggleFavorite(comp) },
                                                             modifier = Modifier.animateItem(
                                                                 fadeInSpec = tween(180),
@@ -1901,6 +1958,39 @@ private fun OverlayDrawerContent(
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        AnimatedVisibility(visible = !copyBannerMessage.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF103128),
+                                border = BorderStroke(1.dp, Color(0xFF2ECC71)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 6.dp)
+                                    .testTag("overlay_copy_feedback_banner")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = Color(0xFF2ECC71),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = copyBannerMessage.orEmpty(),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFFD6F9E5),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         }
@@ -2217,6 +2307,10 @@ private fun OverlayTierSubHeader(
 private fun OverlayCompLeftDetailPane(
     comp: MetaComp,
     isFavorite: Boolean,
+    isCodeCopied: Boolean = false,
+    initialScrollOffset: Int = 0,
+    onScrollChanged: (Int) -> Unit = {},
+    onCopyCode: () -> Unit = {},
     onToggleFavorite: () -> Unit,
     onBackToComps: () -> Unit,
     onChampionClick: ((String, Int) -> Unit)? = null,
@@ -2230,6 +2324,12 @@ private fun OverlayCompLeftDetailPane(
     }
     val secondaryItemized = remember(comp.hexPlacements) {
         comp.hexPlacements.filter { it.items.isNotEmpty() && !it.isCarry }
+    }
+    val scrollState = rememberScrollState(initial = initialScrollOffset)
+    LaunchedEffect(scrollState) {
+        snapshotFlow { scrollState.value }.collect { offset ->
+            onScrollChanged(offset)
+        }
     }
 
     Surface(
@@ -2245,7 +2345,7 @@ private fun OverlayCompLeftDetailPane(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(10.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
@@ -2279,7 +2379,16 @@ private fun OverlayCompLeftDetailPane(
                         )
                     }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    OverlayCopyCodeButton(
+                        compTitle = comp.title,
+                        copied = isCodeCopied,
+                        onClick = onCopyCode,
+                        testTag = "overlay_detail_copy_code_${comp.id}"
+                    )
                     IconButton(
                         onClick = onToggleFavorite,
                         modifier = Modifier
@@ -2546,12 +2655,14 @@ private fun OverlayCompSideBuildDetails(
 private fun OverlayCompCard(
     comp: MetaComp,
     isFavorite: Boolean,
+    isCodeCopied: Boolean = false,
     selected: Boolean = false,
     expanded: Boolean,
     opensInSidePane: Boolean = false,
     useTwoColumnLayout: Boolean = false,
     onCardClick: () -> Unit,
     onChampionClick: ((String, Int) -> Unit)? = null,
+    onCopyCode: () -> Unit = {},
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2597,18 +2708,29 @@ private fun OverlayCompCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                IconButton(
-                    onClick = onToggleFavorite,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .testTag("overlay_fav_${comp.id}")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Icon(
-                        imageVector = if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline,
-                        contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
-                        tint = if (isFavorite) BrightGold else Color(0xFF93A1B8),
-                        modifier = Modifier.size(18.dp)
+                    OverlayCopyCodeButton(
+                        compTitle = comp.title,
+                        copied = isCodeCopied,
+                        onClick = onCopyCode,
+                        testTag = "overlay_copy_code_${comp.id}"
                     )
+                    IconButton(
+                        onClick = onToggleFavorite,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("overlay_fav_${comp.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                            contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
+                            tint = if (isFavorite) BrightGold else Color(0xFF93A1B8),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
 
@@ -2848,6 +2970,47 @@ private fun OverlayCompCard(
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun OverlayCopyCodeButton(
+    compTitle: String,
+    copied: Boolean,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    val accent = if (copied) Color(0xFF2ECC71) else ArcaneCyan
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = accent.copy(alpha = if (copied) 0.24f else 0.14f),
+        border = BorderStroke(1.dp, accent.copy(alpha = if (copied) 0.95f else 0.65f)),
+        modifier = Modifier.testTag(testTag)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Icon(
+                imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                contentDescription = if (copied) {
+                    "Copied TFT Team Planner code for $compTitle"
+                } else {
+                    "Copy TFT Team Planner code for $compTitle"
+                },
+                tint = accent,
+                modifier = Modifier.size(12.dp)
+            )
+            Text(
+                text = if (copied) "Copied" else "Code",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = accent,
+                maxLines = 1
+            )
         }
     }
 }

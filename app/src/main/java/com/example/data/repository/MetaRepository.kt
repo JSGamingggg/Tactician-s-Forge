@@ -13,6 +13,7 @@ import com.example.data.network.DDragonApi
 import com.example.data.network.RiotApiClientFactory
 import com.example.data.network.TftAcademyCompsScraper
 import com.example.data.network.TftipsPatchScraper
+import com.example.data.teamplanner.TftTeamPlannerCodeEncoder
 import com.example.ui.components.TftAssetIconResolver
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.Dispatchers
@@ -39,10 +40,12 @@ class MetaRepository(
     private val tftipsScraper: TftipsPatchScraper = TftipsPatchScraper(),
     private val tftAcademyScraper: TftAcademyCompsScraper = TftAcademyCompsScraper(),
     private val ddragonApi: DDragonApi = RiotApiClientFactory.ddragonApi,
-    private val publicClient: OkHttpClient = RiotApiClientFactory.publicOkHttp
+    private val publicClient: OkHttpClient = RiotApiClientFactory.publicOkHttp,
+    private val appContext: Context? = null
 ) {
     constructor(context: Context) : this(
-        cacheStore = OfflineMetaCacheStore(context.applicationContext)
+        cacheStore = OfflineMetaCacheStore(context.applicationContext),
+        appContext = context.applicationContext
     )
 
     fun peekOfflineBundle(): OfflineMetaBundle = cacheStore.peekInMemoryOrSeed()
@@ -98,6 +101,13 @@ class MetaRepository(
             val tftipsDeferred = async { runCatching { tftipsScraper.fetchPatchesFromTftips() }.getOrNull() }
             val ddragonDeferred = async {
                 runCatching { ddragonApi.getVersions() }.getOrNull()
+            }
+            val teamPlannerDeferred = appContext?.let { ctx ->
+                async {
+                    runCatching {
+                        TftTeamPlannerCodeEncoder.refreshMappingsFromNetwork(ctx, publicClient)
+                    }.getOrNull()
+                }
             }
 
             val tftipsResult = tftipsDeferred.await()
@@ -192,6 +202,7 @@ class MetaRepository(
             val tftAcademyCatalog = tftAcademyCatalogDeferred.await()
             val tftAcademyPbeResult = tftAcademyPbeDeferred.await()
             val tftAcademyPbeCatalog = tftAcademyPbeCatalogDeferred.await()
+            teamPlannerDeferred?.await()
             if (tftAcademyResult?.fetchedFromNetwork == true ||
                 tftAcademyCatalog?.fetchedFromNetwork == true ||
                 tftAcademyPbeResult?.fetchedFromNetwork == true ||

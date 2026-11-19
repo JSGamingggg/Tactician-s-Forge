@@ -2323,8 +2323,138 @@ class ExampleRobolectricTest {
         assertEquals(AppTab.ABOUT, AppTab.fromKey("alerts"))
         assertEquals(AppTab.META, AppTab.fromKey(null))
     }
+
+    @Test
+    fun `tft team planner code encoder generates valid riot v02 10-slot hex code skipping summon tokens and resolving aliases`() {
+        val mockCDragonJson = """
+            {
+              "TFTSet18": [
+                {"character_id": "DA_18_Ezreal", "display_name": "Ezreal", "team_planner_code": 16},
+                {"character_id": "DA_18_Sentry", "display_name": "Sentry", "team_planner_code": 257},
+                {"character_id": "DA_Lux18_Base", "display_name": "Lux", "team_planner_code": 4095},
+                {"character_id": "DA_CrimsonRaptor18", "display_name": "Crimson Raptor", "team_planner_code": 7},
+                {"character_id": "DA_18_GnarSmall", "display_name": "Gnar", "team_planner_code": 42}
+              ],
+              "TFTSet17": [
+                {"character_id": "TFT17_Ahri", "display_name": "Ahri", "team_planner_code": 1}
+              ]
+            }
+        """.trimIndent()
+
+        val catalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(mockCDragonJson)
+        assertNotNull(catalog)
+        assertTrue(catalog!!.isFromRiotCommunityDragon)
+
+        val comp = MetaComp(
+            id = "set18-ezreal-pebbles",
+            environment = TftEnvironment.LIVE,
+            title = "Ezreal Pebbles Reroll",
+            tier = TierRank.S,
+            playstyle = "Slow Roll",
+            avgPlacement = 3.9,
+            top4Rate = 61.2,
+            winRate = 18.4,
+            pickRate = 9.5,
+            trendDelta = "+0.2",
+            isTrending = true,
+            patchTag = "18.7",
+            carryName = "Ezreal",
+            traits = listOf("Elderwood"),
+            coreUnits = listOf("Ezreal", "Pebbles", "Lux", "Mama Beak", "Gnar", "Stonebark Tree", "Lifeblossom"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Ezreal", row = 3, col = 0, cost = 4, isCarry = true, items = listOf("IE", "LW", "GS")),
+                HexUnitPlacement("Pebbles", row = 0, col = 3, cost = 3, isCarry = false, items = listOf("Warmog", "Bramble")),
+                HexUnitPlacement("Lux", row = 3, col = 6, cost = 3, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Mama Beak", row = 1, col = 2, cost = 2, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Gnar", row = 0, col = 4, cost = 2, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Stonebark Tree", row = 0, col = 1, cost = 1, isCarry = false, items = emptyList())
+            ),
+            augmentPriorities = listOf("Combat", "Econ"),
+            levelingGuide = "Slow roll at 6",
+            notes = "Corner Ezreal",
+            setName = "Set 18"
+        )
+
+        val result = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(comp, catalog)
+        assertEquals("TFTSet18", result.setKey)
+        assertTrue(com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(result.code))
+        assertTrue(Regex("^02[0-9a-f]{30}TFTSet18$").matches(result.code))
+        // Order: Ezreal (010, carry), Pebbles/Sentry (101, 2 items), Lux (fff, cost 3), Mama Beak (007, cost 2), Gnar (02a, cost 2) + 5 empty slots (000)
+        assertEquals("02010101fff00702a000000000000000TFTSet18", result.code)
+        assertEquals(5, result.matchedChampions.size)
+        assertTrue(result.skippedUnits.contains("Stonebark Tree"))
+        assertTrue(result.skippedUnits.contains("Lifeblossom"))
+
+        // Explicit direct teamPlannerCode passthrough
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val directCode = "02010101fff00702a000000000000000TFTSet18"
+        val directComp = comp.copy(teamPlannerCode = directCode)
+        val directResult = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, directComp)
+        }
+        assertEquals(directCode, directResult.code)
+        assertTrue(directResult.isVerifiedRiotMapping)
+
+        // Offline preload fallback works deterministically when network is unavailable
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        val offlineClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { throw java.io.IOException("Offline test") }
+            .build()
+        val offlineResult = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, comp, offlineClient)
+        }
+        assertTrue(com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(offlineResult.code))
+        assertTrue(offlineResult.code.endsWith("TFTSet18"))
+        assertTrue(offlineResult.matchedChampions.isNotEmpty())
+    }
+
+    @Test
+    fun `overlay session state preserves last clicked filters expanded tiers scroll and selected comp until reset on full close`() {
+        val state = com.example.overlay.OverlaySessionState()
+
+        // Clean initial defaults
+        assertEquals(com.example.overlay.OverlayBrowseMode.ALL_COMPS, state.browseMode)
+        assertEquals(TftEnvironment.LIVE, state.envFilter)
+        org.junit.Assert.assertNull(state.tierFilter)
+        org.junit.Assert.assertNull(state.selectedCompId)
+        org.junit.Assert.assertNull(state.inspectedChampion)
+        assertTrue(state.expandedTiers.isEmpty())
+        assertEquals(0, state.listScrollIndex)
+        assertEquals(0, state.listScrollOffset)
+        assertEquals(0, state.detailScrollOffset)
+
+        // User interacts with overlay controls and opens a comp
+        state.selectEnvironment(TftEnvironment.PBE)
+        state.selectBrowseMode(com.example.overlay.OverlayBrowseMode.FAVORITES)
+        state.toggleTierFilter(TierRank.S)
+        state.toggleTierExpanded(TierRank.S)
+        state.toggleTierExpanded(TierRank.A)
+        state.updateListScroll(index = 2, offset = 140)
+        state.selectComp("pbe-comp-01")
+        state.updateDetailScroll(offset = 220)
+        state.inspectChampion("Ahri", 4)
+
+        // State remains completely intact across minimize/reopen cycles
+        assertEquals(com.example.overlay.OverlayBrowseMode.FAVORITES, state.browseMode)
+        assertEquals(TftEnvironment.PBE, state.envFilter)
+        assertEquals(TierRank.S, state.tierFilter)
+        assertEquals(setOf(TierRank.S, TierRank.A), state.expandedTiers)
+        assertEquals(2, state.listScrollIndex)
+        assertEquals(140, state.listScrollOffset)
+        assertEquals("pbe-comp-01", state.selectedCompId)
+        assertEquals(220, state.detailScrollOffset)
+        assertEquals("Ahri" to 4, state.inspectedChampion)
+
+        // Full overlay close resets every field back to clean defaults
+        state.reset()
+        assertEquals(com.example.overlay.OverlayBrowseMode.ALL_COMPS, state.browseMode)
+        assertEquals(TftEnvironment.LIVE, state.envFilter)
+        org.junit.Assert.assertNull(state.tierFilter)
+        org.junit.Assert.assertNull(state.selectedCompId)
+        org.junit.Assert.assertNull(state.inspectedChampion)
+        assertTrue(state.expandedTiers.isEmpty())
+        assertEquals(0, state.listScrollIndex)
+        assertEquals(0, state.listScrollOffset)
+        assertEquals(0, state.detailScrollOffset)
+    }
 }
-
-
-
-

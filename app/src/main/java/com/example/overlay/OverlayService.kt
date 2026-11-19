@@ -118,6 +118,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -155,6 +156,8 @@ import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftItemIcon
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
+import com.example.ui.components.championCostColor
+import com.example.ui.components.formatRiotAssetLabel
 import com.example.ui.components.sanitizeExternalSourceMentions
 import com.example.ui.screens.groupCompsByTier
 import com.example.ui.theme.ArcaneCyan
@@ -2322,8 +2325,8 @@ private fun OverlayCompLeftDetailPane(
             }
 
             FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 comp.coreUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
@@ -2331,7 +2334,8 @@ private fun OverlayCompLeftDetailPane(
                         name = unit,
                         cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
                         isCarry = isCarryUnit,
-                        size = 26.dp,
+                        size = 34.dp,
+                        labelFontSize = 10.sp,
                         environment = comp.environment
                     )
                 }
@@ -2419,9 +2423,9 @@ private fun OverlayHexBoardRightPane(
                 }
                 BoxWithConstraints(modifier = boardModifier) {
                     val computedGridHeight = if (constraints.hasBoundedHeight) {
-                        (maxHeight - 28.dp).coerceIn(110.dp, 260.dp)
+                        (maxHeight - 28.dp).coerceIn(168.dp, 260.dp)
                     } else {
-                        (maxPaneHeightDp - 78.dp).coerceIn(124.dp, 210.dp)
+                        (maxPaneHeightDp - 72.dp).coerceIn(168.dp, 230.dp)
                     }
                     MiniOverlayHexGrid(
                         placements = comp.hexPlacements,
@@ -2634,7 +2638,8 @@ private fun OverlayCompCard(
                         name = unit,
                         cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
                         isCarry = isCarryUnit,
-                        size = 32.dp,
+                        size = 34.dp,
+                        labelFontSize = 10.sp,
                         environment = comp.environment
                     )
                 }
@@ -2728,7 +2733,7 @@ private fun OverlayCompCard(
                             MiniOverlayHexGrid(
                                 placements = comp.hexPlacements,
                                 environment = comp.environment,
-                                gridHeight = 116.dp
+                                gridHeight = 168.dp
                             )
                         }
                     }
@@ -2858,7 +2863,7 @@ private fun OverlayEnvChip(
 private fun MiniOverlayHexGrid(
     placements: List<HexUnitPlacement>,
     environment: TftEnvironment? = null,
-    gridHeight: Dp = 126.dp
+    gridHeight: Dp = 184.dp
 ) {
     val density = LocalDensity.current
     Column(
@@ -2885,13 +2890,17 @@ private fun MiniOverlayHexGrid(
             val rows = 4
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
-            val radius = (widthPx / (cols * 2.05f)).coerceAtMost(heightPx / (rows * 2.05f))
-            val dx = radius * 1.86f
-            val dy = radius * 1.65f
+            val bottomLabelReservePx = with(density) { 14.dp.toPx() }
+            val rByWidth = widthPx / ((cols - 1) * 1.88f + 0.94f + 2.25f)
+            val rByHeight = (heightPx - bottomLabelReservePx) / ((rows - 1) * 2.48f + 2.0f)
+            val radius = minOf(rByWidth, rByHeight).coerceAtLeast(8f)
+            val dx = radius * 1.88f
+            val dy = radius * 2.48f
             val totalGridWidth = (cols - 1) * dx + dx * 0.5f + radius * 2f
-            val totalGridHeight = (rows - 1) * dy + radius * 2f
+            val totalGridHeight = (rows - 1) * dy + radius * 2f + bottomLabelReservePx
             val startX = (widthPx - totalGridWidth) / 2f + radius
             val startY = (heightPx - totalGridHeight) / 2f + radius
+            val hexR = radius * 0.94f
             val occupied = placements.associateBy { it.row to it.col }
 
             Canvas(modifier = Modifier.matchParentSize()) {
@@ -2904,20 +2913,21 @@ private fun MiniOverlayHexGrid(
                         val path = Path().apply {
                             for (i in 0 until 6) {
                                 val angle = Math.toRadians((60 * i - 30).toDouble())
-                                val px = cx + radius * 0.92f * cos(angle).toFloat()
-                                val py = cy + radius * 0.92f * sin(angle).toFloat()
+                                val px = cx + hexR * cos(angle).toFloat()
+                                val py = cy + hexR * sin(angle).toFloat()
                                 if (i == 0) moveTo(px, py) else lineTo(px, py)
                             }
                             close()
                         }
                         when {
                             unit?.isCarry == true -> {
-                                drawPath(path, color = BrightGold.copy(alpha = 0.38f))
-                                drawPath(path, color = BrightGold, style = Stroke(width = 2.2f))
+                                drawPath(path, color = BrightGold.copy(alpha = 0.28f))
+                                drawPath(path, color = BrightGold, style = Stroke(width = 2.4f))
                             }
                             unit != null -> {
-                                drawPath(path, color = ArcaneCyan.copy(alpha = 0.28f))
-                                drawPath(path, color = ArcaneCyan, style = Stroke(width = 1.8f))
+                                val costTint = championCostColor(unit.cost)
+                                drawPath(path, color = costTint.copy(alpha = 0.22f))
+                                drawPath(path, color = costTint, style = Stroke(width = 1.9f))
                             }
                             else -> {
                                 drawPath(path, color = SlateOutline.copy(alpha = 0.75f), style = Stroke(width = 1.1f))
@@ -2927,18 +2937,26 @@ private fun MiniOverlayHexGrid(
                 }
             }
 
-            val avatarSizePx = (radius * 1.48f).roundToInt().coerceIn(20, 56)
-            val avatarSizeDp = with(density) { avatarSizePx.toDp() }
+            val hexWpx = (1.73205f * hexR).roundToInt().coerceIn(18, 60)
+            val hexHpx = (2.0f * hexR).roundToInt().coerceIn(20, 70)
+            val hexWDp = with(density) { hexWpx.toDp() }
+            val hexHDp = with(density) { hexHpx.toDp() }
+            val labelMaxWpx = (dx * 1.32f).roundToInt().coerceAtLeast(hexWpx + 10)
+            val labelMaxWDp = with(density) { labelMaxWpx.toDp() }
+            val labelTopGapPx = with(density) { 1.dp.toPx() }
+
             placements.forEach { unit ->
                 val xOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
                 val cx = startX + unit.col * dx + xOffset
                 val cy = startY + unit.row * dy
-                val leftPx = (cx - avatarSizePx / 2f).roundToInt()
-                val topPx = (cy - avatarSizePx / 2f).roundToInt()
+                val leftPx = (cx - hexWpx / 2f).roundToInt()
+                val topPx = (cy - hexHpx / 2f).roundToInt()
+                val cleanLabel = formatRiotAssetLabel(unit.unitName)
+
                 Box(
                     modifier = Modifier
                         .offset { IntOffset(leftPx, topPx) }
-                        .size(avatarSizeDp),
+                        .size(width = hexWDp, height = hexHDp),
                     contentAlignment = Alignment.Center
                 ) {
                     TftChampionAvatar(
@@ -2946,9 +2964,35 @@ private fun MiniOverlayHexGrid(
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = avatarSizeDp,
+                        size = hexWDp,
+                        height = hexHDp,
                         environment = environment,
-                        exactSize = true
+                        exactSize = true,
+                        useHexShape = true,
+                        showBadge = false
+                    )
+                }
+
+                val labelLeftPx = (cx - labelMaxWpx / 2f).roundToInt()
+                val labelTopPx = (cy + hexHpx / 2f + labelTopGapPx).roundToInt()
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(labelLeftPx, labelTopPx) }
+                        .width(labelMaxWDp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = cleanLabel,
+                        fontSize = 8.5.sp,
+                        lineHeight = 9.sp,
+                        fontWeight = if (unit.isCarry) FontWeight.Bold else FontWeight.SemiBold,
+                        color = if (unit.isCarry) BrightGold else Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .background(Color(0xEB070B12), RoundedCornerShape(3.dp))
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
                     )
                 }
             }

@@ -432,6 +432,43 @@ object TftAssetIconResolver {
         } else null
     }
 
+    /**
+     * Resolves a true 1:1 square centered champion portrait URL so champion faces/icons
+     * fill hex/diamond cells and roster tiles completely without 1024x512 splash cropping.
+     * Falls back seamlessly to [resolveChampionIconUrl].
+     */
+    fun resolveSquareChampionPortraitUrl(nameOrId: String, environment: TftEnvironment? = null): String? {
+        val raw = nameOrId.trim()
+        if (raw.isEmpty()) return null
+
+        val norm = normalizeLookupKey(raw)
+        val cleanName = formatRiotAssetLabel(raw)
+        val cleanNorm = normalizeLookupKey(cleanName)
+        val baseCleanNorm = if (cleanName.contains("(")) {
+            normalizeLookupKey(cleanName.substringBefore("(").trim())
+        } else {
+            cleanNorm
+        }
+
+        if (environment == TftEnvironment.PBE) {
+            val pbeUrl = pbeChampionImages[norm]
+                ?: pbeChampionImages[cleanNorm]
+                ?: pbeChampionImages[baseCleanNorm]
+            if (!pbeUrl.isNullOrBlank()) {
+                return pbeUrl
+            }
+        }
+
+        val set18Key = SET18_SQUARE_PORTRAIT_KEYS[cleanNorm]
+            ?: SET18_SQUARE_PORTRAIT_KEYS[norm]
+            ?: SET18_SQUARE_PORTRAIT_KEYS[baseCleanNorm]
+        if (!set18Key.isNullOrBlank()) {
+            return "https://sunderarmor.com/characters/Skin/18/$set18Key.png"
+        }
+
+        return resolveChampionIconUrl(nameOrId, environment)
+    }
+
     fun resolveItemIconUrl(nameOrId: String, environment: TftEnvironment? = null): String? {
         val raw = nameOrId.trim()
         if (raw.isEmpty()) return null
@@ -681,6 +718,85 @@ object TftAssetIconResolver {
         "renataglasc" to "Renata",
         "nunuwillump" to "Nunu",
         "ksante" to "KSante"
+    )
+
+    private val SET18_SQUARE_PORTRAIT_KEYS: Map<String, String> = mapOf(
+        "ahri" to "Ahri",
+        "akali" to "Akali",
+        "alistar" to "Alistar",
+        "alune" to "Alune",
+        "amumu" to "Amumu",
+        "aphelios" to "Aphelios",
+        "ashe" to "Ashe",
+        "azir" to "Azir",
+        "brambleback" to "Brambleback",
+        "caitlyn" to "Caitlyn",
+        "camille" to "Camille",
+        "cassiopeia" to "Cassiopeia",
+        "cinderling" to "Cinderling",
+        "diana" to "Diana",
+        "draven" to "Draven",
+        "elderdragon" to "ElderDragon",
+        "elise" to "Elise",
+        "ezreal" to "Ezreal",
+        "fiddlesticks" to "Fiddlesticks",
+        "gnar" to "Gnar",
+        "gromp" to "Gromp",
+        "hecarim" to "Hecarim",
+        "ivern" to "Ivern",
+        "karma" to "Karma",
+        "kayle" to "Kayle",
+        "kennen" to "Kennen",
+        "khazix" to "Khazix",
+        "kobuko" to "Kobuko",
+        "kogmaw" to "Kogmaw",
+        "krug" to "Krug",
+        "leblanc" to "Leblanc",
+        "leona" to "Leona",
+        "lillia" to "Lillia",
+        "lux" to "Lux",
+        "luxblackthorn" to "Lux",
+        "luxblossom" to "Lux",
+        "luxcoven" to "Lux",
+        "luxelderwood" to "Lux",
+        "luxfae" to "Lux",
+        "luxinferno" to "Lux",
+        "luxlunar" to "Lux",
+        "luxprimal" to "Lux",
+        "luxsolar" to "Lux",
+        "malphite" to "Malphite",
+        "mamabeak" to "MamaBeak",
+        "crimsonraptor" to "MamaBeak",
+        "maokai" to "Maokai",
+        "masteryi" to "MasterYi",
+        "morgana" to "Morgana",
+        "murkwolf" to "Murkwolf",
+        "nidalee" to "Nidalee",
+        "ornn" to "Ornn",
+        "pebbles" to "Pebbles",
+        "sentry" to "Pebbles",
+        "rakan" to "Rakan",
+        "rammus" to "Rammus",
+        "reksai" to "RekSai",
+        "rengar" to "Rengar",
+        "scuttlecrab" to "Scuttlecrab",
+        "sejuani" to "Sejuani",
+        "sentinel" to "Sentinel",
+        "sett" to "Sett",
+        "shen" to "Shen",
+        "sivir" to "Sivir",
+        "soraka" to "Soraka",
+        "taric" to "Taric",
+        "teemo" to "Teemo",
+        "tristana" to "Tristana",
+        "varus" to "Varus",
+        "veigar" to "Veigar",
+        "vi" to "Vi",
+        "warwick" to "Warwick",
+        "xayah" to "Xayah",
+        "yorick" to "Yorick",
+        "yunara" to "Yunara",
+        "zyra" to "Zyra"
     )
 
     private val ITEM_FILENAME_MAP: Map<String, String> = mapOf(

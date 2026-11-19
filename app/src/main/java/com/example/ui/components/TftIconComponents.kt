@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
@@ -51,11 +53,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -65,6 +73,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -204,6 +213,18 @@ fun sanitizeExternalSourceMentions(raw: String): String {
     return cleaned
 }
 
+val PointedHexagonShape: Shape = GenericShape { size, _ ->
+    val w = size.width
+    val h = size.height
+    moveTo(w * 0.5f, 0f)
+    lineTo(w, h * 0.25f)
+    lineTo(w, h * 0.75f)
+    lineTo(w * 0.5f, h)
+    lineTo(0f, h * 0.75f)
+    lineTo(0f, h * 0.25f)
+    close()
+}
+
 @Composable
 fun TftChampionAvatar(
     name: String,
@@ -211,44 +232,67 @@ fun TftChampionAvatar(
     isCarry: Boolean = false,
     stars: Int = 2,
     size: Dp = 36.dp,
+    height: Dp = size,
     environment: TftEnvironment? = null,
     exactSize: Boolean = false,
+    useHexShape: Boolean = false,
+    showBadge: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val rev = TftAssetIconResolver.catalogRevision
     val cleanName = remember(name, rev) { formatRiotAssetLabel(name) }
-    val iconUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
+    val primaryUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
+        TftAssetIconResolver.resolveSquareChampionPortraitUrl(name, environment)
+    }
+    val fallbackUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
         TftAssetIconResolver.resolveChampionIconUrl(name, environment)
     }
-    val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(64) }
+    var useFallbackUrl by remember(primaryUrl, fallbackUrl) { mutableStateOf(false) }
+    val activeUrl = if (useFallbackUrl && !fallbackUrl.isNullOrBlank() && fallbackUrl != primaryUrl) {
+        fallbackUrl
+    } else {
+        primaryUrl ?: fallbackUrl
+    }
+    val targetPx = with(LocalDensity.current) { maxOf(size, height).roundToPx().coerceAtLeast(64) }
     val color = championCostColor(cost)
     val borderColor = if (isCarry) MaterialTheme.colorScheme.primary else color
-    val shape = RoundedCornerShape(if (exactSize) (size * 0.28f).coerceIn(6.dp, 10.dp) else 8.dp)
-    val outerBoxSize = if (exactSize) size else (size + 4.dp)
+    val shape: Shape = if (useHexShape) {
+        PointedHexagonShape
+    } else {
+        RoundedCornerShape(if (exactSize) (size * 0.28f).coerceIn(6.dp, 10.dp) else 8.dp)
+    }
+    val outerW = if (exactSize) size else (size + 4.dp)
+    val outerH = if (exactSize) height else (height + 4.dp)
 
     Box(
-        modifier = modifier.size(outerBoxSize),
+        modifier = modifier.size(width = outerW, height = outerH),
         contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
-                .size(size)
+                .size(width = size, height = height)
                 .align(Alignment.Center)
                 .clip(shape)
                 .background(color.copy(alpha = 0.24f))
-                .border(
-                    width = if (isCarry) 2.dp else 1.5.dp,
-                    color = borderColor,
-                    shape = shape
+                .then(
+                    if (useHexShape) {
+                        Modifier
+                    } else {
+                        Modifier.border(
+                            width = if (isCarry) 2.dp else 1.5.dp,
+                            color = borderColor,
+                            shape = shape
+                        )
+                    }
                 ),
             contentAlignment = Alignment.Center
         ) {
             ChampionMonogramFallback(cleanName, isCarry, color, size)
-            if (iconUrl != null) {
-                val request = remember(iconUrl, targetPx, context) {
+            if (activeUrl != null) {
+                val request = remember(activeUrl, targetPx, context) {
                     ImageRequest.Builder(context)
-                        .data(iconUrl)
+                        .data(activeUrl)
                         .size(targetPx)
                         .crossfade(false)
                         .build()
@@ -256,48 +300,75 @@ fun TftChampionAvatar(
                 AsyncImage(
                     model = request,
                     contentDescription = "$cleanName champion icon",
-                    contentScale = ContentScale.Fit,
+                    contentScale = ContentScale.Crop,
                     alignment = Alignment.Center,
+                    onError = {
+                        if (!useFallbackUrl && !fallbackUrl.isNullOrBlank() && fallbackUrl != primaryUrl) {
+                            useFallbackUrl = true
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(shape)
                 )
             }
+            if (useHexShape) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = this.size.width
+                    val h = this.size.height
+                    val path = Path().apply {
+                        moveTo(w * 0.5f, 0f)
+                        lineTo(w, h * 0.25f)
+                        lineTo(w, h * 0.75f)
+                        lineTo(w * 0.5f, h)
+                        lineTo(0f, h * 0.75f)
+                        lineTo(0f, h * 0.25f)
+                        close()
+                    }
+                    drawPath(
+                        path = path,
+                        color = borderColor,
+                        style = Stroke(width = if (isCarry) 4.2f else 2.8f)
+                    )
+                }
+            }
         }
 
-        if (isCarry) {
-            val badgeSize = (size * 0.38f).coerceIn(11.dp, 15.dp)
-            Box(
-                modifier = Modifier
-                    .size(badgeSize)
-                    .align(Alignment.TopEnd)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.WorkspacePremium,
-                    contentDescription = "Main Carry",
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size((badgeSize * 0.68f).coerceIn(7.dp, 11.dp))
-                )
-            }
-        } else if (stars >= 3) {
-            val badgeSize = (size * 0.36f).coerceIn(10.dp, 14.dp)
-            Box(
-                modifier = Modifier
-                    .size(badgeSize)
-                    .align(Alignment.TopEnd)
-                    .clip(CircleShape)
-                    .background(Color(0xFFF0B949)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Star,
-                    contentDescription = "3-Star Unit",
-                    tint = Color(0xFF0B0E14),
-                    modifier = Modifier.size((badgeSize * 0.68f).coerceIn(7.dp, 10.dp))
-                )
+        if (showBadge) {
+            if (isCarry) {
+                val badgeSize = (minOf(size, height) * 0.36f).coerceIn(10.dp, 15.dp)
+                Box(
+                    modifier = Modifier
+                        .size(badgeSize)
+                        .align(Alignment.TopEnd)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.WorkspacePremium,
+                        contentDescription = "Main Carry",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size((badgeSize * 0.68f).coerceIn(7.dp, 11.dp))
+                    )
+                }
+            } else if (stars >= 3) {
+                val badgeSize = (minOf(size, height) * 0.34f).coerceIn(10.dp, 14.dp)
+                Box(
+                    modifier = Modifier
+                        .size(badgeSize)
+                        .align(Alignment.TopEnd)
+                        .clip(CircleShape)
+                        .background(Color(0xFFF0B949)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = "3-Star Unit",
+                        tint = Color(0xFF0B0E14),
+                        modifier = Modifier.size((badgeSize * 0.68f).coerceIn(7.dp, 10.dp))
+                    )
+                }
             }
         }
     }
@@ -309,14 +380,16 @@ fun TftChampionTile(
     cost: Int,
     isCarry: Boolean = false,
     stars: Int = 2,
-    size: Dp = 36.dp,
+    size: Dp = 40.dp,
+    labelFontSize: TextUnit = 10.5.sp,
+    useHexShape: Boolean = false,
     environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val cleanName = remember(name) { formatRiotAssetLabel(name) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.widthIn(max = size + 24.dp)
+        modifier = modifier.widthIn(min = size + 12.dp, max = size + 28.dp)
     ) {
         TftChampionAvatar(
             name = name,
@@ -324,15 +397,17 @@ fun TftChampionTile(
             isCarry = isCarry,
             stars = stars,
             size = size,
+            useHexShape = useHexShape,
             environment = environment
         )
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = cleanName,
-            fontSize = 10.sp,
+            fontSize = labelFontSize,
+            lineHeight = (labelFontSize.value + 1.5f).sp,
             fontWeight = if (isCarry) FontWeight.Bold else FontWeight.SemiBold,
             color = if (isCarry) Color(0xFFFFD700) else Color(0xFFF1F5F9),
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center
         )

@@ -85,6 +85,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.FavoriteCompDoc
 import com.example.data.model.LiveVersionInfo
@@ -899,7 +900,8 @@ private fun MetaCompCard(
                         name = unit,
                         cost = cost,
                         isCarry = isCarry,
-                        size = 36.dp,
+                        size = 42.dp,
+                        labelFontSize = 11.sp,
                         environment = comp.environment
                     )
                 }

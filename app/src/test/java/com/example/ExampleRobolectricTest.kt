@@ -358,6 +358,18 @@ class ExampleRobolectricTest {
         assertTrue(pebblesUrl?.endsWith("DA_18_Sentry.TFT_Set18.png") == true)
         assertTrue(brambleUrl?.endsWith("DA_Brambleback18.TFT_Set18.png") == true)
         assertTrue(ornnUrl?.endsWith("Ornn_splash_centered_2.TFT_Set18.png") == true)
+        assertEquals(
+            "https://sunderarmor.com/characters/Skin/18/Pebbles.png",
+            resolver.resolveSquareChampionPortraitUrl("DA_18_Sentry", TftEnvironment.LIVE)
+        )
+        assertEquals(
+            "https://sunderarmor.com/characters/Skin/18/Khazix.png",
+            resolver.resolveSquareChampionPortraitUrl("Kha'Zix", TftEnvironment.LIVE)
+        )
+        assertEquals(
+            "https://sunderarmor.com/characters/Skin/18/Lux.png",
+            resolver.resolveSquareChampionPortraitUrl("Lux (Elderwood)", TftEnvironment.LIVE)
+        )
         assertEquals("Pebbles", com.example.ui.components.formatRiotAssetLabel("DA_18_Sentry"))
         assertEquals("Ravager Emblem", com.example.ui.components.formatRiotAssetLabel("DA_18_EmblemSlayer"))
         assertEquals(listOf("Elderwood", "Defender"), resolver.getChampionTraits("Ornn"))

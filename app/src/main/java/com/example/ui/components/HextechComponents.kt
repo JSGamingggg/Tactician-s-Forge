@@ -367,20 +367,23 @@ fun TftHexBoard(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(176.dp)
+                .height(244.dp)
         ) {
             val cols = 7
             val rows = 4
-            val radiusDp = (maxWidth.value / (cols * 2.15f)).coerceAtMost(maxHeight.value / (rows * 2.10f))
-            val rPx = with(density) { radiusDp.dp.toPx() }
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
+            val bottomLabelReservePx = with(density) { 16.dp.toPx() }
+            val rByWidth = widthPx / ((cols - 1) * 1.88f + 0.94f + 2.25f)
+            val rByHeight = (heightPx - bottomLabelReservePx) / ((rows - 1) * 2.48f + 2.0f)
+            val rPx = minOf(rByWidth, rByHeight).coerceAtLeast(10f)
             val dx = rPx * 1.88f
-            val dy = rPx * 1.65f
+            val dy = rPx * 2.48f
             val totalGridWidth = (cols - 1) * dx + dx * 0.5f + rPx * 2f
-            val totalGridHeight = (rows - 1) * dy + rPx * 2f
+            val totalGridHeight = (rows - 1) * dy + rPx * 2f + bottomLabelReservePx
             val startX = (widthPx - totalGridWidth) / 2f + rPx
             val startY = (heightPx - totalGridHeight) / 2f + rPx
+            val hexR = rPx * 0.94f
 
             val hexCells = remember(widthPx, heightPx, rPx) {
                 buildList(rows * cols) {
@@ -392,8 +395,8 @@ fun TftHexBoard(
                             val path = Path().apply {
                                 for (i in 0 until 6) {
                                     val angle = Math.toRadians((60 * i - 30).toDouble())
-                                    val px = cx + rPx * 0.92f * cos(angle).toFloat()
-                                    val py = cy + rPx * 0.92f * sin(angle).toFloat()
+                                    val px = cx + hexR * cos(angle).toFloat()
+                                    val py = cy + hexR * sin(angle).toFloat()
                                     if (i == 0) moveTo(px, py) else lineTo(px, py)
                                 }
                                 close()
@@ -409,12 +412,12 @@ fun TftHexBoard(
                     val unit = occupied[r to c]
                     when {
                         unit?.isCarry == true -> {
-                            drawPath(path, color = primary.copy(alpha = 0.30f))
+                            drawPath(path, color = primary.copy(alpha = 0.25f))
                             drawPath(path, color = primary, style = Stroke(width = 3.5f))
                         }
                         unit != null -> {
                             val costTint = championCostColor(unit.cost)
-                            drawPath(path, color = costTint.copy(alpha = 0.22f))
+                            drawPath(path, color = costTint.copy(alpha = 0.20f))
                             drawPath(path, color = costTint, style = Stroke(width = 2.5f))
                         }
                         else -> {
@@ -425,20 +428,27 @@ fun TftHexBoard(
                 }
             }
 
-            // Champion portrait icons centered directly on each occupied hex cell
-            val avatarSizePx = (rPx * 1.48f).roundToInt().coerceIn(24, 68)
-            val avatarSizeDp = with(density) { avatarSizePx.toDp() }
+            // Champion portrait icons filling each pointed hexagon cell + clear name below each cell
+            val hexWpx = (1.73205f * hexR).roundToInt().coerceIn(22, 74)
+            val hexHpx = (2.0f * hexR).roundToInt().coerceIn(26, 86)
+            val hexWDp = with(density) { hexWpx.toDp() }
+            val hexHDp = with(density) { hexHpx.toDp() }
+            val labelMaxWpx = (dx * 1.32f).roundToInt().coerceAtLeast(hexWpx + 12)
+            val labelMaxWDp = with(density) { labelMaxWpx.toDp() }
+            val labelTopGapPx = with(density) { 1.dp.toPx() }
+
             placements.forEach { unit ->
                 val rowOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
                 val cx = startX + unit.col * dx + rowOffset
                 val cy = startY + unit.row * dy
-                val leftPx = (cx - avatarSizePx / 2f).roundToInt()
-                val topPx = (cy - avatarSizePx / 2f).roundToInt()
+                val leftPx = (cx - hexWpx / 2f).roundToInt()
+                val topPx = (cy - hexHpx / 2f).roundToInt()
+                val cleanLabel = formatRiotAssetLabel(unit.unitName)
 
                 Box(
                     modifier = Modifier
                         .offset { IntOffset(leftPx, topPx) }
-                        .size(avatarSizeDp),
+                        .size(width = hexWDp, height = hexHDp),
                     contentAlignment = Alignment.Center
                 ) {
                     TftChampionAvatar(
@@ -446,9 +456,35 @@ fun TftHexBoard(
                         cost = unit.cost,
                         isCarry = unit.isCarry,
                         stars = unit.stars,
-                        size = avatarSizeDp,
+                        size = hexWDp,
+                        height = hexHDp,
                         environment = environment,
-                        exactSize = true
+                        exactSize = true,
+                        useHexShape = true,
+                        showBadge = true
+                    )
+                }
+
+                val labelLeftPx = (cx - labelMaxWpx / 2f).roundToInt()
+                val labelTopPx = (cy + hexHpx / 2f + labelTopGapPx).roundToInt()
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(labelLeftPx, labelTopPx) }
+                        .width(labelMaxWDp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = cleanLabel,
+                        fontSize = 9.5.sp,
+                        lineHeight = 10.sp,
+                        fontWeight = if (unit.isCarry) FontWeight.Bold else FontWeight.SemiBold,
+                        color = if (unit.isCarry) Color(0xFFFFD700) else Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .background(Color(0xEB070B12), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
                     )
                 }
             }

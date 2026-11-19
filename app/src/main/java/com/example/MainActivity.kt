@@ -88,6 +88,7 @@ import com.example.ui.screens.MetaSnapshotsScreen
 import com.example.ui.screens.PatchAlertsScreen
 import com.example.ui.theme.TacticiansForgeTheme
 import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.viewmodel.UiState
 import com.example.update.AppUpdateStatus
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
@@ -173,11 +174,8 @@ fun AppRoot(
     var requestedNotifPermissionOnLaunch by rememberSaveable { mutableStateOf(false) }
     val startupNotifPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
-        onResult = { granted ->
+        onResult = { _ ->
             PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
-            if (granted) {
-                PatchMonitorWorker.enqueueImmediateCheck(context, expedited = true)
-            }
         }
     )
 
@@ -527,23 +525,39 @@ private fun AuthenticatedOrGuestWorkspace(
                                         onTogglePin = mainViewModel::toggleOverlayPin,
                                         onCreateCustomComp = mainViewModel::saveCustomFavorite,
                                         patches = patchFeed,
-                                        modifier = contentModifier
-                                    )
-                                    AppTab.TIERS -> ChampionTierListScreen(
-                                        environment = environment,
-                                        onSelectEnvironment = mainViewModel::setEnvironment,
                                         champions = championTiers,
                                         items = itemTiers,
-                                        augments = augmentTiers,
-                                        liveVersionInfo = liveVersionInfo,
-                                        offlineCacheStatus = offlineCacheStatus,
-                                        isRefreshing = isRefreshingVersions,
-                                        isGuestMode = currentUser == null,
-                                        onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
-                                        onSignInRequested = triggerGoogleSignIn,
-                                        patches = patchFeed,
                                         modifier = contentModifier
                                     )
+                                    AppTab.TIERS -> {
+                                        val currentFavorites = (favoritesState as? UiState.Success)?.data.orEmpty()
+                                        val favIds = remember(currentFavorites) {
+                                            currentFavorites.map { it.compId.ifBlank { it.id } }.toSet()
+                                        }
+                                        val pinIds = remember(currentFavorites) {
+                                            currentFavorites.filter { it.pinnedToOverlay }.map { it.compId.ifBlank { it.id } }.toSet()
+                                        }
+                                        ChampionTierListScreen(
+                                            environment = environment,
+                                            onSelectEnvironment = mainViewModel::setEnvironment,
+                                            champions = championTiers,
+                                            items = itemTiers,
+                                            augments = augmentTiers,
+                                            liveVersionInfo = liveVersionInfo,
+                                            offlineCacheStatus = offlineCacheStatus,
+                                            isRefreshing = isRefreshingVersions,
+                                            isGuestMode = currentUser == null,
+                                            onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
+                                            onSignInRequested = triggerGoogleSignIn,
+                                            patches = patchFeed,
+                                            comps = metaComps,
+                                            favoriteIds = favIds,
+                                            pinnedIds = pinIds,
+                                            onToggleFavorite = mainViewModel::toggleFavorite,
+                                            onTogglePin = mainViewModel::toggleOverlayPin,
+                                            modifier = contentModifier
+                                        )
+                                    }
 
                                     AppTab.ALERTS -> PatchAlertsScreen(
                                         environment = environment,

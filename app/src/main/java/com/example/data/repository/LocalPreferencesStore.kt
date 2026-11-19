@@ -62,6 +62,7 @@ class LocalPreferencesStore(context: Context) {
         val LAST_NOTIFIED_LIVE_DD = stringPreferencesKey("last_notified_live_dd")
         val LAST_NOTIFIED_PBE_TAG = stringPreferencesKey("last_notified_pbe_tag")
         val LAST_NOTIFIED_COMP_IDS = stringPreferencesKey("last_notified_comp_ids")
+        val LAST_NOTIFIED_COMPS_SIGNATURE = stringPreferencesKey("last_notified_comps_signature")
         val LOCAL_FAVORITES_JSON = stringPreferencesKey("local_favorites_json")
         val LOCAL_PLAYERS_JSON = stringPreferencesKey("local_players_json")
         val IS_GUEST_MODE = booleanPreferencesKey("is_guest_mode")
@@ -69,6 +70,7 @@ class LocalPreferencesStore(context: Context) {
         val GITHUB_TOKEN_OVERRIDE = stringPreferencesKey("github_token_override")
         val APP_UPDATE_ALERTS_ENABLED = booleanPreferencesKey("app_update_alerts_enabled")
         val LAST_NOTIFIED_APP_RELEASE_KEY = stringPreferencesKey("last_notified_app_release_key")
+        val LAST_PROMPTED_APP_RELEASE_KEY = stringPreferencesKey("last_prompted_app_release_key")
         val LAST_INSTALLED_APK_ASSET_ID = longPreferencesKey("last_installed_apk_asset_id")
         val DISMISSED_APP_RELEASE_KEY = stringPreferencesKey("dismissed_app_release_key")
     }
@@ -212,6 +214,31 @@ class LocalPreferencesStore(context: Context) {
         appContext.tftDataStore.edit { prefs ->
             prefs[Keys.LAST_NOTIFIED_COMP_IDS] = compIds.sorted().joinToString("\n")
         }
+    }
+
+    suspend fun getLastNotifiedCompsSignature(): String? =
+        appContext.tftDataStore.data.first()[Keys.LAST_NOTIFIED_COMPS_SIGNATURE]?.takeIf { it.isNotBlank() }
+
+    suspend fun setLastNotifiedCompsSignature(signature: String) {
+        if (signature.isBlank()) return
+        appContext.tftDataStore.edit { prefs ->
+            prefs[Keys.LAST_NOTIFIED_COMPS_SIGNATURE] = signature
+        }
+    }
+
+    suspend fun getLastPromptedAppReleaseKey(): String? =
+        appContext.tftDataStore.data.first()[Keys.LAST_PROMPTED_APP_RELEASE_KEY]?.takeIf { it.isNotBlank() }
+
+    suspend fun setLastPromptedAppReleaseKey(releaseKey: String) {
+        if (releaseKey.isBlank()) return
+        appContext.tftDataStore.edit { prefs ->
+            prefs[Keys.LAST_PROMPTED_APP_RELEASE_KEY] = releaseKey
+        }
+    }
+
+    internal suspend fun clearAllForTests() {
+        appContext.tftDataStore.edit { it.clear() }
+        sharedPrefs.edit().clear().commit()
     }
 
     val githubRepoOverrideFlow: Flow<String?> = appContext.tftDataStore.data.map { prefs ->

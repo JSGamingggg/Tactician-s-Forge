@@ -182,34 +182,10 @@ class MetaRepository(
                         withContext(Dispatchers.Main.immediate) {
                             TftAssetIconResolver.applyParsedDdragonCatalog(parsedCatalog)
                         }
-                        if (liveVersion == prevLiveVer && tftipsResult?.fetchedFromNetwork != true) {
-                            val shortTag = latestDdragon.split(".").take(2).joinToString(".")
-                            liveVersion = "18.7 (DD $shortTag)"
-                        }
                     }
                 }
             } catch (_: Exception) {
                 // Keep offline cache silently
-            }
-
-            if (pbeVersion == prevPbeVer && tftipsResult?.pbePatchVersion == null) {
-                try {
-                    val req = Request.Builder()
-                        .url("https://raw.communitydragon.org/pbe/content-metadata.json")
-                        .head()
-                        .build()
-                    publicClient.newCall(req).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            syncedFromNetwork = true
-                            val etag = resp.header("etag")?.replace("\"", "")?.take(6)
-                            if (!etag.isNullOrBlank()) {
-                                pbeVersion = "19.1-PBE ($etag)"
-                            }
-                        }
-                    }
-                } catch (_: Exception) {
-                    // Keep cached PBE tag silently
-                }
             }
 
             val tftAcademyResult = tftAcademyDeferred.await()
@@ -295,13 +271,32 @@ class MetaRepository(
             val resolvedPbeChampTraits = currentBundle.pbeChampionTraits
 
             val newSignature = TftAcademyCompsScraper.computeCompsSignature(resolvedLiveComps, resolvedPbeComps)
-            val compsUpdated = newSignature != currentBundle.compsSignature &&
+            val compsUpdated = currentBundle.compsSignature.isNotBlank() &&
+                newSignature != currentBundle.compsSignature &&
                 (resolvedLiveComps.isNotEmpty() || resolvedPbeComps.isNotEmpty())
             val newlyAddedComps = (resolvedLiveComps + resolvedPbeComps).filter { it.id !in existingCompIds }
-            val newLivePatchDetected = liveVersion != prevLiveVer ||
-                (tftipsResult?.livePatchRecords?.any { inc -> currentBundle.livePatches.none { it.id == inc.id } } == true)
-            val newPbePatchDetected = pbeVersion != prevPbeVer ||
-                (tftipsResult?.pbePatchRecords?.any { inc -> currentBundle.pbePatches.none { it.id == inc.id } } == true)
+
+            val prevTopLive = currentBundle.livePatches.firstOrNull()
+            val incomingTopLive = tftipsResult?.livePatchRecords?.firstOrNull()
+            val newLivePatchDetected = tftipsResult?.fetchedFromNetwork == true && (
+                !liveVersion.equals(prevLiveVer, ignoreCase = true) ||
+                    (incomingTopLive != null &&
+                        incomingTopLive.id != prevTopLive?.id &&
+                        currentBundle.livePatches.none {
+                            it.id == incomingTopLive.id || it.version.equals(incomingTopLive.version, ignoreCase = true)
+                        })
+                )
+
+            val prevTopPbe = currentBundle.pbePatches.firstOrNull()
+            val incomingTopPbe = tftipsResult?.pbePatchRecords?.firstOrNull()
+            val newPbePatchDetected = tftipsResult?.fetchedFromNetwork == true && (
+                !pbeVersion.equals(prevPbeVer, ignoreCase = true) ||
+                    (incomingTopPbe != null &&
+                        incomingTopPbe.id != prevTopPbe?.id &&
+                        currentBundle.pbePatches.none {
+                            it.id == incomingTopPbe.id || it.version.equals(incomingTopPbe.version, ignoreCase = true)
+                        })
+                )
 
             val updatedVersionInfo = LiveVersionInfo(
                 livePatchVersion = liveVersion,

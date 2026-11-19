@@ -319,6 +319,7 @@ fun HextechPanelCard(
 fun TftHexBoard(
     placements: List<HexUnitPlacement>,
     environment: TftEnvironment? = null,
+    onChampionClick: ((String, Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val primary = MaterialTheme.colorScheme.primary
@@ -461,7 +462,8 @@ fun TftHexBoard(
                         environment = environment,
                         exactSize = true,
                         useHexShape = true,
-                        showBadge = true
+                        showBadge = true,
+                        onClick = onChampionClick?.let { cb -> { cb(unit.unitName, unit.cost) } }
                     )
                 }
 
@@ -483,7 +485,15 @@ fun TftHexBoard(
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
                             .background(Color(0xEB070B12), RoundedCornerShape(4.dp))
+                            .then(
+                                if (onChampionClick != null) {
+                                    Modifier.clickable { onChampionClick(unit.unitName, unit.cost) }
+                                } else {
+                                    Modifier
+                                }
+                            )
                             .padding(horizontal = 4.dp, vertical = 1.dp)
                     )
                 }
@@ -500,6 +510,66 @@ fun TftHexBoard(
             Spacer(Modifier.height(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 sortedPlacements.forEach { unit ->
+                    if (onChampionClick != null) {
+                        Surface(
+                            onClick = { onChampionClick(unit.unitName, unit.cost) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (unit.isCarry) primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, if (unit.isCarry) primary else outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        TftChampionAvatar(
+                                            name = unit.unitName,
+                                            cost = unit.cost,
+                                            isCarry = unit.isCarry,
+                                            stars = unit.stars,
+                                            size = 28.dp,
+                                            environment = environment
+                                        )
+                                        Column {
+                                            Text(
+                                                text = unit.unitName + if (unit.isCarry) " (Carry)" else "",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = if (unit.isCarry) primary else MaterialTheme.colorScheme.onSurface,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = "Row ${unit.row + 1} • Col ${unit.col + 1} • ${unit.cost}-Cost",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = "★".repeat(unit.stars.coerceIn(1, 3)),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (unit.stars >= 3 || unit.isCarry) primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (unit.items.isNotEmpty()) {
+                                    Spacer(Modifier.height(5.dp))
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        unit.items.forEach { itemName ->
+                                            TftItemChip(itemName = itemName, compact = true)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = if (unit.isCarry) primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface,
@@ -557,6 +627,7 @@ fun TftHexBoard(
                                 }
                             }
                         }
+                    }
                     }
             }
         }

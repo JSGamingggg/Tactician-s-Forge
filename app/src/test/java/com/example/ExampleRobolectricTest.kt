@@ -495,6 +495,7 @@ class ExampleRobolectricTest {
         assertEquals("Made By JS96 + MK", context.getString(R.string.made_by_credits))
 
         val prefsStore = LocalPreferencesStore(context)
+        prefsStore.clearAllForTests()
         val initialLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
         val initialBundle = OfflineMetaBundle(liveComps = listOf(initialLive))
         val initialSync = com.example.data.model.MetaSyncResult(
@@ -1670,6 +1671,7 @@ class ExampleRobolectricTest {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val context: Context = app
         val prefsStore = LocalPreferencesStore(context)
+        prefsStore.clearAllForTests()
         val initialLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
         val initialBundle = OfflineMetaBundle(liveComps = listOf(initialLive))
         val initialSync = com.example.data.model.MetaSyncResult(
@@ -1821,4 +1823,264 @@ class ExampleRobolectricTest {
         assertTrue(immediateAfterAlarm.isNotEmpty())
         assertTrue(com.example.notifications.BackgroundSyncAlarmReceiver.isAlarmScheduled(context))
     }
+
+    @Test
+    fun `notifications never fire on initial seed stat ticks or repeated opens without genuine updates`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val context: Context = app
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val notifManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val shadowNotif = org.robolectric.Shadows.shadowOf(notifManager)
+        notifManager.cancelAll()
+
+        val prefsStore = LocalPreferencesStore(context)
+        prefsStore.clearAllForTests()
+        val initialLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
+        val initialBundle = OfflineMetaBundle(liveComps = listOf(initialLive))
+
+        // Even if sync flags report deltas on very first run, baseline seeds silently with zero OS notifications
+        val noisyFirstSync = com.example.data.model.MetaSyncResult(
+            versionInfo = initialBundle.liveVersionInfo,
+            cacheStatus = initialBundle.toCacheStatus(),
+            newLivePatchDetected = true,
+            newPbePatchDetected = true,
+            newlyAddedComps = listOf(initialLive),
+            compsUpdatedDetected = true,
+            syncedFromNetwork = true
+        )
+        val firstResult = com.example.notifications.MetaUpdateNotifier.dispatchNotifications(
+            context = context,
+            syncResult = noisyFirstSync,
+            bundle = initialBundle,
+            prefsStore = prefsStore
+        )
+        assertFalse(firstResult.livePatchNotified)
+        assertFalse(firstResult.pbePatchNotified)
+        assertFalse(firstResult.newCompsNotified)
+        assertEquals(0, shadowNotif.size())
+
+        // Volatile winRate/avgPlacement stat ticks must keep structural signature identical and post 0 notifications
+        val statDriftComp = initialLive.copy(avgPlacement = 3.99, top4Rate = 58.1, winRate = 12.4, patchTag = "18.8-hf")
+        val statDriftBundle = initialBundle.copy(liveComps = listOf(statDriftComp))
+        assertEquals(
+            TftAcademyCompsScraper.computeCompsSignature(initialBundle.liveComps, emptyList()),
+            TftAcademyCompsScraper.computeCompsSignature(statDriftBundle.liveComps, emptyList())
+        )
+        val unchangedSync = com.example.data.model.MetaSyncResult(
+            versionInfo = statDriftBundle.liveVersionInfo,
+            cacheStatus = statDriftBundle.toCacheStatus(),
+            newLivePatchDetected = true,
+            newPbePatchDetected = true,
+            newlyAddedComps = emptyList(),
+            compsUpdatedDetected = true,
+            syncedFromNetwork = true
+        )
+        val secondResult = com.example.notifications.MetaUpdateNotifier.dispatchNotifications(
+            context = context,
+            syncResult = unchangedSync,
+            bundle = statDriftBundle,
+            prefsStore = prefsStore
+        )
+        assertFalse(secondResult.livePatchNotified)
+        assertFalse(secondResult.pbePatchNotified)
+        assertFalse(secondResult.newCompsNotified)
+        assertEquals(0, shadowNotif.size())
+
+        // In-app view marks a newly arrived release as seen silently so background worker won't re-notify
+        val viewedBundle = initialBundle.copy(
+            liveVersionInfo = initialBundle.liveVersionInfo.copy(livePatchVersion = "18.12")
+        )
+        com.example.notifications.MetaUpdateNotifier.markCurrentSnapshotAsSeen(viewedBundle, prefsStore)
+        val afterOpenResult = com.example.notifications.MetaUpdateNotifier.dispatchNotifications(
+            context = context,
+            syncResult = com.example.data.model.MetaSyncResult(
+                versionInfo = viewedBundle.liveVersionInfo,
+                cacheStatus = viewedBundle.toCacheStatus(),
+                newLivePatchDetected = true,
+                syncedFromNetwork = true
+            ),
+            bundle = viewedBundle,
+            prefsStore = prefsStore
+        )
+        assertFalse(afterOpenResult.livePatchNotified)
+        assertEquals(0, shadowNotif.size())
+    }
+
+    @Test
+    fun `github release key matches across api and html fallback and same version does not false trigger`() {
+        val apiJson = """
+            [
+              {
+                "id": 9991,
+                "tag_name": "v1.0.20",
+                "name": "v1.0.20",
+                "body": "Version: 1.0.20\nBuildCode: 20\nCommit: abc1234deadbeef",
+                "assets": [
+                  {
+                    "id": 777,
+                    "name": "app-debug.apk",
+                    "size": 123456,
+                    "browser_download_url": "https://github.com/owner/repo/releases/download/v1.0.20/app-debug.apk"
+                  }
+                ]
+              }
+            ]
+        """.trimIndent()
+        val apiRelease = com.example.update.GitHubReleaseParser.parseGitHubReleases(apiJson, isDebugBuild = true).first()
+        val htmlRelease = com.example.update.GitHubReleaseParser.parseGitHubHtmlReleasesFallback(
+            releasesHtml = "<div>Version: 1.0.20 BuildCode: 20 Commit: abc1234deadbeef</div>",
+            expandedAssetsHtml = """<a href="/owner/repo/releases/download/v1.0.20/app-debug.apk">app-debug.apk</a>""",
+            repoSlug = "owner/repo",
+            isDebugBuild = true
+        ).first()
+        assertEquals(apiRelease.releaseKey, htmlRelease.releaseKey)
+
+        // Same version without buildCode/timestamp must NOT falsely trigger update popup on launch
+        val noBuildCodeRelease = apiRelease.copy(parsedVersionCode = null, parsedCommitSha = null, parsedVersionName = "1.0")
+        val localInstalled = com.example.update.InstalledAppVersionInfo(
+            versionCode = 1,
+            versionName = "1.0",
+            gitCommitSha = "",
+            buildTimestampMs = 0L,
+            isDebugBuild = true
+        )
+        assertFalse(com.example.update.GitHubReleaseParser.isRemoteReleaseNewer(noBuildCodeRelease, localInstalled))
+    }
+
+    @Test
+    fun `champion detail profile resolves stats ability optimal items and synergy comps`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = OfflineMetaCacheStore(context)
+        val bundle = store.readOrSeedBundle()
+
+        val ahriEntry = bundle.liveChampions.first { it.name.equals("Ahri", ignoreCase = true) }
+        val customAhriCarryComp = sampleTftAcademyComp(
+            id = "comp_ahri_carry",
+            title = "Elderwood Arcanist Ahri",
+            environment = TftEnvironment.LIVE,
+            tier = TierRank.S,
+            carry = "Ahri"
+        ).copy(
+            avgPlacement = 3.45,
+            hexPlacements = listOf(
+                HexUnitPlacement("Ornn", 0, 3, cost = 4, items = listOf("Warmog's Armor")),
+                HexUnitPlacement(
+                    "Ahri",
+                    3,
+                    6,
+                    cost = 4,
+                    stars = 2,
+                    isCarry = true,
+                    items = listOf("Blue Buff", "Jeweled Gauntlet", "Rabadon's Deathcap")
+                )
+            )
+        )
+        val supportComp = sampleTftAcademyComp(
+            id = "comp_ornn_flex",
+            title = "Elderwood Ornn Vanguard",
+            environment = TftEnvironment.LIVE,
+            tier = TierRank.A,
+            carry = "Ornn"
+        ).copy(
+            avgPlacement = 3.90,
+            coreUnits = listOf("Ornn", "Ahri", "Syndra"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Ornn", 0, 3, cost = 4, isCarry = true, items = listOf("Gargoyle Stoneplate")),
+                HexUnitPlacement("Ahri", 3, 2, cost = 4, items = listOf("Blue Buff"))
+            )
+        )
+
+        val profile = com.example.ui.components.resolveChampionDetailProfile(
+            championName = "Ahri",
+            environment = TftEnvironment.LIVE,
+            champions = bundle.liveChampions,
+            comps = listOf(supportComp, customAhriCarryComp),
+            items = bundle.liveItems
+        )
+
+        assertTrue(profile.hasExactCatalogStats)
+        assertEquals(ahriEntry.cost, profile.cost)
+        assertEquals(ahriEntry.tier, profile.tier)
+        assertTrue(profile.traits.isNotEmpty())
+        assertTrue(profile.abilityDescription.isNotBlank())
+
+        // Carry comp should be ranked first above support comp
+        assertEquals(2, profile.synergyComps.size)
+        assertEquals("comp_ahri_carry", profile.synergyComps.first().comp.id)
+        assertEquals("Primary Carry", profile.synergyComps.first().roleInComp)
+        assertTrue(profile.synergyComps.first().isCarry)
+        assertEquals("comp_ornn_flex", profile.synergyComps[1].comp.id)
+        assertEquals("Secondary Carry", profile.synergyComps[1].roleInComp)
+
+        // Optimal items should merge BIS + comp placements and attach ItemTierEntry metadata
+        val blueBuffUsage = profile.optimalItems.firstOrNull { it.itemName.contains("Blue Buff", ignoreCase = true) }
+        assertNotNull(blueBuffUsage)
+        assertEquals(2, blueBuffUsage!!.compCount)
+        assertNotNull(blueBuffUsage.itemEntry)
+        assertTrue(profile.optimalItems.any { it.itemName.contains("Rabadon", ignoreCase = true) })
+    }
+
+    @Test
+    fun `champion detail profile handles apostrophe normalization and comp-only fallback unit`() {
+        val khazixComp = sampleTftAcademyComp(
+            id = "comp_khazix_reroll",
+            title = "Reaper Kha'Zix",
+            environment = TftEnvironment.LIVE,
+            tier = TierRank.A,
+            carry = "Kha'Zix"
+        ).copy(
+            avgPlacement = 3.80,
+            top4Rate = 58.4,
+            coreUnits = listOf("Kha'Zix", "CustomScoutUnit"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Kha'Zix", 1, 2, cost = 2, stars = 3, isCarry = true, items = listOf("Infinity Edge")),
+                HexUnitPlacement("CustomScoutUnit", 0, 4, cost = 5, stars = 2, isCarry = false, items = listOf("Warmog's Armor"))
+            )
+        )
+
+        val fallbackProfile = com.example.ui.components.resolveChampionDetailProfile(
+            championName = "CustomScoutUnit",
+            environment = TftEnvironment.LIVE,
+            champions = emptyList(),
+            comps = listOf(khazixComp),
+            items = emptyList(),
+            fallbackCost = 5
+        )
+        assertFalse(fallbackProfile.hasExactCatalogStats)
+        assertEquals(5, fallbackProfile.cost)
+        assertEquals(TierRank.A, fallbackProfile.tier)
+        assertEquals(3.80, fallbackProfile.avgPlacement, 0.01)
+        assertEquals(1, fallbackProfile.synergyComps.size)
+        assertEquals("Itemized Tank", fallbackProfile.synergyComps.first().roleInComp)
+        assertTrue(fallbackProfile.optimalItems.any { it.itemName.contains("Warmog", ignoreCase = true) })
+
+        val khazixEntry = com.example.data.model.ChampionTierEntry(
+            id = "live_khazix",
+            name = "Kha'Zix",
+            cost = 2,
+            tier = TierRank.A,
+            environment = TftEnvironment.LIVE,
+            traits = listOf("Reaper"),
+            role = "Assassin Carry",
+            avgPlacement = 3.72,
+            top4Rate = 60.0,
+            bestItems = listOf("Infinity Edge", "Bloodthirster"),
+            synergyComps = listOf("Reaper Kha'Zix"),
+            abilityName = "Taste Their Fear",
+            abilityDescription = "Slashes target for bonus isolated physical damage."
+        )
+        val normalizedProfile = com.example.ui.components.resolveChampionDetailProfile(
+            championName = "TFT18_KhaZix",
+            environment = TftEnvironment.LIVE,
+            champions = listOf(khazixEntry),
+            comps = listOf(khazixComp),
+            items = emptyList()
+        )
+        assertTrue(normalizedProfile.hasExactCatalogStats)
+        assertEquals("Kha'Zix", normalizedProfile.name)
+        assertEquals("Taste Their Fear", normalizedProfile.abilityName)
+        assertEquals(1, normalizedProfile.synergyComps.size)
+        assertTrue(normalizedProfile.synergyComps.first().isCarry)
+    }
 }
+

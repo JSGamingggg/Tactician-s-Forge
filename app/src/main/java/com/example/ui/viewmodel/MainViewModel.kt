@@ -213,9 +213,9 @@ class MainViewModel(
             refreshPatchVersions(
                 notifyIfUpdated = true,
                 onlyNotifyOnChanges = true,
-                triggerPushAlerts = true
+                triggerPushAlerts = false
             )
-            checkForAppUpdate(userInitiated = false)
+            checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
             startActivePollingLoop()
         }
         if (!currentUserId.isNullOrBlank()) {
@@ -230,9 +230,9 @@ class MainViewModel(
                 refreshPatchVersions(
                     notifyIfUpdated = true,
                     onlyNotifyOnChanges = true,
-                    triggerPushAlerts = true
+                    triggerPushAlerts = false
                 )
-                checkForAppUpdate(userInitiated = false)
+                checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
             }
         }
     }
@@ -248,19 +248,22 @@ class MainViewModel(
         refreshPatchVersions(
             notifyIfUpdated = true,
             onlyNotifyOnChanges = true,
-            triggerPushAlerts = true
+            triggerPushAlerts = false
         )
-        checkForAppUpdate(userInitiated = false)
+        checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
     }
 
-    fun checkForAppUpdate(userInitiated: Boolean = true) {
+    fun checkForAppUpdate(
+        userInitiated: Boolean = true,
+        dispatchOsNotification: Boolean = false
+    ) {
         val ctx = appContext ?: return
         viewModelScope.launch {
             val outcome = AppUpdateCoordinator.checkForUpdates(
                 context = ctx,
                 userInitiated = userInitiated,
                 showInAppModalOnLaunch = true,
-                dispatchOsNotification = true
+                dispatchOsNotification = dispatchOsNotification
             )
             if (outcome.updateAvailable && outcome.release != null && (userInitiated || outcome.inAppNotificationTriggered)) {
                 _snackbarMessage.value = "App update available: ${outcome.release.displayVersionLabel} — tap Update to install in-app."
@@ -372,6 +375,11 @@ class MainViewModel(
                         context = appContext,
                         syncResult = sync,
                         bundle = freshBundle
+                    )
+                } else if (appContext != null && sync.syncedFromNetwork) {
+                    MetaUpdateNotifier.markCurrentSnapshotAsSeen(
+                        bundle = freshBundle,
+                        prefsStore = localStore
                     )
                 }
 

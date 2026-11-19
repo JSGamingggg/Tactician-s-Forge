@@ -87,13 +87,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.model.ChampionTierEntry
 import com.example.data.model.FavoriteCompDoc
+import com.example.data.model.ItemTierEntry
 import com.example.data.model.LiveVersionInfo
 import com.example.data.model.MetaComp
 import com.example.data.model.OfflineCacheStatus
 import com.example.data.model.PatchUpdateRecord
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
+import com.example.ui.components.ChampionDetailModalSheet
 import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
 import com.example.ui.components.HextechPanelCard
@@ -144,6 +147,8 @@ fun MetaSnapshotsScreen(
     onTogglePin: (String, Boolean) -> Unit,
     onCreateCustomComp: (String, TftEnvironment, TierRank, String, String, String, String) -> Unit,
     patches: List<PatchUpdateRecord> = emptyList(),
+    champions: List<ChampionTierEntry> = emptyList(),
+    items: List<ItemTierEntry> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -151,6 +156,7 @@ fun MetaSnapshotsScreen(
     var selectedFilter by remember { mutableStateOf("ALL") }
     var showFavoritesOnly by remember { mutableStateOf(false) }
     var inspectedComp by remember { mutableStateOf<MetaComp?>(null) }
+    var inspectedChampion by remember { mutableStateOf<Pair<String, Int?>?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var showPatchDetailsDialog by remember { mutableStateOf(false) }
     val latestPatch = remember(patches, environment) {
@@ -332,7 +338,8 @@ fun MetaSnapshotsScreen(
                                                         name = fav.carryName,
                                                         cost = 4,
                                                         isCarry = true,
-                                                        size = 18.dp
+                                                        size = 18.dp,
+                                                        onClick = { inspectedChampion = fav.carryName to null }
                                                     )
                                                 }
                                                 Text(
@@ -597,6 +604,9 @@ fun MetaSnapshotsScreen(
                                                     isFavorite = isFav,
                                                     isPinned = isPinned,
                                                     onCardClick = { inspectedComp = comp },
+                                                    onChampionClick = { unitName, cost ->
+                                                        inspectedChampion = unitName to cost
+                                                    },
                                                     onToggleFavorite = { onToggleFavorite(comp) },
                                                     onTogglePin = {
                                                         if (!isFav) onToggleFavorite(comp)
@@ -623,6 +633,9 @@ fun MetaSnapshotsScreen(
                                             isFavorite = isFav,
                                             isPinned = isPinned,
                                             onCardClick = { inspectedComp = comp },
+                                            onChampionClick = { unitName, cost ->
+                                                inspectedChampion = unitName to cost
+                                            },
                                             onToggleFavorite = { onToggleFavorite(comp) },
                                             onTogglePin = {
                                                 if (!isFav) onToggleFavorite(comp)
@@ -686,6 +699,9 @@ fun MetaSnapshotsScreen(
                                     onTogglePin = {
                                         if (!isFav) onToggleFavorite(sideComp)
                                         else onTogglePin(sideComp.id, !isPinned)
+                                    },
+                                    onChampionClick = { unitName, cost ->
+                                        inspectedChampion = unitName to cost
                                     }
                                 )
                             }
@@ -713,10 +729,32 @@ fun MetaSnapshotsScreen(
                         onTogglePin = {
                             if (!isFav) onToggleFavorite(comp)
                             else onTogglePin(comp.id, !isPinned)
+                        },
+                        onChampionClick = { unitName, cost ->
+                            inspectedChampion = unitName to cost
                         }
                     )
                 }
             }
+        }
+
+        inspectedChampion?.let { (champName, champCost) ->
+            ChampionDetailModalSheet(
+                championName = champName,
+                environment = environment,
+                champions = champions,
+                comps = comps,
+                items = items,
+                fallbackCost = champCost,
+                onDismiss = { inspectedChampion = null },
+                onSelectChampion = { nextName, nextCost ->
+                    inspectedChampion = nextName to nextCost
+                },
+                onOpenComp = { targetComp ->
+                    inspectedChampion = null
+                    inspectedComp = targetComp
+                }
+            )
         }
     }
 
@@ -739,6 +777,7 @@ private fun MetaCompCard(
     isFavorite: Boolean,
     isPinned: Boolean,
     onCardClick: () -> Unit,
+    onChampionClick: ((String, Int) -> Unit)? = null,
     onToggleFavorite: () -> Unit,
     onTogglePin: () -> Unit,
     modifier: Modifier = Modifier
@@ -902,7 +941,8 @@ private fun MetaCompCard(
                         isCarry = isCarry,
                         size = 42.dp,
                         labelFontSize = 11.sp,
-                        environment = comp.environment
+                        environment = comp.environment,
+                        onClick = onChampionClick?.let { cb -> { cb(unit, cost) } }
                     )
                 }
             }
@@ -948,12 +988,13 @@ private fun StatCell(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CompDetailSheetContent(
+fun CompDetailSheetContent(
     comp: MetaComp,
     isFavorite: Boolean,
     isPinned: Boolean,
     onToggleFavorite: () -> Unit,
-    onTogglePin: () -> Unit
+    onTogglePin: () -> Unit,
+    onChampionClick: ((String, Int) -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -1042,7 +1083,11 @@ private fun CompDetailSheetContent(
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
             )
-            TftHexBoard(placements = comp.hexPlacements, environment = comp.environment)
+            TftHexBoard(
+                placements = comp.hexPlacements,
+                environment = comp.environment,
+                onChampionClick = onChampionClick
+            )
         }
 
         val carryItems = comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()

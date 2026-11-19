@@ -60,7 +60,17 @@ data class GitHubReleaseInfo(
         }
 
     val releaseKey: String
-        get() = "${releaseId}_${apkAssetId}_${parsedCommitSha ?: assetUpdatedAtMs}"
+        get() {
+            val stableTag = tagName.trim().takeIf { it.isNotBlank() } ?: releaseId.toString()
+            val versionPart = parsedVersionCode?.let { "b$it" }
+                ?: parsedVersionName?.takeIf { it.isNotBlank() }
+                ?: "v0"
+            val commitPart = parsedCommitSha?.trim()?.take(12).orEmpty()
+            val assetPart = apkAssetName.trim().lowercase(Locale.US)
+            return listOf(stableTag, versionPart, commitPart, assetPart)
+                .filter { it.isNotBlank() }
+                .joinToString("_")
+        }
 }
 
 data class InstalledAppVersionInfo(
@@ -418,7 +428,7 @@ object GitHubReleaseParser {
             return remote.assetUpdatedAtMs > installed.buildTimestampMs + 180_000L
         }
 
-        return remote.apkAssetId > 0L
+        return false
     }
 }
 
@@ -736,6 +746,7 @@ object AppUpdateCoordinator {
         val lastInstalledAssetId = prefsStore.getLastInstalledApkAssetId()
         if (candidate != null && GitHubReleaseParser.isRemoteReleaseNewer(candidate, installed, lastInstalledAssetId)) {
             val lastNotifiedKey = prefsStore.getLastNotifiedAppReleaseKey()
+            val lastPromptedKey = prefsStore.getLastPromptedAppReleaseKey()
             val dismissedKey = prefsStore.getDismissedAppReleaseKey()
             val isFreshReleaseNotification = lastNotifiedKey != candidate.releaseKey
 
@@ -751,7 +762,14 @@ object AppUpdateCoordinator {
             }
 
             val shouldShowModal = userInitiated ||
-                (showInAppModalOnLaunch && dismissedKey != candidate.releaseKey)
+                (showInAppModalOnLaunch && dismissedKey != candidate.releaseKey && lastPromptedKey != candidate.releaseKey)
+
+            if (!userInitiated && shouldShowModal) {
+                prefsStore.setLastPromptedAppReleaseKey(candidate.releaseKey)
+                if (!dispatchOsNotification) {
+                    prefsStore.setLastNotifiedAppReleaseKey(candidate.releaseKey)
+                }
+            }
 
             _uiState.update {
                 it.copy(
@@ -769,7 +787,7 @@ object AppUpdateCoordinator {
                 updateAvailable = true,
                 release = candidate,
                 osNotificationPosted = osPosted,
-                inAppNotificationTriggered = isFreshReleaseNotification || shouldShowModal
+                inAppNotificationTriggered = shouldShowModal
             )
         } else {
             _uiState.update {

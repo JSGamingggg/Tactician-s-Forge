@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -69,6 +70,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -237,6 +239,7 @@ fun TftChampionAvatar(
     exactSize: Boolean = false,
     useHexShape: Boolean = false,
     showBadge: Boolean = true,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -275,6 +278,17 @@ fun TftChampionAvatar(
                 .align(Alignment.Center)
                 .clip(shape)
                 .background(color.copy(alpha = 0.24f))
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable(
+                            role = Role.Button,
+                            onClickLabel = "Inspect $cleanName details",
+                            onClick = onClick
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
                 .then(
                     if (useHexShape) {
                         Modifier
@@ -384,12 +398,28 @@ fun TftChampionTile(
     labelFontSize: TextUnit = 10.5.sp,
     useHexShape: Boolean = false,
     environment: TftEnvironment? = null,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val cleanName = remember(name) { formatRiotAssetLabel(name) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.widthIn(min = size + 12.dp, max = size + 28.dp)
+        modifier = modifier
+            .widthIn(min = size + 12.dp, max = size + 28.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = "Inspect $cleanName stats, items and comps",
+                            onClick = onClick
+                        )
+                        .padding(horizontal = 2.dp, vertical = 2.dp)
+                } else {
+                    Modifier
+                }
+            )
     ) {
         TftChampionAvatar(
             name = name,

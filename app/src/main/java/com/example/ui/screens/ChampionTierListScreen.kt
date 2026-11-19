@@ -31,10 +31,12 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -42,6 +44,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,10 +64,12 @@ import com.example.data.model.ChampionTierEntry
 import com.example.data.model.ItemCategory
 import com.example.data.model.ItemTierEntry
 import com.example.data.model.LiveVersionInfo
+import com.example.data.model.MetaComp
 import com.example.data.model.OfflineCacheStatus
 import com.example.data.model.PatchUpdateRecord
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
+import com.example.ui.components.ChampionDetailModalSheet
 import com.example.ui.components.DeltaBadge
 import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
@@ -90,7 +95,7 @@ private enum class TierCatalogTab(val label: String) {
     AUGMENTS("Augments")
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ChampionTierListScreen(
     environment: TftEnvironment,
@@ -105,6 +110,11 @@ fun ChampionTierListScreen(
     onRefreshSync: () -> Unit,
     onSignInRequested: () -> Unit,
     patches: List<PatchUpdateRecord> = emptyList(),
+    comps: List<MetaComp> = emptyList(),
+    favoriteIds: Set<String> = emptySet(),
+    pinnedIds: Set<String> = emptySet(),
+    onToggleFavorite: ((MetaComp) -> Unit)? = null,
+    onTogglePin: ((String, Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var activeSubTab by rememberSaveable { mutableStateOf(TierCatalogTab.CHAMPIONS) }
@@ -127,6 +137,8 @@ fun ChampionTierListScreen(
     var showAllAugmentCategories by rememberSaveable { mutableStateOf(false) }
 
     var expandedId by remember { mutableStateOf<String?>(null) }
+    var inspectedChampion by remember { mutableStateOf<Pair<String, Int?>?>(null) }
+    var inspectedSynergyComp by remember { mutableStateOf<MetaComp?>(null) }
     var showPatchDetailsDialog by remember { mutableStateOf(false) }
     val latestPatch = remember(patches, environment) {
         patches.firstOrNull { it.environment == environment } ?: patches.firstOrNull()
@@ -574,6 +586,7 @@ fun ChampionTierListScreen(
                                     expanded = isExpanded,
                                     selectedTraits = selectedTraits,
                                     onTraitClick = toggleTraitSelection,
+                                    onChampionAvatarClick = { inspectedChampion = champ.name to champ.cost },
                                     onClick = { expandedId = if (isExpanded) null else champ.id },
                                     modifier = Modifier.weight(1f)
                                 )
@@ -591,6 +604,7 @@ fun ChampionTierListScreen(
                             expanded = isExpanded,
                             selectedTraits = selectedTraits,
                             onTraitClick = toggleTraitSelection,
+                            onChampionAvatarClick = { inspectedChampion = champ.name to champ.cost },
                             onClick = { expandedId = if (isExpanded) null else champ.id }
                         )
                     }
@@ -640,6 +654,9 @@ fun ChampionTierListScreen(
                                     selectedComponents = selectedItemComponents,
                                     onCategoryClick = toggleItemCategorySelection,
                                     onComponentClick = toggleItemComponentSelection,
+                                    onHolderClick = { holder, holderCost ->
+                                        inspectedChampion = holder to holderCost
+                                    },
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -655,7 +672,10 @@ fun ChampionTierListScreen(
                             selectedCategories = selectedItemCategories,
                             selectedComponents = selectedItemComponents,
                             onCategoryClick = toggleItemCategorySelection,
-                            onComponentClick = toggleItemComponentSelection
+                            onComponentClick = toggleItemComponentSelection,
+                            onHolderClick = { holder, holderCost ->
+                                inspectedChampion = holder to holderCost
+                            }
                         )
                     }
                 }
@@ -728,6 +748,57 @@ fun ChampionTierListScreen(
 
         item { Spacer(Modifier.height(24.dp)) }
         }
+
+        inspectedChampion?.let { (champName, champCost) ->
+            ChampionDetailModalSheet(
+                championName = champName,
+                environment = environment,
+                champions = champions,
+                comps = comps,
+                items = items,
+                fallbackCost = champCost,
+                onDismiss = { inspectedChampion = null },
+                onSelectChampion = { nextName, nextCost ->
+                    inspectedChampion = nextName to nextCost
+                },
+                onOpenComp = { targetComp ->
+                    inspectedChampion = null
+                    inspectedSynergyComp = targetComp
+                },
+                onTraitClick = { trait ->
+                    activeSubTab = TierCatalogTab.CHAMPIONS
+                    val normalized = normalizeFilterLabel(trait)
+                    selectedTraits = selectedTraits + normalized
+                    inspectedChampion = null
+                }
+            )
+        }
+
+        inspectedSynergyComp?.let { comp ->
+            val compSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            val isFav = favoriteIds.contains(comp.id)
+            val isPinned = pinnedIds.contains(comp.id)
+            ModalBottomSheet(
+                onDismissRequest = { inspectedSynergyComp = null },
+                sheetState = compSheetState,
+                containerColor = MaterialTheme.colorScheme.surface
+            ) {
+                CompDetailSheetContent(
+                    comp = comp,
+                    isFavorite = isFav,
+                    isPinned = isPinned,
+                    onToggleFavorite = { onToggleFavorite?.invoke(comp) },
+                    onTogglePin = {
+                        if (!isFav) onToggleFavorite?.invoke(comp)
+                        else onTogglePin?.invoke(comp.id, !isPinned)
+                    },
+                    onChampionClick = { unitName, cost ->
+                        inspectedSynergyComp = null
+                        inspectedChampion = unitName to cost
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -738,6 +809,7 @@ private fun ChampionTierCard(
     expanded: Boolean,
     selectedTraits: Set<String> = emptySet(),
     onTraitClick: ((String) -> Unit)? = null,
+    onChampionAvatarClick: (() -> Unit)? = null,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -761,7 +833,8 @@ private fun ChampionTierCard(
                         cost = champ.cost,
                         isCarry = champ.tier == TierRank.S,
                         size = 40.dp,
-                        environment = champ.environment
+                        environment = champ.environment,
+                        onClick = onChampionAvatarClick
                     )
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -911,6 +984,18 @@ private fun ChampionTierCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+
+                    if (onChampionAvatarClick != null) {
+                        FilledTonalButton(
+                            onClick = onChampionAvatarClick,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .minimumInteractiveComponentSize()
+                                .testTag("inspect_champ_${champ.id}")
+                        ) {
+                            Text("View Full Stats, Optimal Items & Synergy Comps")
+                        }
+                    }
                 }
             }
         }
@@ -925,6 +1010,7 @@ private fun ItemTierCard(
     selectedComponents: Set<String> = emptySet(),
     onCategoryClick: ((ItemCategory) -> Unit)? = null,
     onComponentClick: ((String) -> Unit)? = null,
+    onHolderClick: ((String, Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val catTint = itemCategoryColor(item.category)
@@ -1034,26 +1120,52 @@ private fun ItemTierCard(
                         val holderCost = remember(holder, item.environment, TftAssetIconResolver.catalogRevision) {
                             TftAssetIconResolver.getChampionCost(holder, item.environment) ?: 4
                         }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        if (onHolderClick != null) {
+                            Surface(
+                                onClick = { onHolderClick(holder, holderCost) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
-                                TftChampionAvatar(
-                                    name = holder,
-                                    cost = holderCost,
-                                    size = 18.dp,
-                                    environment = item.environment
-                                )
-                                Text(
-                                    text = holder,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    TftChampionAvatar(
+                                        name = holder,
+                                        cost = holderCost,
+                                        size = 18.dp,
+                                        environment = item.environment
+                                    )
+                                    Text(
+                                        text = holder,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    TftChampionAvatar(
+                                        name = holder,
+                                        cost = holderCost,
+                                        size = 18.dp,
+                                        environment = item.environment
+                                    )
+                                    Text(
+                                        text = holder,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
                         }
                     }

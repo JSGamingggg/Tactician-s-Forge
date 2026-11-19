@@ -132,8 +132,10 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.example.MainActivity
 import com.example.R
+import com.example.data.model.ChampionTierEntry
 import com.example.data.model.FavoriteCompDoc
 import com.example.data.model.HexUnitPlacement
+import com.example.data.model.ItemTierEntry
 import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
@@ -143,6 +145,7 @@ import com.example.data.repository.MetaCacheUpdates
 import com.example.data.repository.MetaRepository
 import com.example.notifications.MetaUpdateNotifier
 import com.example.notifications.TftNotificationHelper
+import com.example.ui.components.ChampionDetailSheetContent
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftChampionTile
@@ -152,6 +155,7 @@ import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
 import com.example.ui.components.championCostColor
 import com.example.ui.components.formatRiotAssetLabel
+import com.example.ui.components.resolveChampionDetailProfile
 import com.example.ui.components.sanitizeExternalSourceMentions
 import com.example.ui.screens.groupCompsByTier
 import com.example.ui.theme.ArcaneCyan
@@ -462,6 +466,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private var savedBubblePosPx: Pair<Int, Int>? = null
     private val configurationVersion = mutableIntStateOf(0)
     private val allCompsState = mutableStateOf<List<MetaComp>>(emptyList())
+    private val allChampionsState = mutableStateOf<List<ChampionTierEntry>>(emptyList())
+    private val allItemsState = mutableStateOf<List<ItemTierEntry>>(emptyList())
     private val favoriteDocsState = mutableStateOf<List<FavoriteCompDoc>>(emptyList())
     private var favoritesObserverJob: Job? = null
     private var activeOverlaySyncJob: Job? = null
@@ -520,6 +526,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             val bundle = metaRepository.loadOfflineBundleAsync()
             allCompsState.value = (bundle.liveComps + bundle.pbeComps)
                 .sortedWith(compareBy<MetaComp> { it.environment.ordinal }.thenBy { it.tier.sortOrder }.thenBy { it.avgPlacement })
+            allChampionsState.value = bundle.liveChampions + bundle.pbeChampions
+            allItemsState.value = bundle.liveItems + bundle.pbeItems
         }
     }
 
@@ -539,6 +547,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             val bundle = metaRepository.loadOfflineBundleAsync()
             allCompsState.value = (bundle.liveComps + bundle.pbeComps)
                 .sortedWith(compareBy<MetaComp> { it.environment.ordinal }.thenBy { it.tier.sortOrder }.thenBy { it.avgPlacement })
+            allChampionsState.value = bundle.liveChampions + bundle.pbeChampions
+            allItemsState.value = bundle.liveItems + bundle.pbeItems
             MetaUpdateNotifier.dispatchNotifications(
                 context = applicationContext,
                 syncResult = sync,
@@ -942,6 +952,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         customWidthDp = customWidthDpState.value,
                         customHeightDp = customHeightDpState.value,
                         allComps = allCompsState.value,
+                        allChampions = allChampionsState.value,
+                        allItems = allItemsState.value,
                         favoriteDocs = favoriteDocsState.value,
                         windowOriginProvider = { drawerLayoutParams.x to drawerLayoutParams.y },
                         windowSizeProvider = {
@@ -1239,6 +1251,8 @@ private fun OverlayDrawerContent(
     customWidthDp: Float?,
     customHeightDp: Float?,
     allComps: List<MetaComp>,
+    allChampions: List<ChampionTierEntry> = emptyList(),
+    allItems: List<ItemTierEntry> = emptyList(),
     favoriteDocs: List<FavoriteCompDoc>,
     windowOriginProvider: () -> Pair<Int, Int>,
     windowSizeProvider: () -> Pair<Float, Float>,
@@ -1301,6 +1315,7 @@ private fun OverlayDrawerContent(
     var envFilter by remember { mutableStateOf(TftEnvironment.LIVE) }
     var tierFilter by remember { mutableStateOf<TierRank?>(null) }
     var selectedCompId by remember { mutableStateOf<String?>(null) }
+    var inspectedOverlayChampion by remember { mutableStateOf<Pair<String, Int?>?>(null) }
 
     val favoriteComps = remember(mergedAllComps, favoriteDocs, favoriteIds) {
         val matched = mergedAllComps.filter { favoriteIds.contains(it.id) }
@@ -1608,14 +1623,109 @@ private fun OverlayDrawerContent(
                                 .weight(1f, fill = activeHeightDp != null)
                         ) {
                             AnimatedContent(
-                                targetState = Triple(browseMode, envFilter, tierFilter) to selectedComp?.id,
+                                targetState = Triple(browseMode, envFilter, tierFilter) to (selectedComp?.id to inspectedOverlayChampion?.first),
                                 transitionSpec = {
                                     fadeIn(tween(150)) togetherWith fadeOut(tween(110))
                                 },
                                 label = "overlayCompsFilterTransition"
                             ) { (filterKey, _) ->
                                 val (activeMode, activeEnv, _) = filterKey
-                                if (selectedComp != null) {
+                                val activeOverlayChamp = inspectedOverlayChampion
+                                if (activeOverlayChamp != null) {
+                                    val profile = remember(activeOverlayChamp, envFilter, allChampions, mergedAllComps, allItems) {
+                                        resolveChampionDetailProfile(
+                                            championName = activeOverlayChamp.first,
+                                            environment = envFilter,
+                                            champions = allChampions,
+                                            comps = mergedAllComps.filter { it.environment == envFilter },
+                                            items = allItems,
+                                            fallbackCost = activeOverlayChamp.second
+                                        )
+                                    }
+                                    val paneHeightModifier = if (activeHeightDp != null) {
+                                        Modifier.fillMaxHeight()
+                                    } else {
+                                        Modifier.heightIn(max = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp))
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = DeepSlate,
+                                        border = BorderStroke(
+                                            width = 1.4.dp,
+                                            brush = Brush.linearGradient(listOf(BrightGold, ArcaneCyan))
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .then(paneHeightModifier)
+                                            .testTag("overlay_champion_detail_pane")
+                                    ) {
+                                        Column(modifier = Modifier.fillMaxWidth()) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Surface(
+                                                    onClick = { inspectedOverlayChampion = null },
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = SlateElevated,
+                                                    border = BorderStroke(1.dp, ArcaneCyan.copy(alpha = 0.65f)),
+                                                    modifier = Modifier.testTag("overlay_champion_back_button")
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                                            contentDescription = "Back",
+                                                            tint = ArcaneCyan,
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                        Text(
+                                                            text = "Back",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = ArcaneCyan
+                                                        )
+                                                    }
+                                                }
+                                                Text(
+                                                    text = "${profile.name} Inspector",
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    color = BrightGold,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                IconButton(
+                                                    onClick = { inspectedOverlayChampion = null },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Close,
+                                                        contentDescription = "Close champion inspector",
+                                                        tint = Color(0xFFB7C4D8),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+                                            ChampionDetailSheetContent(
+                                                profile = profile,
+                                                onClose = null,
+                                                onSelectChampion = { nextName, nextCost ->
+                                                    inspectedOverlayChampion = nextName to nextCost
+                                                },
+                                                onOpenComp = { targetComp ->
+                                                    envFilter = targetComp.environment
+                                                    selectedCompId = targetComp.id
+                                                    inspectedOverlayChampion = null
+                                                }
+                                            )
+                                        }
+                                    }
+                                } else if (selectedComp != null) {
                                     val leftWeight = if (drawerDims.widthDp >= 600.dp) 0.49f else 0.46f
                                     val rightWeight = 1f - leftWeight
                                     val paneHeightModifier = if (activeHeightDp != null) {
@@ -1635,6 +1745,9 @@ private fun OverlayDrawerContent(
                                             isFavorite = favoriteIds.contains(selectedComp.id),
                                             onToggleFavorite = { onToggleFavorite(selectedComp) },
                                             onBackToComps = { selectedCompId = null },
+                                            onChampionClick = { unitName, cost ->
+                                                inspectedOverlayChampion = unitName to cost
+                                            },
                                             modifier = Modifier
                                                 .weight(leftWeight)
                                                 .then(paneHeightModifier)
@@ -1643,6 +1756,9 @@ private fun OverlayDrawerContent(
                                             comp = selectedComp,
                                             fillAvailableHeight = activeHeightDp != null,
                                             maxPaneHeightDp = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp),
+                                            onChampionClick = { unitName, cost ->
+                                                inspectedOverlayChampion = unitName to cost
+                                            },
                                             modifier = Modifier
                                                 .weight(rightWeight)
                                                 .then(paneHeightModifier)
@@ -1726,6 +1842,9 @@ private fun OverlayDrawerContent(
                                                                     opensInSidePane = true,
                                                                     useTwoColumnLayout = false,
                                                                     onCardClick = { selectedCompId = comp.id },
+                                                                    onChampionClick = { unitName, cost ->
+                                                                        inspectedOverlayChampion = unitName to cost
+                                                                    },
                                                                     onToggleFavorite = { onToggleFavorite(comp) },
                                                                     modifier = Modifier.weight(1f)
                                                                 )
@@ -1750,6 +1869,9 @@ private fun OverlayDrawerContent(
                                                             opensInSidePane = true,
                                                             useTwoColumnLayout = false,
                                                             onCardClick = { selectedCompId = comp.id },
+                                                            onChampionClick = { unitName, cost ->
+                                                                inspectedOverlayChampion = unitName to cost
+                                                            },
                                                             onToggleFavorite = { onToggleFavorite(comp) },
                                                             modifier = Modifier.animateItem(
                                                                 fadeInSpec = tween(180),
@@ -2080,6 +2202,7 @@ private fun OverlayCompLeftDetailPane(
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
     onBackToComps: () -> Unit,
+    onChampionClick: ((String, Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val unitCosts = remember(comp.hexPlacements) {
@@ -2211,13 +2334,15 @@ private fun OverlayCompLeftDetailPane(
             ) {
                 comp.coreUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
+                    val unitCost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3
                     TftChampionTile(
                         name = unit,
-                        cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
+                        cost = unitCost,
                         isCarry = isCarryUnit,
                         size = 34.dp,
                         labelFontSize = 10.sp,
-                        environment = comp.environment
+                        environment = comp.environment,
+                        onClick = onChampionClick?.let { cb -> { cb(unit, unitCost) } }
                     )
                 }
             }
@@ -2225,7 +2350,8 @@ private fun OverlayCompLeftDetailPane(
             OverlayCompSideBuildDetails(
                 comp = comp,
                 carryBis = carryBis,
-                secondaryItemized = secondaryItemized
+                secondaryItemized = secondaryItemized,
+                onChampionClick = onChampionClick
             )
             if (comp.notes.isNotBlank()) {
                 Text(
@@ -2243,6 +2369,7 @@ private fun OverlayHexBoardRightPane(
     comp: MetaComp,
     fillAvailableHeight: Boolean,
     maxPaneHeightDp: Dp,
+    onChampionClick: ((String, Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -2311,7 +2438,8 @@ private fun OverlayHexBoardRightPane(
                     MiniOverlayHexGrid(
                         placements = comp.hexPlacements,
                         environment = comp.environment,
-                        gridHeight = computedGridHeight
+                        gridHeight = computedGridHeight,
+                        onChampionClick = onChampionClick
                     )
                 }
             }
@@ -2324,7 +2452,8 @@ private fun OverlayHexBoardRightPane(
 private fun OverlayCompSideBuildDetails(
     comp: MetaComp,
     carryBis: List<String>,
-    secondaryItemized: List<HexUnitPlacement>
+    secondaryItemized: List<HexUnitPlacement>,
+    onChampionClick: ((String, Int) -> Unit)? = null
 ) {
     if (carryBis.isNotEmpty()) {
         Text(
@@ -2355,7 +2484,8 @@ private fun OverlayCompSideBuildDetails(
                         isCarry = false,
                         stars = unit.stars,
                         size = 18.dp,
-                        environment = comp.environment
+                        environment = comp.environment,
+                        onClick = onChampionClick?.let { cb -> { cb(unit.unitName, unit.cost) } }
                     )
                     Text(
                         text = "${unit.unitName}:",
@@ -2404,6 +2534,7 @@ private fun OverlayCompCard(
     opensInSidePane: Boolean = false,
     useTwoColumnLayout: Boolean = false,
     onCardClick: () -> Unit,
+    onChampionClick: ((String, Int) -> Unit)? = null,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2515,13 +2646,15 @@ private fun OverlayCompCard(
             ) {
                 comp.coreUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
+                    val unitCost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3
                     TftChampionTile(
                         name = unit,
-                        cost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3,
+                        cost = unitCost,
                         isCarry = isCarryUnit,
                         size = 34.dp,
                         labelFontSize = 10.sp,
-                        environment = comp.environment
+                        environment = comp.environment,
+                        onClick = onChampionClick?.let { cb -> { cb(unit, unitCost) } }
                     )
                 }
             }
@@ -2744,7 +2877,8 @@ private fun OverlayEnvChip(
 private fun MiniOverlayHexGrid(
     placements: List<HexUnitPlacement>,
     environment: TftEnvironment? = null,
-    gridHeight: Dp = 184.dp
+    gridHeight: Dp = 184.dp,
+    onChampionClick: ((String, Int) -> Unit)? = null
 ) {
     val density = LocalDensity.current
     Column(
@@ -2850,7 +2984,8 @@ private fun MiniOverlayHexGrid(
                         environment = environment,
                         exactSize = true,
                         useHexShape = true,
-                        showBadge = false
+                        showBadge = false,
+                        onClick = onChampionClick?.let { cb -> { cb(unit.unitName, unit.cost) } }
                     )
                 }
 

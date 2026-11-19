@@ -1502,9 +1502,9 @@ class TftAcademyCompsScraper(
             if (environment == TftEnvironment.PBE) TFTACADEMY_PBE_COMPS_URL else TFTACADEMY_COMPS_URL
 
         /**
-         * Stable SHA-256 fingerprint across all comp fields so ANY change on
-         * https://tftacademy.com/tierlist/comps (new comps, removals, tier shifts,
-         * unit/item/augment edits, positioning changes, or stat updates) triggers an immediate refresh.
+         * Stable SHA-256 fingerprint across structural composition fields (new comps, removals,
+         * tier shifts, unit/item/augment edits, positioning changes, or guide updates) while
+         * ignoring volatile live decimal stat ticks and injected patch strings.
          */
         fun computeCompsSignature(liveComps: List<MetaComp>, pbeComps: List<MetaComp>): String {
             val digest = MessageDigest.getInstance("SHA-256")
@@ -1517,11 +1517,6 @@ class TftAcademyCompsScraper(
                         append(c.tier.name).append('|')
                         append(c.playstyle).append('|')
                         append(c.carryName).append('|')
-                        append(c.setName).append('|')
-                        append(c.patchTag).append('|')
-                        append(c.avgPlacement).append('|')
-                        append(c.top4Rate).append('|')
-                        append(c.winRate).append('|')
                         append(c.traits.joinToString(",")).append('|')
                         append(c.coreUnits.joinToString(",")).append('|')
                         append(c.augmentPriorities.joinToString(",")).append('|')

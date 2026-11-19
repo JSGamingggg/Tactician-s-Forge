@@ -3,7 +3,8 @@
     <string name="app_tagline">Set 18 Enchanted Wilds Tactical Companion</string>
     <string name="nav_meta">Meta</string>
     <string name="nav_tiers">Tiers</string>
-    <string name="nav_alerts">Alerts</string>
+    <string name="nav_patches">Patches</string>
+    <string name="nav_about">About</string>
     <string name="env_live">LIVE</string>
     <string name="env_pbe">PBE</string>
     <string name="sign_in_google">Sign in with Google</string>

@@ -101,8 +101,6 @@ import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
 import com.example.ui.components.HextechPanelCard
 import com.example.ui.components.CheckForUpdatesButton
-import com.example.ui.components.PatchTierAlertBanner
-import com.example.ui.components.PatchTierDetailsDialog
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftChampionTile
@@ -158,10 +156,6 @@ fun MetaSnapshotsScreen(
     var inspectedComp by remember { mutableStateOf<MetaComp?>(null) }
     var inspectedChampion by remember { mutableStateOf<Pair<String, Int?>?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
-    var showPatchDetailsDialog by remember { mutableStateOf(false) }
-    val latestPatch = remember(patches, environment) {
-        patches.firstOrNull { it.environment == environment } ?: patches.firstOrNull()
-    }
     // All tier sub-headers start closed until explicitly opened by the user
     var expandedTierNames by rememberSaveable { mutableStateOf(emptyList<String>()) }
 
@@ -210,15 +204,8 @@ fun MetaSnapshotsScreen(
         }
         val compactHeroHeight = if (maxWidth >= 600.dp && maxHeight < 540.dp) 108.dp else 148.dp
 
-        if (showPatchDetailsDialog) {
-            PatchTierDetailsDialog(
-                patch = latestPatch,
-                onDismiss = { showPatchDetailsDialog = false }
-            )
-        }
-
         Column(modifier = Modifier.fillMaxSize()) {
-            // Clean Top Header Bar (No big banner, overlay & custom buttons at top)
+            // Clean Top Header Bar (overlay & custom buttons at top; patch header moved to Patches tab)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
@@ -231,38 +218,12 @@ fun MetaSnapshotsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        val badgeColor = if (environment == TftEnvironment.LIVE) {
-                            LocalHextechColors.current.liveBadge
-                        } else {
-                            LocalHextechColors.current.pbeBadge
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = badgeColor.copy(alpha = 0.22f),
-                            border = BorderStroke(1.dp, badgeColor)
-                        ) {
-                            Text(
-                                text = if (environment == TftEnvironment.LIVE) {
-                                    "LIVE • ${liveVersionInfo?.livePatchVersion ?: "18.7"}"
-                                } else {
-                                    "PBE • ${liveVersionInfo?.pbePatchVersion ?: "19.1-PBE"}"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = badgeColor,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                        Text(
-                            text = "Meta Comps",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    Text(
+                        text = "Meta Comps",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Bold
+                    )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
@@ -358,16 +319,6 @@ fun MetaSnapshotsScreen(
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    if (latestPatch != null) {
-                        item {
-                            PatchTierAlertBanner(
-                                latestPatch = latestPatch,
-                                environment = environment,
-                                onOpenDetails = { showPatchDetailsDialog = true }
-                            )
                         }
                     }
 

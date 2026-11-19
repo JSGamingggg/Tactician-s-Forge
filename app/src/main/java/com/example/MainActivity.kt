@@ -2,9 +2,12 @@ package com.example
 
 import android.Manifest
 import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,12 +28,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MilitaryTech
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.MilitaryTech
-import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
@@ -82,11 +87,13 @@ import com.example.overlay.OverlayController
 import com.example.ui.auth.GoogleAuthHelper
 import com.example.ui.components.AppUpdateInAppBanner
 import com.example.ui.components.AppUpdatePromptDialog
+import com.example.ui.screens.AboutScreen
 import com.example.ui.screens.AuthWelcomeScreen
 import com.example.ui.screens.ChampionTierListScreen
 import com.example.ui.screens.MetaSnapshotsScreen
-import com.example.ui.screens.PatchAlertsScreen
+import com.example.ui.screens.PatchesScreen
 import com.example.ui.theme.TacticiansForgeTheme
+import com.example.ui.util.DisplayRefreshRateHelper
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.UiState
 import com.example.update.AppUpdateStatus
@@ -109,7 +116,17 @@ enum class AppTab(
 ) {
     META("meta", R.string.nav_meta, Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
     TIERS("tiers", R.string.nav_tiers, Icons.Filled.MilitaryTech, Icons.Outlined.MilitaryTech),
-    ALERTS("alerts", R.string.nav_alerts, Icons.Filled.Notifications, Icons.Outlined.Notifications)
+    PATCHES("patches", R.string.nav_patches, Icons.AutoMirrored.Filled.Article, Icons.AutoMirrored.Outlined.Article),
+    ABOUT("about", R.string.nav_about, Icons.Filled.Info, Icons.Outlined.Info);
+
+    companion object {
+        fun fromKey(key: String?): AppTab = when (key?.lowercase()) {
+            "tiers" -> TIERS
+            "patches" -> PATCHES
+            "about", "alerts" -> ABOUT
+            else -> META
+        }
+    }
 }
 
 internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
@@ -122,10 +139,26 @@ internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
 
 class MainActivity : ComponentActivity() {
     private var openAppUpdateSignal by mutableStateOf(false)
+    private var displayManager: DisplayManager? = null
+    private val displayRefreshListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            DisplayRefreshRateHelper.applyToActivity(this@MainActivity)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        DisplayRefreshRateHelper.applyToActivity(this)
+        displayManager = getSystemService(DISPLAY_SERVICE) as? DisplayManager
+        runCatching {
+            displayManager?.registerDisplayListener(
+                displayRefreshListener,
+                Handler(Looper.getMainLooper())
+            )
+        }
         val initialTab = intent?.getStringExtra(TftNotificationHelper.EXTRA_NAV_TAB)
         val initialEnv = intent?.getStringExtra(TftNotificationHelper.EXTRA_ENVIRONMENT)
         openAppUpdateSignal = intent?.getBooleanExtra(TftNotificationHelper.EXTRA_OPEN_APP_UPDATE, false) == true
@@ -137,6 +170,23 @@ class MainActivity : ComponentActivity() {
                 onConsumedAppUpdateSignal = { openAppUpdateSignal = false }
             )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        DisplayRefreshRateHelper.applyToActivity(this)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            DisplayRefreshRateHelper.applyToActivity(this)
+        }
+    }
+
+    override fun onDestroy() {
+        runCatching { displayManager?.unregisterDisplayListener(displayRefreshListener) }
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -304,9 +354,7 @@ private fun AuthenticatedOrGuestWorkspace(
     val isOverlayRunning by OverlayController.isRunning.collectAsStateWithLifecycle()
 
     var currentTab by rememberSaveable {
-        mutableStateOf(
-            AppTab.entries.firstOrNull { it.key == initialTabKey } ?: AppTab.META
-        )
+        mutableStateOf(AppTab.fromKey(initialTabKey))
     }
 
 
@@ -413,7 +461,7 @@ private fun AuthenticatedOrGuestWorkspace(
                                     colors = navItemColors,
                                     icon = {
                                         val navIcon = if (selected) tab.selectedIcon else tab.unselectedIcon
-                                        if (tab == AppTab.ALERTS && hasPendingAppUpdate) {
+                                        if (tab == AppTab.ABOUT && hasPendingAppUpdate) {
                                             BadgedBox(badge = { Badge() }) {
                                                 Icon(
                                                     imageVector = navIcon,
@@ -460,7 +508,7 @@ private fun AuthenticatedOrGuestWorkspace(
                                     alwaysShowLabel = compactRailLabels,
                                     icon = {
                                         val railIcon = if (selected) tab.selectedIcon else tab.unselectedIcon
-                                        if (tab == AppTab.ALERTS && hasPendingAppUpdate) {
+                                        if (tab == AppTab.ABOUT && hasPendingAppUpdate) {
                                             BadgedBox(badge = { Badge() }) {
                                                 Icon(
                                                     imageVector = railIcon,
@@ -565,13 +613,20 @@ private fun AuthenticatedOrGuestWorkspace(
                                         )
                                     }
 
-                                    AppTab.ALERTS -> PatchAlertsScreen(
+                                    AppTab.PATCHES -> PatchesScreen(
                                         environment = environment,
                                         onSelectEnvironment = mainViewModel::setEnvironment,
                                         patches = patchFeed,
-                                        preferences = preferences,
                                         liveVersionInfo = liveVersionInfo,
                                         isRefreshingVersions = isRefreshingVersions,
+                                        onRefreshVersions = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
+                                        modifier = contentModifier
+                                    )
+
+                                    AppTab.ABOUT -> AboutScreen(
+                                        environment = environment,
+                                        patches = patchFeed,
+                                        preferences = preferences,
                                         themeMode = themeMode,
                                         isOverlayRunning = isOverlayRunning,
                                         currentUser = currentUser,
@@ -581,7 +636,6 @@ private fun AuthenticatedOrGuestWorkspace(
                                         onToggleAppUpdateAlerts = mainViewModel::setAppUpdateAlertsEnabled,
                                         onStartAppUpdate = mainViewModel::downloadAndInstallAppUpdate,
                                         onOpenAppUpdateDialog = mainViewModel::openAppUpdateDialog,
-                                        onRefreshVersions = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
                                         onUpdateAlertSettings = mainViewModel::updateAlertSettings,
                                         onSetThemeMode = mainViewModel::setThemeMode,
                                         onToggleOverlay = toggleOverlayAction,

@@ -158,9 +158,11 @@ import com.example.ui.components.TftItemIcon
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
 import com.example.ui.components.championCostColor
+import com.example.ui.components.computeHexAvatarPixelBounds
 import com.example.ui.components.formatRiotAssetLabel
 import com.example.ui.components.resolveChampionDetailProfile
 import com.example.ui.components.sanitizeExternalSourceMentions
+import com.example.ui.util.DisplayRefreshRateHelper
 import com.example.ui.screens.groupCompsByTier
 import com.example.ui.theme.ArcaneCyan
 import com.example.ui.theme.BrightGold
@@ -809,6 +811,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             val preferredY = savedExpandedOriginPx?.second ?: (bounds.safeTopPx + dpToPx(72))
             drawerLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
             drawerLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
+            DisplayRefreshRateHelper.applyToLayoutParams(this, drawerLayoutParams)
 
             drawerView?.let { view ->
                 if (view.isAttachedToWindow) {
@@ -836,6 +839,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             bubbleLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.BUBBLE)
             bubbleLayoutParams.x = clampedX
             bubbleLayoutParams.y = clampedY
+            DisplayRefreshRateHelper.applyToLayoutParams(this, bubbleLayoutParams)
             savedBubblePosPx = clampedX to clampedY
 
             bubbleView?.let { view ->
@@ -938,6 +942,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             x = initialBounds.safeLeftPx + initialMarginPx
             y = initialDrawerY
             screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.EXPANDED)
+            DisplayRefreshRateHelper.applyToLayoutParams(this@OverlayService, this)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
@@ -1021,6 +1026,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             x = initialBubbleX
             y = initialBubbleY
             screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.BUBBLE)
+            DisplayRefreshRateHelper.applyToLayoutParams(this@OverlayService, this)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
@@ -2963,8 +2969,7 @@ private fun MiniOverlayHexGrid(
                 }
             }
 
-            val hexWpx = (1.73205f * hexR).roundToInt().coerceIn(18, 60)
-            val hexHpx = (2.0f * hexR).roundToInt().coerceIn(20, 70)
+            val (hexWpx, hexHpx) = computeHexAvatarPixelBounds(hexR, minWidthPx = 18, minHeightPx = 20)
             val hexWDp = with(density) { hexWpx.toDp() }
             val hexHDp = with(density) { hexHpx.toDp() }
             val labelMaxWpx = (dx * 1.32f).roundToInt().coerceAtLeast(hexWpx + 10)

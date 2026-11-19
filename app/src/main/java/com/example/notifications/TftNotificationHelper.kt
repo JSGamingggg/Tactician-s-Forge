@@ -101,7 +101,7 @@ object TftNotificationHelper {
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(EXTRA_NAV_TAB, "alerts")
+            putExtra(EXTRA_NAV_TAB, "patches")
             putExtra(EXTRA_ENVIRONMENT, environment.name)
         }
         val pendingIntent = PendingIntent.getActivity(
@@ -221,7 +221,7 @@ object TftNotificationHelper {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_OPEN_APP_UPDATE, true)
-            putExtra(EXTRA_NAV_TAB, "alerts")
+            putExtra(EXTRA_NAV_TAB, "about")
         }
         val pendingIntent = PendingIntent.getActivity(
             context,

@@ -2242,6 +2242,89 @@ class ExampleRobolectricTest {
         ).get()
         assertEquals(1, periodicAfterBoot.size)
     }
+
+    @Test
+    fun `hex avatar bounds scale cleanly without capping to fill landscape high dpi hex cells`() {
+        // Simulated landscape high-DPI overlay hex radius (e.g. xxhdpi/xxxhdpi right-side board pane)
+        val landscapeHexRadiusPx = 68f
+        val (hexWpx, hexHpx) = com.example.ui.components.computeHexAvatarPixelBounds(
+            hexRadiusPx = landscapeHexRadiusPx,
+            minWidthPx = 18,
+            minHeightPx = 20
+        )
+        // Must fill the full sqrt(3)*R x 2*R bounding box instead of being clamped at 60x70
+        assertTrue(hexWpx >= kotlin.math.floor(1.7320508f * landscapeHexRadiusPx).toInt())
+        assertTrue(hexHpx >= kotlin.math.floor(2.0f * landscapeHexRadiusPx).toInt())
+        assertTrue(hexWpx > 100)
+        assertTrue(hexHpx > 120)
+        // Aspect ratio must preserve regular pointed hexagon ratio (2 / sqrt(3) ~= 1.1547)
+        val ratio = hexHpx.toFloat() / hexWpx.toFloat()
+        assertEquals(1.1547f, ratio, 0.03f)
+
+        // Tiny compact boards should still honor safe minimum bounds
+        val (minW, minH) = com.example.ui.components.computeHexAvatarPixelBounds(
+            hexRadiusPx = 5f,
+            minWidthPx = 18,
+            minHeightPx = 20
+        )
+        assertEquals(18, minW)
+        assertEquals(20, minH)
+    }
+
+    @Test
+    fun `display refresh rate helper selects highest supported hz at native resolution without downgrading`() {
+        val current60 = com.example.ui.util.DisplayModeSpec(
+            modeId = 1,
+            physicalWidth = 1440,
+            physicalHeight = 3120,
+            refreshRateHz = 60f
+        )
+        val supported = listOf(
+            current60,
+            com.example.ui.util.DisplayModeSpec(2, 1440, 3120, 120f),
+            com.example.ui.util.DisplayModeSpec(3, 1080, 2340, 144f) // lower resolution — must NOT downgrade!
+        )
+        val selected = com.example.ui.util.DisplayRefreshRateHelper.selectOptimalDisplayMode(
+            currentMode = current60,
+            supportedModes = supported
+        )
+        assertEquals(2, selected.modeId)
+        assertEquals(120f, selected.refreshRateHz, 0.01f)
+        assertEquals(1440, selected.physicalWidth)
+        assertEquals(3120, selected.physicalHeight)
+
+        // When 144Hz is available at the exact native resolution, select 144Hz
+        val withNative144 = supported + com.example.ui.util.DisplayModeSpec(4, 1440, 3120, 144f)
+        val selected144 = com.example.ui.util.DisplayRefreshRateHelper.selectOptimalDisplayMode(
+            currentMode = current60,
+            supportedModes = withNative144
+        )
+        assertEquals(4, selected144.modeId)
+        assertEquals(144f, selected144.refreshRateHz, 0.01f)
+    }
+
+    @Test
+    fun `bottom navigation places Patches between Tiers and About with valid deep link routing`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        assertEquals(
+            listOf(AppTab.META, AppTab.TIERS, AppTab.PATCHES, AppTab.ABOUT),
+            AppTab.entries
+        )
+        assertEquals("Meta", context.getString(AppTab.META.labelRes))
+        assertEquals("Tiers", context.getString(AppTab.TIERS.labelRes))
+        assertEquals("Patches", context.getString(AppTab.PATCHES.labelRes))
+        assertEquals("About", context.getString(AppTab.ABOUT.labelRes))
+
+        assertEquals(AppTab.META, AppTab.fromKey("meta"))
+        assertEquals(AppTab.TIERS, AppTab.fromKey("tiers"))
+        assertEquals(AppTab.PATCHES, AppTab.fromKey("patches"))
+        assertEquals(AppTab.ABOUT, AppTab.fromKey("about"))
+        // Legacy "alerts" deep link safely resolves to About tab
+        assertEquals(AppTab.ABOUT, AppTab.fromKey("alerts"))
+        assertEquals(AppTab.META, AppTab.fromKey(null))
+    }
 }
+
+
 
 

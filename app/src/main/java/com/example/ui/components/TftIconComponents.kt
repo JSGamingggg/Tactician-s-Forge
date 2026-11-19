@@ -80,11 +80,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Scale
 import com.example.R
 import com.example.data.model.AugmentTier
 import com.example.data.model.ItemCategory
 import com.example.data.model.TftEnvironment
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.ceil
 
 fun championCostColor(cost: Int): Color = when (cost) {
     5 -> Color(0xFFF0B949)
@@ -224,6 +226,24 @@ val PointedHexagonShape: Shape = GenericShape { size, _ ->
     close()
 }
 
+private const val SQRT_3 = 1.7320508f
+
+/**
+ * Computes the exact bounding-box width and height in pixels for a pointed-top regular hexagon
+ * of circumradius [hexRadiusPx] so champion portraits fill the entire drawn hex cell edge-to-edge
+ * across portrait, landscape, and high-density displays without artificial pixel upper caps.
+ */
+fun computeHexAvatarPixelBounds(
+    hexRadiusPx: Float,
+    minWidthPx: Int = 18,
+    minHeightPx: Int = 20
+): Pair<Int, Int> {
+    val safeRadius = hexRadiusPx.coerceAtLeast(1f)
+    val widthPx = ceil(SQRT_3 * safeRadius).toInt().coerceAtLeast(minWidthPx)
+    val heightPx = ceil(2.0f * safeRadius).toInt().coerceAtLeast(minHeightPx)
+    return widthPx to heightPx
+}
+
 @Composable
 fun TftChampionAvatar(
     name: String,
@@ -305,6 +325,7 @@ fun TftChampionAvatar(
                     ImageRequest.Builder(context)
                         .data(activeUrl)
                         .size(targetPx)
+                        .scale(Scale.FILL)
                         .crossfade(false)
                         .build()
                 }

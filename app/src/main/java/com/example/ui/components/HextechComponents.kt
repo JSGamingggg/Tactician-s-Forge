@@ -430,8 +430,7 @@ fun TftHexBoard(
             }
 
             // Champion portrait icons filling each pointed hexagon cell + clear name below each cell
-            val hexWpx = (1.73205f * hexR).roundToInt().coerceIn(22, 74)
-            val hexHpx = (2.0f * hexR).roundToInt().coerceIn(26, 86)
+            val (hexWpx, hexHpx) = computeHexAvatarPixelBounds(hexR, minWidthPx = 22, minHeightPx = 26)
             val hexWDp = with(density) { hexWpx.toDp() }
             val hexHDp = with(density) { hexHpx.toDp() }
             val labelMaxWpx = (dx * 1.32f).roundToInt().coerceAtLeast(hexWpx + 12)

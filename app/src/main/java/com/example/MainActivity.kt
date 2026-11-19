@@ -170,6 +170,29 @@ fun AppRoot(
     val isGuestMode by localStore.isGuestModeFlow.collectAsStateWithLifecycle(initialValue = null)
     val prefs by localStore.preferencesFlow.collectAsStateWithLifecycle(initialValue = null)
     var attemptedAutoSignIn by rememberSaveable { mutableStateOf(false) }
+    var requestedNotifPermissionOnLaunch by rememberSaveable { mutableStateOf(false) }
+    val startupNotifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { granted ->
+            PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
+            if (granted) {
+                PatchMonitorWorker.enqueueImmediateCheck(context, expedited = true)
+            }
+        }
+    )
+
+    LaunchedEffect(Unit) {
+        PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
+        if (!requestedNotifPermissionOnLaunch &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !TftNotificationHelper.hasNotificationPermission(context)
+        ) {
+            requestedNotifPermissionOnLaunch = true
+            runCatching {
+                startupNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     LaunchedEffect(currentUser, isGuestMode, isFirebaseConfigured) {
         if (isFirebaseConfigured && currentUser == null && isGuestMode == false && !attemptedAutoSignIn) {
@@ -288,26 +311,6 @@ private fun AuthenticatedOrGuestWorkspace(
         )
     }
 
-    var requestedNotifPermissionOnLaunch by rememberSaveable { mutableStateOf(false) }
-    val startupNotifPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-        onResult = { _ ->
-            PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
-        }
-    )
-
-    LaunchedEffect(Unit) {
-        PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
-        if (!requestedNotifPermissionOnLaunch &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            !TftNotificationHelper.hasNotificationPermission(context)
-        ) {
-            requestedNotifPermissionOnLaunch = true
-            runCatching {
-                startupNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-    }
 
     // Automatically check for newly released patches & team comps when returning to the app,
     // and ensure background monitoring is scheduled whenever the app moves to the background.

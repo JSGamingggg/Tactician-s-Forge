@@ -13,13 +13,21 @@ class BackgroundSyncBootReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         if (action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_MY_PACKAGE_REPLACED ||
-            action == "android.intent.action.QUICKBOOT_POWERON"
+            action == "android.intent.action.QUICKBOOT_POWERON" ||
+            action == "com.htc.intent.action.QUICKBOOT_POWERON"
         ) {
             val appContext = context.applicationContext
             TftNotificationHelper.ensureChannels(appContext)
+            BackgroundSyncAlarmReceiver.scheduleNext(appContext, replaceExisting = true)
             PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
                 context = appContext,
-                triggerImmediateCheck = true
+                triggerImmediateCheck = true,
+                replaceChained = false
+            )
+            PatchMonitorWorker.enqueueImmediateCheck(
+                context = appContext,
+                expedited = true,
+                replaceExisting = false
             )
         }
     }

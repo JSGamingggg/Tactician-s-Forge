@@ -489,7 +489,9 @@ class ExampleRobolectricTest {
 
     @Test
     fun `made by credits string and meta update notifier diff detection work accurately`() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val context: Context = app
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
         assertEquals("Made By JS96 + MK", context.getString(R.string.made_by_credits))
 
         val prefsStore = LocalPreferencesStore(context)
@@ -1661,5 +1663,162 @@ class ExampleRobolectricTest {
             selectedCategories = setOf("Trait Emblem")
         )
         assertEquals(listOf("Blossom Crown"), strictMatch.map { it.name })
+    }
+
+    @Test
+    fun `meta update notifier preserves watermarks when permission denied and notifies once granted`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val context: Context = app
+        val prefsStore = LocalPreferencesStore(context)
+        val initialLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
+        val initialBundle = OfflineMetaBundle(liveComps = listOf(initialLive))
+        val initialSync = com.example.data.model.MetaSyncResult(
+            versionInfo = initialBundle.liveVersionInfo,
+            cacheStatus = initialBundle.toCacheStatus(),
+            newLivePatchDetected = false,
+            newPbePatchDetected = false,
+            newlyAddedComps = emptyList(),
+            syncedFromNetwork = true
+        )
+
+        // Seed initial baseline first
+        com.example.notifications.MetaUpdateNotifier.dispatchNotifications(
+            context = context,
+            syncResult = initialSync,
+            bundle = initialBundle,
+            prefsStore = prefsStore
+        )
+
+        // Ensure POST_NOTIFICATIONS is denied when a new patch & comp arrive in background
+        org.robolectric.Shadows.shadowOf(app).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+
+        val newComp = initialLive.copy(id = "tftacademy_live_synd", title = "Syndra Invokers")
+        val updatedBundle = initialBundle.copy(
+            liveVersionInfo = initialBundle.liveVersionInfo.copy(
+                livePatchVersion = "18.10",
+                pbePatchVersion = "19.3-PBE"
+            ),
+            liveComps = listOf(newComp, initialLive)
+        )
+        val updateSync = com.example.data.model.MetaSyncResult(
+            versionInfo = updatedBundle.liveVersionInfo,
+            cacheStatus = updatedBundle.toCacheStatus(),
+            newLivePatchDetected = true,
+            newPbePatchDetected = true,
+            newlyAddedComps = listOf(newComp),
+            syncedFromNetwork = true
+        )
+
+        val deniedDispatch = com.example.notifications.MetaUpdateNotifier.dispatchNotifications(
+            context = context,
+            syncResult = updateSync,
+            bundle = updatedBundle,
+            prefsStore = prefsStore
+        )
+        assertFalse(deniedDispatch.livePatchNotified)
+        assertFalse(deniedDispatch.pbePatchNotified)
+        assertFalse(deniedDispatch.newCompsNotified)
+
+        // Watermarks must NOT have swallowed the unposted patch/comp alerts
+        val (savedLive, savedPbe) = prefsStore.getLastNotifiedVersions()
+        assertNotEquals("18.10", savedLive)
+        assertNotEquals("19.3-PBE", savedPbe)
+        assertFalse(prefsStore.getNotifiedCompIds().orEmpty().contains(newComp.id))
+
+        // Grant POST_NOTIFICATIONS and re-run without new delta: missed updates now notify!
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val recoverySync = updateSync.copy(
+            newLivePatchDetected = false,
+            newPbePatchDetected = false,
+            newlyAddedComps = emptyList()
+        )
+        val grantedDispatch = com.example.notifications.MetaUpdateNotifier.dispatchNotifications(
+            context = context,
+            syncResult = recoverySync,
+            bundle = updatedBundle,
+            prefsStore = prefsStore
+        )
+        assertTrue(grantedDispatch.livePatchNotified)
+        assertTrue(grantedDispatch.pbePatchNotified)
+        assertTrue(grantedDispatch.newCompsNotified)
+        assertEquals(1, grantedDispatch.newCompsDetectedCount)
+
+        val (finalLive, finalPbe) = prefsStore.getLastNotifiedVersions()
+        assertEquals("18.10", finalLive)
+        assertEquals("19.3-PBE", finalPbe)
+        assertTrue(prefsStore.getNotifiedCompIds().orEmpty().contains(newComp.id))
+    }
+
+    @Test
+    fun `background scheduler uses non-resetting KEEP policy and arms alarm backup`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        runCatching {
+            androidx.work.WorkManager.initialize(
+                context,
+                androidx.work.Configuration.Builder().build()
+            )
+        }
+
+        com.example.notifications.PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
+            context = context,
+            triggerImmediateCheck = false,
+            replaceChained = false
+        )
+
+        val wm = androidx.work.WorkManager.getInstance(context)
+        val periodicFirst = wm.getWorkInfosForUniqueWork(com.example.notifications.PatchMonitorWorker.PERIODIC_WORK_NAME).get()
+        val chainedFirst = wm.getWorkInfosForUniqueWork(com.example.notifications.PatchMonitorWorker.CHAINED_WORK_NAME).get()
+        assertEquals(1, periodicFirst.size)
+        assertEquals(1, chainedFirst.size)
+
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val shadowAlarm = org.robolectric.Shadows.shadowOf(alarmManager)
+        assertTrue(com.example.notifications.BackgroundSyncAlarmReceiver.isAlarmScheduled(context))
+        assertEquals(1, shadowAlarm.scheduledAlarms.size)
+        val firstAlarmTrigger = shadowAlarm.peekNextScheduledAlarm()?.triggerAtMs
+        assertNotNull(firstAlarmTrigger)
+
+        // Re-invoking on subsequent lifecycle events must KEEP existing work & alarm IDs instead of resetting timers
+        com.example.notifications.PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
+            context = context,
+            triggerImmediateCheck = false,
+            replaceChained = false
+        )
+        val periodicSecond = wm.getWorkInfosForUniqueWork(com.example.notifications.PatchMonitorWorker.PERIODIC_WORK_NAME).get()
+        val chainedSecond = wm.getWorkInfosForUniqueWork(com.example.notifications.PatchMonitorWorker.CHAINED_WORK_NAME).get()
+        assertEquals(periodicFirst.first().id, periodicSecond.first().id)
+        assertEquals(chainedFirst.first().id, chainedSecond.first().id)
+        assertEquals(1, shadowAlarm.scheduledAlarms.size)
+        assertEquals(firstAlarmTrigger, shadowAlarm.peekNextScheduledAlarm()?.triggerAtMs)
+    }
+
+    @Test
+    fun `boot and alarm receivers schedule worker and rearm alarm without activity`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        runCatching {
+            androidx.work.WorkManager.initialize(
+                context,
+                androidx.work.Configuration.Builder().build()
+            )
+        }
+
+        val bootReceiver = com.example.notifications.BackgroundSyncBootReceiver()
+        bootReceiver.onReceive(context, android.content.Intent(android.content.Intent.ACTION_BOOT_COMPLETED))
+
+        val wm = androidx.work.WorkManager.getInstance(context)
+        val immediateAfterBoot = wm.getWorkInfosForUniqueWork(com.example.notifications.PatchMonitorWorker.IMMEDIATE_WORK_NAME).get()
+        assertTrue(immediateAfterBoot.isNotEmpty())
+        assertTrue(com.example.notifications.BackgroundSyncAlarmReceiver.isAlarmScheduled(context))
+
+        val alarmReceiver = com.example.notifications.BackgroundSyncAlarmReceiver()
+        alarmReceiver.onReceive(
+            context,
+            android.content.Intent(com.example.notifications.BackgroundSyncAlarmReceiver.ACTION_BACKGROUND_SYNC_ALARM)
+        )
+        val periodicAfterAlarm = wm.getWorkInfosForUniqueWork(com.example.notifications.PatchMonitorWorker.PERIODIC_WORK_NAME).get()
+        val immediateAfterAlarm = wm.getWorkInfosForUniqueWork(com.example.notifications.PatchMonitorWorker.IMMEDIATE_WORK_NAME).get()
+        assertTrue(periodicAfterAlarm.isNotEmpty())
+        assertTrue(immediateAfterAlarm.isNotEmpty())
+        assertTrue(com.example.notifications.BackgroundSyncAlarmReceiver.isAlarmScheduled(context))
     }
 }

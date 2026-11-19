@@ -23,6 +23,7 @@ class TftMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
+        TftNotificationHelper.ensureChannels(applicationContext)
         val data = message.data
         val env = TftEnvironment.fromRaw(data["environment"])
         val type = data["type"] ?: "patch_update"
@@ -31,12 +32,16 @@ class TftMessagingService : FirebaseMessagingService() {
         val version = data["version"] ?: if (env == TftEnvironment.PBE) "19.1-PBE" else "18.7"
 
         val metaRepo = MetaRepository(applicationContext)
+        val prefs = kotlinx.coroutines.runBlocking {
+            com.example.data.repository.LocalPreferencesStore(applicationContext).getNotificationSnapshot()
+        }
 
         when (type) {
             "app_update" -> {
-                PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
+                PatchMonitorWorker.enqueueImmediateCheck(
                     context = applicationContext,
-                    triggerImmediateCheck = true
+                    expedited = true,
+                    replaceExisting = true
                 )
             }
             "trending_comp", "new_comp" -> {
@@ -75,12 +80,14 @@ class TftMessagingService : FirebaseMessagingService() {
                     metaRepo.persistIncomingUpdate(newComp = newComp)
                 }
 
-                TftNotificationHelper.postTrendingCompNotification(
-                    context = applicationContext,
-                    compTitle = title,
-                    environment = env,
-                    summary = body
-                )
+                if (prefs.trendingAlertsEnabled) {
+                    TftNotificationHelper.postTrendingCompNotification(
+                        context = applicationContext,
+                        compTitle = title,
+                        environment = env,
+                        summary = body
+                    )
+                }
             }
             else -> {
                 val patchRecord = PatchUpdateRecord(
@@ -108,20 +115,29 @@ class TftMessagingService : FirebaseMessagingService() {
                 )
                 metaRepo.persistIncomingUpdate(patchRecord = patchRecord)
 
-                TftNotificationHelper.postPatchOrBalanceNotification(
-                    context = applicationContext,
-                    title = title,
-                    shortBody = body,
-                    expandedBody = data["expanded_body"] ?: body,
-                    environment = env
-                )
+                val allowPatchPush = if (env == TftEnvironment.PBE) {
+                    prefs.pbeAlertsEnabled
+                } else {
+                    prefs.patchAlertsEnabled
+                }
+                if (allowPatchPush) {
+                    TftNotificationHelper.postPatchOrBalanceNotification(
+                        context = applicationContext,
+                        title = title,
+                        shortBody = body,
+                        expandedBody = data["expanded_body"] ?: body,
+                        environment = env
+                    )
+                }
             }
         }
 
         runCatching {
+            BackgroundSyncAlarmReceiver.scheduleNext(applicationContext, replaceExisting = false)
             PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(
                 context = applicationContext,
-                triggerImmediateCheck = true
+                triggerImmediateCheck = true,
+                replaceChained = false
             )
         }
     }

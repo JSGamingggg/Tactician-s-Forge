@@ -45,9 +45,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,8 +59,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.R
 import com.example.data.model.LiveVersionInfo
 import com.example.data.model.PatchUpdateRecord
@@ -111,14 +114,56 @@ fun PatchAlertsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var hasNotifPerm by remember { mutableStateOf(TftNotificationHelper.hasNotificationPermission(context)) }
+    var deniedPromptOnce by rememberSaveable { mutableStateOf(false) }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotifPerm = TftNotificationHelper.hasNotificationPermission(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val openNotificationSettings: () -> Unit = {
+        val settingsIntent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val fallbackIntent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(settingsIntent) }
+            .onFailure { runCatching { context.startActivity(fallbackIntent) } }
+    }
+
     val notifLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { granted ->
-            hasNotifPerm = granted
-            onShowMessage(if (granted) "Patch notifications enabled." else "Notifications permission denied.")
+            hasNotifPerm = granted && TftNotificationHelper.hasNotificationPermission(context)
+            if (granted) {
+                deniedPromptOnce = false
+                PatchMonitorWorker.schedulePeriodicAndChainedBackgroundChecks(context)
+                PatchMonitorWorker.enqueueImmediateCheck(context, expedited = true)
+                onShowMessage("Patch notifications enabled.")
+            } else {
+                deniedPromptOnce = true
+                onShowMessage("Notifications disabled — tap again to open Android Notification Settings.")
+            }
         }
     )
+
+    val requestOrOpenNotificationSettings: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !deniedPromptOnce) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            openNotificationSettings()
+        }
+    }
 
     val canDrawOverlay = OverlayController.canDrawOverlays(context)
 
@@ -158,7 +203,11 @@ fun PatchAlertsScreen(
                 OutlinedButton(
                     onClick = {
                         onRefreshVersions()
-                        WorkManager.getInstance(context).enqueue(OneTimeWorkRequestBuilder<PatchMonitorWorker>().build())
+                        PatchMonitorWorker.enqueueImmediateCheck(
+                            context = context,
+                            expedited = true,
+                            replaceExisting = true
+                        )
                     },
                     enabled = !isRefreshingVersions,
                     modifier = Modifier
@@ -218,15 +267,21 @@ fun PatchAlertsScreen(
                                 )
                             }
 
-                            if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            if (!hasNotifPerm) {
                                 Button(
-                                    onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                    onClick = requestOrOpenNotificationSettings,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(48.dp)
                                         .testTag("grant_notifications_button")
                                 ) {
-                                    Text("Enable OS Push Notifications")
+                                    Text(
+                                        if (deniedPromptOnce || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                                            "Open App Notification Settings"
+                                        } else {
+                                            "Enable OS Push Notifications"
+                                        }
+                                    )
                                 }
                             }
 
@@ -257,8 +312,8 @@ fun PatchAlertsScreen(
 
                             OutlinedButton(
                                 onClick = {
-                                    if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    if (!hasNotifPerm) {
+                                        requestOrOpenNotificationSettings()
                                     } else {
                                         val patch = patches.firstOrNull()
                                         val posted = TftNotificationHelper.postPatchOrBalanceNotification(
@@ -324,15 +379,21 @@ fun PatchAlertsScreen(
                             )
                         }
 
-                        if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (!hasNotifPerm) {
                             Button(
-                                onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                onClick = requestOrOpenNotificationSettings,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp)
                                     .testTag("grant_notifications_button")
                             ) {
-                                Text("Enable OS Push Notifications")
+                                Text(
+                                    if (deniedPromptOnce || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                                        "Open App Notification Settings"
+                                    } else {
+                                        "Enable OS Push Notifications"
+                                    }
+                                )
                             }
                         }
 
@@ -363,8 +424,8 @@ fun PatchAlertsScreen(
 
                         OutlinedButton(
                             onClick = {
-                                if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                if (!hasNotifPerm) {
+                                    requestOrOpenNotificationSettings()
                                 } else {
                                     val patch = patches.firstOrNull()
                                     val posted = TftNotificationHelper.postPatchOrBalanceNotification(

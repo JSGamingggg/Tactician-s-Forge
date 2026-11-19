@@ -745,7 +745,7 @@ object AppUpdateCoordinator {
                     context = appContext,
                     release = candidate
                 )
-                if (osPosted || isFreshReleaseNotification) {
+                if (osPosted) {
                     prefsStore.setLastNotifiedAppReleaseKey(candidate.releaseKey)
                 }
             }

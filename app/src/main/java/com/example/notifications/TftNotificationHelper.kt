@@ -74,6 +74,10 @@ object TftNotificationHelper {
     }
 
     fun hasNotificationPermission(context: Context): Boolean {
+        val notificationsEnabled = runCatching {
+            NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }.getOrDefault(true)
+        if (!notificationsEnabled) return false
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
                 context,

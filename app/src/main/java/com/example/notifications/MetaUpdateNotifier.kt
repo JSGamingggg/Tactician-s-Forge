@@ -12,7 +12,8 @@ import kotlinx.coroutines.sync.withLock
 data class MetaNotificationDispatchResult(
     val livePatchNotified: Boolean,
     val pbePatchNotified: Boolean,
-    val newCompsDetectedCount: Int
+    val newCompsDetectedCount: Int,
+    val newCompsNotified: Boolean = false
 )
 
 object MetaUpdateNotifier {
@@ -47,7 +48,7 @@ object MetaUpdateNotifier {
             val cleanHeadline = latestLivePatch?.headline?.takeIf { it.isNotBlank() }
                 ?: "New LIVE patch ${versionInfo.livePatchVersion} balance updates are now available."
             val highlightsText = latestLivePatch?.highlights?.joinToString("\n• ", prefix = "• ").orEmpty()
-            TftNotificationHelper.postPatchOrBalanceNotification(
+            val posted = TftNotificationHelper.postPatchOrBalanceNotification(
                 context = context,
                 title = "TFT LIVE Patch ${versionInfo.livePatchVersion} Released",
                 shortBody = cleanHeadline,
@@ -61,9 +62,11 @@ object MetaUpdateNotifier {
                 environment = TftEnvironment.LIVE,
                 notificationId = 10_001
             )
-            newLastLive = versionInfo.livePatchVersion
-            livePatchNotified = true
-        } else if (newLastLive == null) {
+            if (posted) {
+                newLastLive = versionInfo.livePatchVersion
+                livePatchNotified = true
+            }
+        } else if (newLastLive == null || !prefs.patchAlertsEnabled) {
             newLastLive = versionInfo.livePatchVersion
         }
 
@@ -75,7 +78,7 @@ object MetaUpdateNotifier {
             val cleanHeadline = latestPbePatch?.headline?.takeIf { it.isNotBlank() }
                 ?: "New PBE patch ${versionInfo.pbePatchVersion} balance updates are now available."
             val highlightsText = latestPbePatch?.highlights?.joinToString("\n• ", prefix = "• ").orEmpty()
-            TftNotificationHelper.postPatchOrBalanceNotification(
+            val posted = TftNotificationHelper.postPatchOrBalanceNotification(
                 context = context,
                 title = "TFT PBE Patch ${versionInfo.pbePatchVersion} Released",
                 shortBody = cleanHeadline,
@@ -89,9 +92,11 @@ object MetaUpdateNotifier {
                 environment = TftEnvironment.PBE,
                 notificationId = 10_002
             )
-            newLastPbe = versionInfo.pbePatchVersion
-            pbePatchNotified = true
-        } else if (newLastPbe == null) {
+            if (posted) {
+                newLastPbe = versionInfo.pbePatchVersion
+                pbePatchNotified = true
+            }
+        } else if (newLastPbe == null || !prefs.pbeAlertsEnabled) {
             newLastPbe = versionInfo.pbePatchVersion
         }
 
@@ -110,11 +115,14 @@ object MetaUpdateNotifier {
             }
         }
 
+        var compsNotified = false
+        var deferredUnnotifiedCompIds: Set<String> = emptySet()
+
         if (prefs.trendingAlertsEnabled && newlyAddedPool.isNotEmpty()) {
             val prioritized = newlyAddedPool.sortedWith(
                 compareBy<MetaComp> { it.tier.sortOrder }.thenBy { it.avgPlacement }
             )
-            if (prioritized.size == 1) {
+            compsNotified = if (prioritized.size == 1) {
                 val comp = prioritized.first()
                 TftNotificationHelper.postTrendingCompNotification(
                     context = context,
@@ -135,6 +143,10 @@ object MetaUpdateNotifier {
                     environment = lead.environment
                 )
             }
+            if (!compsNotified) {
+                // Keep newly detected comps unmarked until OS notification permission is granted
+                deferredUnnotifiedCompIds = newlyAddedPool.map { it.id }.toSet()
+            }
         } else if ((prefs.trendingAlertsEnabled || prefs.balanceAlertsEnabled) && syncResult.compsUpdatedDetected) {
             val topSComps = allComps
                 .sortedWith(compareBy<MetaComp> { it.tier.sortOrder }.thenBy { it.avgPlacement })
@@ -144,7 +156,7 @@ object MetaUpdateNotifier {
                 val summaryLines = topSComps.joinToString("\n") { comp ->
                     "• [${comp.environment.label} ${comp.tier.label}] ${comp.title} (Carry: ${comp.carryName})"
                 }
-                TftNotificationHelper.postNewCompsBatchNotification(
+                compsNotified = TftNotificationHelper.postNewCompsBatchNotification(
                     context = context,
                     title = "TFT Meta Compositions Updated",
                     shortBody = "Tier list & builds updated — Lead: ${lead.title} (${lead.tier.label}-Tier)",
@@ -155,12 +167,14 @@ object MetaUpdateNotifier {
         }
 
         prefsStore.setLastNotifiedVersions(newLastLive, newLastPbe)
-        prefsStore.saveNotifiedCompIds(existingKnownCompIds.orEmpty() + allCompIds)
+        val updatedKnownIds = (existingKnownCompIds.orEmpty() + allCompIds) - deferredUnnotifiedCompIds
+        prefsStore.saveNotifiedCompIds(updatedKnownIds)
 
         MetaNotificationDispatchResult(
             livePatchNotified = livePatchNotified,
             pbePatchNotified = pbePatchNotified,
-            newCompsDetectedCount = newlyAddedPool.size
+            newCompsDetectedCount = newlyAddedPool.size,
+            newCompsNotified = compsNotified
         )
     }
 }

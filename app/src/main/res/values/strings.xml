@@ -22,5 +22,7 @@
     <string name="overlay_action_stop">Close Overlay</string>
     <string name="overlay_empty_pins">Star a composition and tap the pin icon to display it here during live matches.</string>
     <string name="made_by_credits">Made By JS96 + MK</string>
-    <string name="auto_sync_cadence_summary">Auto-sync: 15m Background Alarm &amp; Worker • Launch • Resume</string>
+    <string name="auto_sync_cadence_summary">Background Alerts: 15m Worker &amp; Alarm • Manual Check for Updates</string>
+    <string name="check_for_updates">Check for Updates</string>
+    <string name="checking_for_updates">Checking for Updates…</string>
 </resources>

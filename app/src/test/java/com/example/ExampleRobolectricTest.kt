@@ -2082,5 +2082,166 @@ class ExampleRobolectricTest {
         assertEquals(1, normalizedProfile.synergyComps.size)
         assertTrue(normalizedProfile.synergyComps.first().isCarry)
     }
+
+    @Test
+    fun `asset prefetch planner prioritizes S-tier carries traits items augments deduplicates and honors scope`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val bundle = OfflineMetaCacheStore(context).readOrSeedBundle()
+
+        val liveQueue = com.example.prefetch.AssetPrefetchPlanner.buildPrefetchQueue(
+            bundle = bundle,
+            scope = com.example.prefetch.PrefetchScope.LIVE,
+            maxAssets = 180
+        )
+        assertTrue(liveQueue.isNotEmpty())
+        assertTrue(liveQueue.size <= 180)
+        // Every planned URL must be unique and valid http(s)
+        assertEquals(liveQueue.size, liveQueue.map { it.url }.distinct().size)
+        assertTrue(liveQueue.all { it.url.startsWith("http") })
+
+        // First asset must be the top LIVE comp carry's primary square portrait
+        val topLiveComp = bundle.liveComps
+            .sortedWith(compareBy({ it.tier.sortOrder }, { it.avgPlacement }))
+            .first()
+        val expectedCarryUrl = com.example.ui.components.TftAssetIconResolver
+            .resolveSquareChampionPortraitUrl(topLiveComp.carryName, TftEnvironment.LIVE)
+        assertEquals(expectedCarryUrl, liveQueue.first().url)
+        assertEquals(com.example.prefetch.PrefetchAssetCategory.CHAMPION_PORTRAIT, liveQueue.first().category)
+
+        // All four asset categories should be represented across a full LIVE queue
+        val fullLiveQueue = com.example.prefetch.AssetPrefetchPlanner.buildPrefetchQueue(
+            bundle = bundle,
+            scope = com.example.prefetch.PrefetchScope.LIVE,
+            maxAssets = 500
+        )
+        val categories = fullLiveQueue.map { it.category }.toSet()
+        assertTrue(categories.contains(com.example.prefetch.PrefetchAssetCategory.CHAMPION_PORTRAIT))
+        assertTrue(categories.contains(com.example.prefetch.PrefetchAssetCategory.TRAIT_ICON))
+        assertTrue(categories.contains(com.example.prefetch.PrefetchAssetCategory.ITEM_ICON))
+        assertTrue(categories.contains(com.example.prefetch.PrefetchAssetCategory.AUGMENT_ICON))
+
+        // PBE scope must resolve PBE Set 19 assets rather than LIVE-only entries
+        val pbeQueue = com.example.prefetch.AssetPrefetchPlanner.buildPrefetchQueue(
+            bundle = bundle,
+            scope = com.example.prefetch.PrefetchScope.PBE,
+            maxAssets = 120
+        )
+        assertTrue(pbeQueue.isNotEmpty())
+        assertTrue(pbeQueue.any { it.url.contains("sunderarmor.com", ignoreCase = true) })
+    }
+
+    @Test
+    fun `asset prefetch executor skips disk cached urls handles partial failures and persists telemetry`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.prefetch.PrefetchTelemetryStore.resetForTests(context)
+
+        val targets = listOf(
+            com.example.prefetch.PrefetchAssetTarget("https://cdn.example/cached1.png", 128, com.example.prefetch.PrefetchAssetCategory.CHAMPION_PORTRAIT),
+            com.example.prefetch.PrefetchAssetTarget("https://cdn.example/cached2.png", 64, com.example.prefetch.PrefetchAssetCategory.ITEM_ICON),
+            com.example.prefetch.PrefetchAssetTarget("https://cdn.example/new1.png", 128, com.example.prefetch.PrefetchAssetCategory.CHAMPION_PORTRAIT),
+            com.example.prefetch.PrefetchAssetTarget("https://cdn.example/new2.png", 64, com.example.prefetch.PrefetchAssetCategory.TRAIT_ICON),
+            com.example.prefetch.PrefetchAssetTarget("https://cdn.example/fail1.png", 64, com.example.prefetch.PrefetchAssetCategory.AUGMENT_ICON)
+        )
+
+        val fetchedUrls = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val summary = com.example.prefetch.AssetPrefetchExecutor.prefetchTargets(
+            targets = targets,
+            isCachedOnDisk = { url -> url.contains("cached") },
+            fetchTarget = { target ->
+                fetchedUrls.add(target.url)
+                if (target.url.contains("fail")) throw java.io.IOException("Simulated 404")
+                true
+            },
+            maxConcurrency = 3
+        )
+
+        assertEquals(5, summary.plannedCount)
+        assertEquals(2, summary.skippedCachedCount)
+        assertEquals(2, summary.downloadedCount)
+        assertEquals(1, summary.failedCount)
+        assertEquals(4, summary.totalReadyCount)
+        // Cached URLs must never hit the network fetcher
+        assertFalse(fetchedUrls.any { it.contains("cached") })
+        assertEquals(3, fetchedUrls.size)
+
+        // Verify PrefetchTelemetryStore persists and re-hydrates accurately across restarts
+        com.example.prefetch.PrefetchTelemetryStore.markCompleted(
+            context = context,
+            scope = com.example.prefetch.PrefetchScope.WARM_LAUNCH,
+            cached = summary.downloadedCount,
+            skipped = summary.skippedCachedCount,
+            failed = summary.failedCount,
+            totalPlanned = summary.plannedCount,
+            completedAtMillis = 123_456_789L
+        )
+        assertFalse(com.example.prefetch.PrefetchTelemetryStore.status.value.isRunning)
+        assertEquals(4, com.example.prefetch.PrefetchTelemetryStore.status.value.totalReadyCount)
+
+        // Clear in-memory value only via fresh hydrate call and verify SharedPreferences restores it
+        com.example.prefetch.PrefetchTelemetryStore.hydrate(context)
+        val restored = com.example.prefetch.PrefetchTelemetryStore.status.value
+        assertEquals(4, restored.totalReadyCount)
+        assertEquals(5, restored.totalPlannedCount)
+        assertEquals(123_456_789L, restored.lastCompletedAtMillis)
+        assertEquals("WARM_LAUNCH", restored.lastScope)
+    }
+
+    @Test
+    fun `meta prefetch scheduler enqueues periodic KEEP and immediate WorkManager requests and survives boot`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        runCatching {
+            androidx.work.WorkManager.initialize(
+                context,
+                androidx.work.Configuration.Builder().build()
+            )
+        }
+        val wm = androidx.work.WorkManager.getInstance(context)
+
+        com.example.prefetch.MetaPrefetchScheduler.schedulePeriodicPrefetch(context)
+        val periodicFirst = wm.getWorkInfosForUniqueWork(
+            com.example.prefetch.MetaPrefetchScheduler.PERIODIC_PREFETCH_WORK_NAME
+        ).get()
+        assertEquals(1, periodicFirst.size)
+        assertTrue(periodicFirst.first().tags.contains(com.example.prefetch.MetaPrefetchScheduler.TAG_PREFETCH))
+
+        // Calling schedulePeriodicPrefetch again must KEEP the same WorkRequest ID
+        com.example.prefetch.MetaPrefetchScheduler.schedulePeriodicPrefetch(context)
+        val periodicSecond = wm.getWorkInfosForUniqueWork(
+            com.example.prefetch.MetaPrefetchScheduler.PERIODIC_PREFETCH_WORK_NAME
+        ).get()
+        assertEquals(periodicFirst.first().id, periodicSecond.first().id)
+
+        // Immediate prefetch should enqueue under IMMEDIATE_PREFETCH_WORK_NAME and honor KEEP vs REPLACE
+        com.example.prefetch.MetaPrefetchScheduler.enqueuePrefetch(
+            context = context,
+            scope = com.example.prefetch.PrefetchScope.WARM_LAUNCH,
+            refreshSnapshot = false,
+            replaceExisting = true
+        )
+        val immediateFirst = wm.getWorkInfosForUniqueWork(
+            com.example.prefetch.MetaPrefetchScheduler.IMMEDIATE_PREFETCH_WORK_NAME
+        ).get()
+        assertEquals(1, immediateFirst.size)
+
+        com.example.prefetch.MetaPrefetchScheduler.enqueuePrefetch(
+            context = context,
+            scope = com.example.prefetch.PrefetchScope.LIVE,
+            refreshSnapshot = false,
+            replaceExisting = false
+        )
+        val immediateKept = wm.getWorkInfosForUniqueWork(
+            com.example.prefetch.MetaPrefetchScheduler.IMMEDIATE_PREFETCH_WORK_NAME
+        ).get()
+        assertEquals(immediateFirst.first().id, immediateKept.first().id)
+
+        // Boot receiver should also ensure periodic prefetch is scheduled
+        val bootReceiver = com.example.notifications.BackgroundSyncBootReceiver()
+        bootReceiver.onReceive(context, android.content.Intent(android.content.Intent.ACTION_BOOT_COMPLETED))
+        val periodicAfterBoot = wm.getWorkInfosForUniqueWork(
+            com.example.prefetch.MetaPrefetchScheduler.PERIODIC_PREFETCH_WORK_NAME
+        ).get()
+        assertEquals(1, periodicAfterBoot.size)
+    }
 }
+
 

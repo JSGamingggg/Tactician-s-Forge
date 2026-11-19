@@ -100,7 +100,7 @@ import com.example.ui.components.ChampionDetailModalSheet
 import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
 import com.example.ui.components.HextechPanelCard
-import com.example.ui.components.OfflineCacheStatusBanner
+import com.example.ui.components.CheckForUpdatesButton
 import com.example.ui.components.PatchTierAlertBanner
 import com.example.ui.components.PatchTierDetailsDialog
 import com.example.ui.components.TftAugmentChip
@@ -371,14 +371,11 @@ fun MetaSnapshotsScreen(
                         }
                     }
 
-                    // Guest & Offline Cache Banner
+                    // Check for Updates Action
                     item {
-                        OfflineCacheStatusBanner(
-                            isGuestMode = isGuestMode,
-                            cacheStatus = offlineCacheStatus,
+                        CheckForUpdatesButton(
                             isRefreshing = isRefreshing,
-                            onRefreshClick = onRefreshSync,
-                            onSignInClick = onSignInRequested
+                            onCheckUpdatesClick = onRefreshSync
                         )
                     }
 

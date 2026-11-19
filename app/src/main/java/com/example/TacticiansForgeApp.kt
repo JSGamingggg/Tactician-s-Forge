@@ -4,34 +4,24 @@ import android.app.Application
 import android.os.Build
 import android.util.Log
 import androidx.work.Configuration
-import androidx.work.Constraints
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
-import coil.Coil
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
-import coil.request.CachePolicy
-import coil.request.ImageRequest
-import com.example.data.model.TftEnvironment
 import com.example.data.network.RiotApiClientFactory
 import com.example.data.repository.MetaRepository
-import com.example.data.repository.OfflineMetaBundle
 import com.example.notifications.PatchMonitorWorker
 import com.example.notifications.TftNotificationHelper
-import com.example.ui.components.TftAssetIconResolver
+import com.example.prefetch.MetaPrefetchScheduler
+import com.example.prefetch.PrefetchScope
+import com.example.prefetch.PrefetchTelemetryStore
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.messaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.util.concurrent.TimeUnit
 
 class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFactory {
 
@@ -54,7 +44,7 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("tft_image_cache"))
-                    .maxSizeBytes(64L * 1024L * 1024L)
+                    .maxSizeBytes(96L * 1024L * 1024L)
                     .build()
             }
             .crossfade(false)
@@ -68,48 +58,36 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
     override fun onCreate() {
         super.onCreate()
         TftNotificationHelper.ensureChannels(this)
+        PrefetchTelemetryStore.hydrate(this)
         if (!isRobolectricRuntime()) {
             if (FirebaseApp.getApps(this).isEmpty()) {
                 runCatching { FirebaseApp.initializeApp(this) }
             }
             schedulePatchMonitor()
             subscribeToFcmTopics()
-            preloadEverythingOnLaunch()
+            scheduleBackgroundPrefetchOnLaunch()
         }
     }
 
-    private fun preloadEverythingOnLaunch() {
+    private fun scheduleBackgroundPrefetchOnLaunch() {
         if (isRobolectricRuntime()) return
+        // Schedule battery- and storage-aware periodic background prefetching via WorkManager
+        MetaPrefetchScheduler.schedulePeriodicPrefetch(this)
+
         appScope.launch {
             // Immediately warm the shared in-memory bundle & icon maps off the main thread
             val repo = MetaRepository(applicationContext)
-            val initialBundle = runCatching { repo.loadOfflineBundleAsync() }.getOrNull() ?: return@launch
-            // Wait briefly so initial screen composition & metadata sync get full bandwidth first
-            delay(1_200L)
-            prefetchTopIcons(initialBundle)
-        }
-    }
+            runCatching { repo.loadOfflineBundleAsync() }
 
-    private fun prefetchTopIcons(bundle: OfflineMetaBundle) {
-        val imageLoader = Coil.imageLoader(this)
-        val urls = LinkedHashSet<String>(64)
-        (bundle.liveComps.take(10) + bundle.pbeComps.take(8)).forEach { comp ->
-            TftAssetIconResolver.resolveChampionIconUrl(comp.carryName, comp.environment)?.let(urls::add)
-            comp.coreUnits.take(6).forEach { unit ->
-                TftAssetIconResolver.resolveChampionIconUrl(unit, comp.environment)?.let(urls::add)
-            }
-            comp.hexPlacements.firstOrNull { it.isCarry }?.items?.take(3)?.forEach { item ->
-                TftAssetIconResolver.resolveItemIconUrl(item, comp.environment)?.let(urls::add)
-            }
-        }
-        urls.take(48).forEach { url ->
-            val request = ImageRequest.Builder(this)
-                .data(url)
-                .size(96)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .build()
-            imageLoader.enqueue(request)
+            // Warm local image cache from existing offline bundle without triggering an immediate update check
+            MetaPrefetchScheduler.enqueuePrefetch(
+                context = applicationContext,
+                scope = PrefetchScope.WARM_LAUNCH,
+                refreshSnapshot = false,
+                warmMemoryCount = 36,
+                replaceExisting = false,
+                initialDelaySeconds = 1L
+            )
         }
     }
 

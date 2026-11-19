@@ -16,6 +16,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.R
 import com.example.data.repository.MetaRepository
+import com.example.prefetch.MetaPrefetchScheduler
+import com.example.prefetch.PrefetchScope
 import com.example.update.AppUpdateCoordinator
 import java.util.concurrent.TimeUnit
 
@@ -52,6 +54,20 @@ class PatchMonitorWorker(
                 syncResult = syncResult,
                 bundle = bundle
             )
+
+            // Warm local image disk cache for any newly synced comps, champions, items & augments
+            if (syncResult.syncedFromNetwork) {
+                val hasMetaDelta = syncResult.newLivePatchDetected ||
+                    syncResult.newPbePatchDetected ||
+                    syncResult.compsUpdatedDetected ||
+                    syncResult.newlyAddedComps.isNotEmpty()
+                MetaPrefetchScheduler.enqueuePrefetch(
+                    context = applicationContext,
+                    scope = if (hasMetaDelta) PrefetchScope.DELTA_SYNC else PrefetchScope.ALL,
+                    refreshSnapshot = false,
+                    replaceExisting = hasMetaDelta
+                )
+            }
         }
 
         val appUpdateResult = runCatching {

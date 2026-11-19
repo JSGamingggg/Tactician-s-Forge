@@ -23,6 +23,9 @@ import com.example.data.repository.MetaCacheUpdates
 import com.example.data.repository.MetaRepository
 import com.example.data.repository.OfflineMetaBundle
 import com.example.notifications.MetaUpdateNotifier
+import com.example.prefetch.MetaPrefetchScheduler
+import com.example.prefetch.PrefetchScope
+import com.example.prefetch.PrefetchTelemetryStore
 import com.example.update.AppUpdateCoordinator
 import com.example.update.AppUpdateUiState
 import com.example.update.GitHubReleaseInfo
@@ -30,7 +33,6 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -41,7 +43,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 sealed interface UiState<out T> {
@@ -55,11 +56,10 @@ class MainViewModel(
     private val metaRepository: MetaRepository,
     private val localStore: LocalPreferencesStore,
     private val firestoreRepo: FirestoreUserRepository,
-    autoSyncOnInit: Boolean = true,
+    autoSyncOnInit: Boolean = false,
     private val appContext: Context? = null
 ) : ViewModel() {
 
-    private var lastAutoSyncAttemptMillis = 0L
     private var activeSyncJob: Job? = null
 
     private val initialBundle = metaRepository.peekOfflineBundle()
@@ -77,8 +77,17 @@ class MainViewModel(
 
     private val _isOfflineFallback = MutableStateFlow(false)
     val offlineCacheStatus: StateFlow<OfflineCacheStatus> =
-        combine(_selectedEnvironment, _metaBundle, _isOfflineFallback) { env, bundle, offlineFallback ->
-            bundle.toCacheStatus(isOfflineFallback = offlineFallback, environment = env)
+        combine(
+            _selectedEnvironment,
+            _metaBundle,
+            _isOfflineFallback,
+            PrefetchTelemetryStore.status
+        ) { env, bundle, offlineFallback, prefetchStatus ->
+            bundle.toCacheStatus(isOfflineFallback = offlineFallback, environment = env).copy(
+                prefetchedAssetsCount = prefetchStatus.totalReadyCount,
+                totalPrefetchAssets = prefetchStatus.totalPlannedCount,
+                isPrefetchingAssets = prefetchStatus.isRunning
+            )
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
@@ -216,41 +225,18 @@ class MainViewModel(
                 triggerPushAlerts = false
             )
             checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
-            startActivePollingLoop()
         }
         if (!currentUserId.isNullOrBlank()) {
             migrateLocalFavoritesToCloudIfPresent()
         }
     }
 
-    private fun startActivePollingLoop() {
-        viewModelScope.launch {
-            while (isActive) {
-                delay(ACTIVE_SYNC_INTERVAL_MS)
-                refreshPatchVersions(
-                    notifyIfUpdated = true,
-                    onlyNotifyOnChanges = true,
-                    triggerPushAlerts = false
-                )
-                checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
-            }
-        }
-    }
-
     fun onAppResumed() {
-        val now = System.currentTimeMillis()
         appContext?.let { ctx ->
             viewModelScope.launch {
                 AppUpdateCoordinator.resumePendingInstallIfPermitted(ctx)
             }
         }
-        if (now - lastAutoSyncAttemptMillis < RESUME_DEBOUNCE_MS) return
-        refreshPatchVersions(
-            notifyIfUpdated = true,
-            onlyNotifyOnChanges = true,
-            triggerPushAlerts = false
-        )
-        checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
     }
 
     fun checkForAppUpdate(
@@ -362,7 +348,6 @@ class MainViewModel(
         if (activeSyncJob?.isActive == true) return
         activeSyncJob = viewModelScope.launch {
             try {
-                lastAutoSyncAttemptMillis = System.currentTimeMillis()
                 _isRefreshingVersions.value = true
                 val sync = metaRepository.refreshAndPersistMeta()
                 val freshBundle = metaRepository.loadOfflineBundleAsync()
@@ -380,6 +365,19 @@ class MainViewModel(
                     MetaUpdateNotifier.markCurrentSnapshotAsSeen(
                         bundle = freshBundle,
                         prefsStore = localStore
+                    )
+                }
+
+                if (appContext != null && sync.syncedFromNetwork) {
+                    val hasDelta = sync.newLivePatchDetected ||
+                        sync.newPbePatchDetected ||
+                        sync.compsUpdatedDetected ||
+                        sync.newlyAddedComps.isNotEmpty()
+                    MetaPrefetchScheduler.enqueuePrefetch(
+                        context = appContext,
+                        scope = if (hasDelta) PrefetchScope.DELTA_SYNC else PrefetchScope.ALL,
+                        refreshSnapshot = false,
+                        replaceExisting = hasDelta
                     )
                 }
 
@@ -411,6 +409,15 @@ class MainViewModel(
 
     fun setEnvironment(env: TftEnvironment) {
         _selectedEnvironment.value = env
+        appContext?.let { ctx ->
+            MetaPrefetchScheduler.enqueuePrefetch(
+                context = ctx,
+                scope = if (env == TftEnvironment.PBE) PrefetchScope.PBE else PrefetchScope.LIVE,
+                refreshSnapshot = false,
+                warmMemoryCount = 24,
+                replaceExisting = false
+            )
+        }
         viewModelScope.launch {
             localStore.updatePreferences(environment = env)
             if (!currentUserId.isNullOrBlank()) {
@@ -637,7 +644,5 @@ class MainViewModel(
     private companion object {
         const val TAG = "MainViewModel"
         const val STOP_TIMEOUT_MILLIS = 5000L
-        const val ACTIVE_SYNC_INTERVAL_MS = 60_000L
-        const val RESUME_DEBOUNCE_MS = 5_000L
     }
 }

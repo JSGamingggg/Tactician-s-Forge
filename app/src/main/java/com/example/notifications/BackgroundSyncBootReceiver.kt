@@ -3,10 +3,11 @@ package com.example.notifications
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.example.prefetch.MetaPrefetchScheduler
 
 /**
- * Restores background monitoring for new app updates, compositions, and LIVE/PBE patches
- * across device reboots and in-place APK upgrades even before the user opens the app.
+ * Restores background monitoring for new app updates, compositions, LIVE/PBE patches,
+ * and WorkManager meta/image prefetching across device reboots and APK upgrades.
  */
 class BackgroundSyncBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -29,6 +30,7 @@ class BackgroundSyncBootReceiver : BroadcastReceiver() {
                 expedited = true,
                 replaceExisting = false
             )
+            MetaPrefetchScheduler.schedulePeriodicPrefetch(appContext)
         }
     }
 }

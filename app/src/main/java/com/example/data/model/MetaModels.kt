@@ -146,7 +146,10 @@ data class OfflineCacheStatus(
     val compsCount: Int = 0,
     val championsCount: Int = 0,
     val itemsCount: Int = 0,
-    val augmentsCount: Int = 0
+    val augmentsCount: Int = 0,
+    val prefetchedAssetsCount: Int = 0,
+    val totalPrefetchAssets: Int = 0,
+    val isPrefetchingAssets: Boolean = false
 )
 
 data class MetaSyncResult(

@@ -518,7 +518,10 @@ private fun AuthenticatedOrGuestWorkspace(
                                         isRefreshing = isRefreshingVersions,
                                         isGuestMode = currentUser == null,
                                         isOverlayRunning = isOverlayRunning,
-                                        onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
+                                        onRefreshSync = {
+                                            mainViewModel.refreshPatchVersions(notifyIfUpdated = true)
+                                            mainViewModel.checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
+                                        },
                                         onSignInRequested = triggerGoogleSignIn,
                                         onToggleOverlay = toggleOverlayAction,
                                         onToggleFavorite = mainViewModel::toggleFavorite,
@@ -547,7 +550,10 @@ private fun AuthenticatedOrGuestWorkspace(
                                             offlineCacheStatus = offlineCacheStatus,
                                             isRefreshing = isRefreshingVersions,
                                             isGuestMode = currentUser == null,
-                                            onRefreshSync = { mainViewModel.refreshPatchVersions(notifyIfUpdated = true) },
+                                            onRefreshSync = {
+                                                mainViewModel.refreshPatchVersions(notifyIfUpdated = true)
+                                                mainViewModel.checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
+                                            },
                                             onSignInRequested = triggerGoogleSignIn,
                                             patches = patchFeed,
                                             comps = metaComps,

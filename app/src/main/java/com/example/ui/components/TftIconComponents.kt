@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.GenericShape
@@ -24,8 +26,6 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Diamond
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FlashOn
@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MilitaryTech
-import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Park
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
@@ -46,13 +45,13 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material.icons.filled.WorkspacePremium
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,6 +69,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -80,13 +80,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.example.R
 import com.example.data.model.AugmentTier
 import com.example.data.model.ItemCategory
-import com.example.data.model.OfflineCacheStatus
 import com.example.data.model.TftEnvironment
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 fun championCostColor(cost: Int): Color = when (cost) {
@@ -904,123 +901,51 @@ fun TftAugmentChip(
 }
 
 @Composable
-fun OfflineCacheStatusBanner(
-    isGuestMode: Boolean,
-    cacheStatus: OfflineCacheStatus,
+fun CheckForUpdatesButton(
     isRefreshing: Boolean,
-    onRefreshClick: () -> Unit,
-    onSignInClick: () -> Unit,
+    onCheckUpdatesClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val timeText = remember(cacheStatus.cachedAtMillis) {
-        if (cacheStatus.cachedAtMillis <= 0L) "Ready"
-        else SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(cacheStatus.cachedAtMillis))
-    }
-
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+    FilledTonalButton(
+        onClick = onCheckUpdatesClick,
+        enabled = !isRefreshing,
+        shape = RoundedCornerShape(12.dp),
         border = BorderStroke(
-            1.dp,
-            if (cacheStatus.isOfflineFallback) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-            } else {
-                MaterialTheme.colorScheme.secondary.copy(alpha = 0.48f)
-            }
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+        ),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+            contentColor = MaterialTheme.colorScheme.onSurface
         ),
         modifier = modifier
             .fillMaxWidth()
-            .testTag("offline_cache_banner")
+            .heightIn(min = 48.dp)
+            .testTag("check_for_updates_button")
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(
-                            (if (cacheStatus.isOfflineFallback) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary)
-                                .copy(alpha = 0.16f)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = when {
-                            cacheStatus.isOfflineFallback -> Icons.Default.CloudOff
-                            isGuestMode -> Icons.Default.OfflinePin
-                            else -> Icons.Default.CloudDone
-                        },
-                        contentDescription = "Session and offline cache status",
-                        tint = if (cacheStatus.isOfflineFallback) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Column {
-                    Text(
-                        text = when {
-                            cacheStatus.isOfflineFallback -> "Offline Mode • Cached Snapshots & Tiers"
-                            isGuestMode -> "Pre-loaded • Instant Offline & Live Sync"
-                            else -> "Cloud Synced • Instant Cache Ready"
-                        },
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${cacheStatus.compsCount} comps • ${cacheStatus.championsCount} champs • ${cacheStatus.itemsCount} items • ${cacheStatus.augmentsCount} augs • $timeText",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isGuestMode) {
-                    TextButton(
-                        onClick = onSignInClick,
-                        modifier = Modifier.testTag("banner_sign_in_button")
-                    ) {
-                        Text(
-                            text = "Sign In",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-                IconButton(
-                    onClick = onRefreshClick,
-                    enabled = !isRefreshing,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    if (isRefreshing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Sync patches and offline cache",
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
+        if (isRefreshing) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.secondary
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = stringResource(R.string.check_for_updates),
+                tint = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.size(18.dp)
+            )
         }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = stringResource(
+                if (isRefreshing) R.string.checking_for_updates else R.string.check_for_updates
+            ),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

@@ -186,21 +186,15 @@ fun PatchesScreen(
 
             // Section Title
             item {
-                AnimatedContent(
-                    targetState = environment,
-                    transitionSpec = environmentSlideTransitionSpec(),
-                    label = "patchFeedHeaderTransition"
-                ) { activeEnv ->
-                    Text(
-                        text = if (activeEnv == TftEnvironment.LIVE) {
-                            "LIVE Patch & Balance Feed"
-                        } else {
-                            "PBE Experimental Balance Feed"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
+                Text(
+                    text = if (environment == TftEnvironment.LIVE) {
+                        "LIVE Patch & Balance Feed"
+                    } else {
+                        "PBE Experimental Balance Feed"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
 
             // Patch Update Cards
@@ -224,14 +218,7 @@ fun PatchesScreen(
                 }
             } else {
                 items(patches, key = { it.id }) { patch ->
-                    PatchUpdateCard(
-                        patch = patch,
-                        modifier = Modifier.animateItem(
-                            fadeInSpec = tween(220),
-                            fadeOutSpec = tween(160),
-                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                        )
-                    )
+                    PatchUpdateCard(patch = patch)
                 }
             }
 

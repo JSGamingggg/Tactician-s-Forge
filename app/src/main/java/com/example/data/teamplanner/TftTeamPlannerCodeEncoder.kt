@@ -101,14 +101,17 @@ object TftTeamPlannerCodeEncoder {
         "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36"
 
     private const val LIVE_CACHE_FILE = "tft_teamplanner_live_v5.json"
-    private const val PBE_CACHE_FILE = "tft_teamplanner_pbe_v5.json"
+    private const val PBE_CACHE_FILE = "tft_teamplanner_pbe_v6.json"
     private const val PRELOAD_SET18_ASSET = "set18_catalog_preload.json"
     private const val PRELOAD_SET19_ASSET = "set19_pbe_catalog_preload.json"
     private const val CACHE_TTL_MS = 6L * 60L * 60L * 1000L // 6 hours
 
-    private val VALID_V02_CODE_REGEX = Regex("""^0[2-9][0-9a-fA-F]{30}(?:TFTSet|TFT)[A-Za-z0-9_-]+$""")
-    private val VALID_V01_CODE_REGEX = Regex("""^01[0-9a-fA-F]{20}(?:TFTSet|TFT)[A-Za-z0-9_-]+$""")
-    private val EMBEDDED_V02_CODE_REGEX = Regex("""0[2-9][0-9a-fA-F]{30}(?:TFTSet|TFT)[A-Za-z0-9_-]+""")
+    /** Riot's current Set 19 PBE client requires the `None` suffix (`02<30 hex>None`) instead of `Set19` / `TFTSet19`. */
+    const val PBE_SET19_WORKING_SUFFIX = "None"
+
+    private val VALID_V02_CODE_REGEX = Regex("""^0[2-9][0-9a-fA-F]{30}(?:TFTSet[A-Za-z0-9_-]+|TFT[A-Za-z0-9_-]+|Set\d+[A-Za-z0-9_-]*|None)$""")
+    private val VALID_V01_CODE_REGEX = Regex("""^01[0-9a-fA-F]{20}(?:TFTSet[A-Za-z0-9_-]+|TFT[A-Za-z0-9_-]+|Set\d+[A-Za-z0-9_-]*|None)$""")
+    private val EMBEDDED_V02_CODE_REGEX = Regex("""0[2-9][0-9a-fA-F]{30}(?:TFTSet[A-Za-z0-9_-]+|TFT[A-Za-z0-9_-]+|Set\d+[A-Za-z0-9_-]*|None)""")
     private val SVELTEKIT_FETCHED_REGEX = Regex(
         """<script[^>]*data-sveltekit-fetched[^>]*>(.*?)</script>""",
         setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
@@ -217,7 +220,12 @@ object TftTeamPlannerCodeEncoder {
     fun isValidTeamPlannerCode(raw: String?, expectedSetNumber: Int? = null): Boolean {
         val trimmed = raw?.trim().orEmpty()
         if (trimmed.isBlank()) return false
-        val codeSetNum = extractSetNumberFromKey(extractSetKeyFromCode(trimmed))
+        val suffix = extractSetKeyFromCode(trimmed)
+        if (suffix.equals(PBE_SET19_WORKING_SUFFIX, ignoreCase = true)) {
+            if (expectedSetNumber != null && expectedSetNumber != 19) return false
+            return VALID_V02_CODE_REGEX.matches(trimmed)
+        }
+        val codeSetNum = extractSetNumberFromKey(suffix)
         if (expectedSetNumber != null && codeSetNum != null && codeSetNum != expectedSetNumber) {
             return false
         }
@@ -230,6 +238,30 @@ object TftTeamPlannerCodeEncoder {
             return effectiveSet == null || effectiveSet < MIN_V02_REQUIRED_SET
         }
         return false
+    }
+
+    /**
+     * Normalizes a valid Team Planner code for [environment] and [targetSetNum].
+     * For Set 19 PBE, Riot's in-game Team Planner requires the trailing suffix `None`
+     * (`02<30 lowercase hex>None`), whereas `Set19` / `TFTSet19` fails to paste.
+     */
+    fun normalizeCodeForTarget(
+        rawCode: String,
+        environment: TftEnvironment,
+        targetSetNum: Int
+    ): String {
+        val trimmed = rawCode.trim()
+        if (!VALID_V02_CODE_REGEX.matches(trimmed)) {
+            return normalizeCodeCasing(trimmed)
+        }
+        val hexPart = trimmed.substring(0, 32).lowercase(Locale.US)
+        val rawSuffix = trimmed.substring(32)
+        val finalSuffix = if (environment == TftEnvironment.PBE && targetSetNum == 19) {
+            PBE_SET19_WORKING_SUFFIX
+        } else {
+            rawSuffix
+        }
+        return hexPart + finalSuffix
     }
 
     /**
@@ -312,7 +344,8 @@ object TftTeamPlannerCodeEncoder {
         }
         if (!needsCode) {
             return@withContext comps.map { comp ->
-                val normalized = normalizeCodeCasing(comp.teamPlannerCode.trim())
+                val targetSetNum = extractTargetSetNumber(comp)
+                val normalized = normalizeCodeForTarget(comp.teamPlannerCode, comp.environment, targetSetNum)
                 if (normalized == comp.teamPlannerCode) comp else comp.copy(teamPlannerCode = normalized)
             }
         }
@@ -338,7 +371,7 @@ object TftTeamPlannerCodeEncoder {
         val afterSitePass = comps.map { comp ->
             val targetSetNum = extractTargetSetNumber(comp)
             if (isValidTeamPlannerCode(comp.teamPlannerCode, expectedSetNumber = targetSetNum)) {
-                val normalized = normalizeCodeCasing(comp.teamPlannerCode.trim())
+                val normalized = normalizeCodeForTarget(comp.teamPlannerCode, comp.environment, targetSetNum)
                 if (normalized == comp.teamPlannerCode) comp else comp.copy(teamPlannerCode = normalized)
             } else {
                 val slugFromUrl = comp.sourceUrl.substringAfterLast('/').takeIf {
@@ -350,7 +383,7 @@ object TftTeamPlannerCodeEncoder {
                     compId = comp.id
                 )?.takeIf { isValidTeamPlannerCode(it, expectedSetNumber = targetSetNum) }
                 if (directFromSite != null) {
-                    val norm = normalizeCodeCasing(directFromSite)
+                    val norm = normalizeCodeForTarget(directFromSite, comp.environment, targetSetNum)
                     directCompCodeCache[comp.id] = norm
                     comp.copy(teamPlannerCode = norm)
                 } else {
@@ -358,7 +391,8 @@ object TftTeamPlannerCodeEncoder {
                     if (encodedFromSite != null && encodedFromSite.isSuccess &&
                         isValidTeamPlannerCode(encodedFromSite.code, expectedSetNumber = targetSetNum)
                     ) {
-                        comp.copy(teamPlannerCode = encodedFromSite.code)
+                        val norm = normalizeCodeForTarget(encodedFromSite.code, comp.environment, targetSetNum)
+                        comp.copy(teamPlannerCode = norm)
                     } else {
                         comp
                     }
@@ -386,7 +420,8 @@ object TftTeamPlannerCodeEncoder {
             } else {
                 val encoded = encodeCompWithCatalog(comp, catalog)
                 if (encoded.isSuccess && isValidTeamPlannerCode(encoded.code, expectedSetNumber = targetSetNum)) {
-                    comp.copy(teamPlannerCode = encoded.code)
+                    val norm = normalizeCodeForTarget(encoded.code, comp.environment, targetSetNum)
+                    comp.copy(teamPlannerCode = norm)
                 } else {
                     comp
                 }
@@ -500,9 +535,10 @@ object TftTeamPlannerCodeEncoder {
             isValidTeamPlannerCode(it, expectedSetNumber = targetSetNum)
         }
         if (directCandidate != null) {
-            val codeSetKey = extractSetKeyFromCode(directCandidate)
+            val normalized = normalizeCodeForTarget(directCandidate, comp.environment, targetSetNum)
+            val codeSetKey = extractSetKeyFromCode(normalized)
             return@withContext TeamPlannerCodeResult(
-                code = normalizeCodeCasing(directCandidate),
+                code = normalized,
                 setKey = codeSetKey ?: expectedSetKey,
                 matchedChampions = comp.coreUnits.distinct().take(MAX_PLANNER_SLOTS),
                 skippedUnits = emptyList(),
@@ -644,8 +680,20 @@ object TftTeamPlannerCodeEncoder {
         val prefix = if (chosenSet.usesVersion02) VERSION_02_PREFIX else VERSION_01_PREFIX
         val emptySlot = if (chosenSet.usesVersion02) EMPTY_SLOT_HEX_V2 else EMPTY_SLOT_HEX_V1
         val slotWidth = if (chosenSet.usesVersion02) 3 else 2
+        val outputSetSuffix = if (
+            chosenSet.usesVersion02 &&
+            comp.environment == TftEnvironment.PBE &&
+            targetSetNum == 19 &&
+            (chosenSet.setKey.equals("TFTSet19", ignoreCase = true) ||
+                chosenSet.setKey.equals("Set19", ignoreCase = true) ||
+                chosenSet.setKey.equals(PBE_SET19_WORKING_SUFFIX, ignoreCase = true))
+        ) {
+            PBE_SET19_WORKING_SUFFIX
+        } else {
+            chosenSet.setKey
+        }
 
-        val codeBuilder = StringBuilder(2 + MAX_PLANNER_SLOTS * slotWidth + chosenSet.setKey.length)
+        val codeBuilder = StringBuilder(2 + MAX_PLANNER_SLOTS * slotWidth + outputSetSuffix.length)
         codeBuilder.append(prefix)
         matchedEntries.forEach { entry ->
             codeBuilder.append(entry.slotHex)
@@ -653,11 +701,11 @@ object TftTeamPlannerCodeEncoder {
         repeat((MAX_PLANNER_SLOTS - matchedEntries.size).coerceAtLeast(0)) {
             codeBuilder.append(emptySlot)
         }
-        codeBuilder.append(chosenSet.setKey)
+        codeBuilder.append(outputSetSuffix)
 
         return TeamPlannerCodeResult(
             code = codeBuilder.toString(),
-            setKey = chosenSet.setKey,
+            setKey = outputSetSuffix,
             matchedChampions = matchedEntries.map { it.displayName.ifBlank { it.characterId } },
             skippedUnits = skipped,
             isVerifiedRiotMapping = catalog.isFromRiotCommunityDragon
@@ -1248,7 +1296,14 @@ object TftTeamPlannerCodeEncoder {
             }
         }
 
-        // 3. Unnumbered codename set key (setNumber == null, never an older numbered set like TFTSet10/TFTSet18)
+        // 3. Riot PBE Set 19 placeholder set key ("None")
+        if (targetSetNumber == 19) {
+            eligibleSets.firstOrNull {
+                it.setKey.equals(PBE_SET19_WORKING_SUFFIX, ignoreCase = true) && it.entries.isNotEmpty()
+            }?.let { return it }
+        }
+
+        // 4. Unnumbered codename set key (setNumber == null, never an older numbered set like TFTSet10/TFTSet18)
         if (unitCandidates.isNotEmpty()) {
             val minRequiredMatches = minOf(2, unitCandidates.size)
             val codenameCandidates = eligibleSets
@@ -1478,7 +1533,7 @@ object TftTeamPlannerCodeEncoder {
             )
         }.getOrNull()
         if (!singleGuideCode.isNullOrBlank() && isValidTeamPlannerCode(singleGuideCode, expectedSetNumber = targetSetNum)) {
-            val normalized = normalizeCodeCasing(singleGuideCode)
+            val normalized = normalizeCodeForTarget(singleGuideCode, comp.environment, targetSetNum)
             directCompCodeCache[comp.id] = normalized
             return TeamPlannerCodeResult(
                 code = normalized,
@@ -1515,7 +1570,7 @@ object TftTeamPlannerCodeEncoder {
                 compId = comp.id
             )?.takeIf { isValidTeamPlannerCode(it, expectedSetNumber = targetSetNum) }
             if (directSiteCode != null) {
-                val normalized = normalizeCodeCasing(directSiteCode)
+                val normalized = normalizeCodeForTarget(directSiteCode, comp.environment, targetSetNum)
                 directCompCodeCache[comp.id] = normalized
                 return TeamPlannerCodeResult(
                     code = normalized,
@@ -1573,10 +1628,11 @@ object TftTeamPlannerCodeEncoder {
                     expectedSetNumber = targetSetNum
                 )
                 if (matchedCode != null) {
-                    directCompCodeCache[comp.id] = matchedCode
+                    val normalized = normalizeCodeForTarget(matchedCode, comp.environment, targetSetNum)
+                    directCompCodeCache[comp.id] = normalized
                     return TeamPlannerCodeResult(
-                        code = matchedCode,
-                        setKey = extractSetKeyFromCode(matchedCode) ?: expectedSetKey,
+                        code = normalized,
+                        setKey = extractSetKeyFromCode(normalized) ?: expectedSetKey,
                         matchedChampions = comp.coreUnits.distinct().take(MAX_PLANNER_SLOTS),
                         skippedUnits = emptyList(),
                         isVerifiedRiotMapping = true
@@ -1817,19 +1873,38 @@ object TftTeamPlannerCodeEncoder {
     }
 
     private fun extractSetKeyFromCode(code: String): String? {
-        val idx = code.indexOf("TFTSet", ignoreCase = true)
+        val trimmed = code.trim()
+        if (VALID_V02_CODE_REGEX.matches(trimmed) && trimmed.length > 32) {
+            return trimmed.substring(32)
+        }
+        if (VALID_V01_CODE_REGEX.matches(trimmed) && trimmed.length > 22) {
+            return trimmed.substring(22)
+        }
+        val idx = trimmed.indexOf("TFTSet", ignoreCase = true)
             .takeIf { it >= 0 }
-            ?: code.indexOf("TFT", ignoreCase = true)
-        return if (idx >= 0) code.substring(idx) else null
+            ?: trimmed.indexOf("TFT", ignoreCase = true)
+                .takeIf { it >= 0 }
+            ?: trimmed.indexOf("Set", ignoreCase = true)
+                .takeIf { it >= 22 }
+            ?: trimmed.indexOf(PBE_SET19_WORKING_SUFFIX, ignoreCase = true)
+                .takeIf { it >= 22 }
+        return if (idx != null && idx >= 0) trimmed.substring(idx) else null
     }
 
     private fun normalizeCodeCasing(code: String): String {
-        val idx = code.indexOf("TFTSet", ignoreCase = true)
+        val trimmed = code.trim()
+        if (VALID_V02_CODE_REGEX.matches(trimmed) && trimmed.length > 32) {
+            return trimmed.substring(0, 32).lowercase(Locale.US) + trimmed.substring(32)
+        }
+        if (VALID_V01_CODE_REGEX.matches(trimmed) && trimmed.length > 22) {
+            return trimmed.substring(0, 22).lowercase(Locale.US) + trimmed.substring(22)
+        }
+        val idx = trimmed.indexOf("TFTSet", ignoreCase = true)
             .takeIf { it >= 0 }
-            ?: code.indexOf("TFT", ignoreCase = true)
-        if (idx < 0) return code
-        val hexPart = code.substring(0, idx).lowercase(Locale.US)
-        val setSuffix = code.substring(idx)
+            ?: trimmed.indexOf("TFT", ignoreCase = true)
+        if (idx < 0) return trimmed
+        val hexPart = trimmed.substring(0, idx).lowercase(Locale.US)
+        val setSuffix = trimmed.substring(idx)
         return hexPart + setSuffix
     }
 }

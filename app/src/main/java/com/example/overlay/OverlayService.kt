@@ -1585,55 +1585,82 @@ private fun OverlayDrawerContent(
         matched + extra
     }
 
-    val envAllComps = remember(mergedAllComps, envFilter) {
-        mergedAllComps.filter { it.environment == envFilter }
+    val liveAllComps = remember(mergedAllComps) {
+        mergedAllComps.filter { it.environment == TftEnvironment.LIVE }
     }
+    val pbeAllComps = remember(mergedAllComps) {
+        mergedAllComps.filter { it.environment == TftEnvironment.PBE }
+    }
+    val liveAllCompsByTier = remember(liveAllComps) {
+        groupCompsByTier(liveAllComps)
+    }
+    val pbeAllCompsByTier = remember(pbeAllComps) {
+        groupCompsByTier(pbeAllComps)
+    }
+    val liveFavoriteComps = remember(favoriteComps) {
+        favoriteComps.filter { it.environment == TftEnvironment.LIVE }
+    }
+    val pbeFavoriteComps = remember(favoriteComps) {
+        favoriteComps.filter { it.environment == TftEnvironment.PBE }
+    }
+
+    val envAllComps = if (envFilter == TftEnvironment.LIVE) liveAllComps else pbeAllComps
+    val envFavoriteComps = if (envFilter == TftEnvironment.LIVE) liveFavoriteComps else pbeFavoriteComps
     val envCatalogItems = remember(allItems, envFilter) {
         allItems.filter { it.environment == envFilter }
     }
-    val championChoices = remember(envAllComps, allChampions, envFilter) {
-        OverlayArmySearchEngine.extractChampionChoices(envAllComps, allChampions, envFilter)
+    val championChoices = remember(sessionState.isArmyFinderOpen, envAllComps, allChampions, envFilter) {
+        if (!sessionState.isArmyFinderOpen) emptyList()
+        else OverlayArmySearchEngine.extractChampionChoices(envAllComps, allChampions, envFilter)
     }
-    val itemChoices = remember(envAllComps, allItems, envFilter) {
-        OverlayArmySearchEngine.extractItemChoices(envAllComps, allItems, envFilter)
+    val itemChoices = remember(sessionState.isArmyFinderOpen, envAllComps, allItems, envFilter) {
+        if (!sessionState.isArmyFinderOpen) emptyList()
+        else OverlayArmySearchEngine.extractItemChoices(envAllComps, allItems, envFilter)
     }
 
     val envScopedCompsCount = envAllComps.size
-    val envScopedFavoritesCount = remember(favoriteComps, envFilter) {
-        favoriteComps.count { it.environment == envFilter }
-    }
+    val envScopedFavoritesCount = envFavoriteComps.size
 
     val selectedChampions = sessionState.selectedChampions
     val selectedItems = sessionState.selectedItems
     val finderQuery = sessionState.finderQuery
+    val hasActiveArmyFilters = sessionState.hasActiveArmyFilters
+
+    val isDefaultAllCompsView = browseMode == OverlayBrowseMode.ALL_COMPS &&
+        tierFilter == null &&
+        !hasActiveArmyFilters
 
     val displayed = remember(
-        mergedAllComps,
-        favoriteComps,
+        isDefaultAllCompsView,
+        envAllComps,
+        envFavoriteComps,
         browseMode,
-        envFilter,
         tierFilter,
         selectedChampions,
         selectedItems,
         finderQuery,
         envCatalogItems
     ) {
-        val source = if (browseMode == OverlayBrowseMode.FAVORITES) favoriteComps else mergedAllComps
-        val envAndTierFiltered = source.filter { comp ->
-            val matchesEnv = comp.environment == envFilter
-            val matchesTier = tierFilter == null || comp.tier == tierFilter
-            matchesEnv && matchesTier
+        if (isDefaultAllCompsView) {
+            envAllComps
+        } else {
+            val source = if (browseMode == OverlayBrowseMode.FAVORITES) envFavoriteComps else envAllComps
+            val tierFiltered = if (tierFilter == null) source else source.filter { it.tier == tierFilter }
+            OverlayArmySearchEngine.filterArmies(
+                comps = tierFiltered,
+                selectedChampions = selectedChampions,
+                selectedItems = selectedItems,
+                query = finderQuery,
+                catalogItems = envCatalogItems
+            )
         }
-        OverlayArmySearchEngine.filterArmies(
-            comps = envAndTierFiltered,
-            selectedChampions = selectedChampions,
-            selectedItems = selectedItems,
-            query = finderQuery,
-            catalogItems = envCatalogItems
-        )
     }
-    val displayedByTier = remember(displayed) {
-        groupCompsByTier(displayed)
+    val displayedByTier = remember(isDefaultAllCompsView, envFilter, liveAllCompsByTier, pbeAllCompsByTier, displayed) {
+        if (isDefaultAllCompsView) {
+            if (envFilter == TftEnvironment.LIVE) liveAllCompsByTier else pbeAllCompsByTier
+        } else {
+            groupCompsByTier(displayed)
+        }
     }
     val selectedComp = remember(displayed, mergedAllComps, selectedCompId) {
         if (selectedCompId == null) null
@@ -1953,26 +1980,20 @@ private fun OverlayDrawerContent(
                                 .fillMaxWidth()
                                 .weight(1f, fill = effectiveFixedHeightDp != null)
                         ) {
-                            AnimatedContent(
-                                targetState = Triple(browseMode, envFilter, tierFilter) to (selectedComp?.id to inspectedOverlayChampion?.first),
-                                transitionSpec = {
-                                    fadeIn(tween(150)) togetherWith fadeOut(tween(110))
-                                },
-                                label = "overlayCompsFilterTransition"
-                            ) { (filterKey, _) ->
-                                val (activeMode, activeEnv, _) = filterKey
-                                val activeOverlayChamp = inspectedOverlayChampion
-                                if (activeOverlayChamp != null) {
-                                    val profile = remember(activeOverlayChamp, envFilter, allChampions, mergedAllComps, allItems) {
-                                        resolveChampionDetailProfile(
-                                            championName = activeOverlayChamp.first,
-                                            environment = envFilter,
-                                            champions = allChampions,
-                                            comps = mergedAllComps.filter { it.environment == envFilter },
-                                            items = allItems,
-                                            fallbackCost = activeOverlayChamp.second
-                                        )
-                                    }
+                            val activeMode = browseMode
+                            val activeEnv = envFilter
+                            val activeOverlayChamp = inspectedOverlayChampion
+                            if (activeOverlayChamp != null) {
+                                val profile = remember(activeOverlayChamp, envFilter, allChampions, envAllComps, allItems) {
+                                    resolveChampionDetailProfile(
+                                        championName = activeOverlayChamp.first,
+                                        environment = envFilter,
+                                        champions = allChampions,
+                                        comps = envAllComps,
+                                        items = allItems,
+                                        fallbackCost = activeOverlayChamp.second
+                                    )
+                                }
                                     val paneHeightModifier = if (effectiveFixedHeightDp != null) {
                                         Modifier.fillMaxHeight()
                                     } else {
@@ -2159,7 +2180,7 @@ private fun OverlayDrawerContent(
                                         displayedByTier.forEach { (tier, tierComps) ->
                                             val isTierOpen = sessionState.hasActiveArmyFilters || expandedOverlayTiers.contains(tier)
                                             item(
-                                                key = "overlay_tier_header_${activeMode}_${activeEnv}_${tier.name}",
+                                                key = "overlay_tier_header_${tier.name}",
                                                 contentType = "overlay_tier_header"
                                             ) {
                                                 OverlayTierSubHeader(
@@ -2168,12 +2189,7 @@ private fun OverlayDrawerContent(
                                                     expanded = isTierOpen,
                                                     onClick = {
                                                         sessionState.toggleTierExpanded(tier)
-                                                    },
-                                                    modifier = Modifier.animateItem(
-                                                        fadeInSpec = tween(180),
-                                                        fadeOutSpec = tween(120),
-                                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                                    )
+                                                    }
                                                 )
                                             }
                                             if (isTierOpen) {
@@ -2185,13 +2201,7 @@ private fun OverlayDrawerContent(
                                                         contentType = { "overlay_comp_row" }
                                                     ) { rowComps ->
                                                         Row(
-                                                            modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .animateItem(
-                                                                    fadeInSpec = tween(180),
-                                                                    fadeOutSpec = tween(130),
-                                                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                                                ),
+                                                            modifier = Modifier.fillMaxWidth(),
                                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                                                         ) {
                                                             rowComps.forEach { comp ->
@@ -2238,12 +2248,7 @@ private fun OverlayDrawerContent(
                                                                 sessionState.inspectChampion(unitName, cost)
                                                             },
                                                             onCopyCode = { onCopyCompCode(comp) },
-                                                            onToggleFavorite = { onToggleFavorite(comp) },
-                                                            modifier = Modifier.animateItem(
-                                                                fadeInSpec = tween(180),
-                                                                fadeOutSpec = tween(130),
-                                                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                                            )
+                                                            onToggleFavorite = { onToggleFavorite(comp) }
                                                         )
                                                     }
                                                 }
@@ -2251,7 +2256,6 @@ private fun OverlayDrawerContent(
                                         }
                                     }
                                 }
-                            }
                         }
 
                         AnimatedVisibility(visible = !copyBannerMessage.isNullOrBlank()) {

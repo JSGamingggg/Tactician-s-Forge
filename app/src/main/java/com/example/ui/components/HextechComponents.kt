@@ -70,19 +70,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 fun environmentSlideTransitionSpec(): AnimatedContentTransitionScope<TftEnvironment>.() -> ContentTransform = {
-    val toPbe = targetState == TftEnvironment.PBE
-    (fadeIn(tween(220)) + slideInHorizontally(
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        )
-    ) { fullWidth ->
-        val delta = (fullWidth / 14).coerceIn(14, 36)
-        if (toPbe) delta else -delta
-    }) togetherWith (fadeOut(tween(150)) + slideOutHorizontally(tween(150)) { fullWidth ->
-        val delta = (fullWidth / 14).coerceIn(14, 36)
-        if (toPbe) -delta else delta
-    })
+    fadeIn(tween(90)) togetherWith fadeOut(tween(60))
 }
 
 @Composable
@@ -96,7 +84,7 @@ fun EnvironmentToggleBar(
     val hextech = LocalHextechColors.current
     val activeAccent by animateColorAsState(
         targetValue = if (selected == TftEnvironment.LIVE) hextech.liveBadge else hextech.pbeBadge,
-        animationSpec = tween(240),
+        animationSpec = tween(110),
         label = "envIndicatorColor"
     )
 
@@ -117,7 +105,7 @@ fun EnvironmentToggleBar(
                 targetValue = if (selected == TftEnvironment.LIVE) 0.dp else segmentWidth + segmentGap,
                 animationSpec = spring(
                     dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
+                    stiffness = Spring.StiffnessHigh
                 ),
                 label = "envPillSlide"
             )
@@ -153,12 +141,12 @@ fun EnvironmentToggleBar(
                     val indicatorColor = if (env == TftEnvironment.LIVE) hextech.liveBadge else hextech.pbeBadge
                     val titleColor by animateColorAsState(
                         targetValue = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                        animationSpec = tween(200),
+                        animationSpec = tween(90),
                         label = "envTitleColor"
                     )
                     val subtitleColor by animateColorAsState(
                         targetValue = if (isSelected) indicatorColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                        animationSpec = tween(200),
+                        animationSpec = tween(90),
                         label = "envSubtitleColor"
                     )
                     Box(

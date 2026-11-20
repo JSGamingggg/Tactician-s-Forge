@@ -331,23 +331,17 @@ fun ChampionTierListScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
         item {
-            AnimatedContent(
-                targetState = environment,
-                transitionSpec = environmentSlideTransitionSpec(),
-                label = "tierListHeaderEnvTransition"
-            ) { activeEnv ->
-                Column {
-                    Text(
-                        text = "${activeSubTab.label} Tier List (${activeEnv.label})",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "${if (activeEnv == TftEnvironment.LIVE) liveVersionInfo?.liveSetName ?: activeEnv.setName else liveVersionInfo?.pbeSetName ?: activeEnv.setName} • Champions, item recipes & augments.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            Column {
+                Text(
+                    text = "${activeSubTab.label} Tier List (${environment.label})",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "${if (environment == TftEnvironment.LIVE) liveVersionInfo?.liveSetName ?: environment.setName else liveVersionInfo?.pbeSetName ?: environment.setName} • Champions, item recipes & augments.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 

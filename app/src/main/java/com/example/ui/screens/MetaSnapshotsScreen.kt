@@ -407,7 +407,7 @@ fun MetaSnapshotsScreen(
                     }
 
                     if (compsByTier.isEmpty()) {
-                        item(key = "empty_comps_${environment.name}", contentType = "empty_state") {
+                        item(key = "empty_comps", contentType = "empty_state") {
                             val awaitingInitialSync = !showFavoritesOnly && comps.isEmpty()
                             HextechEmptyState(
                                 icon = Icons.Default.AutoAwesome,
@@ -433,16 +433,11 @@ fun MetaSnapshotsScreen(
                                     }
                                 } else {
                                     null
-                                },
-                                modifier = Modifier.animateItem(
-                                    fadeInSpec = tween(220),
-                                    fadeOutSpec = tween(160),
-                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                                )
+                                }
                             )
                         }
                     } else {
-                        item(key = "tier_summary_controls_${environment.name}", contentType = "tier_controls") {
+                        item(key = "tier_summary_controls", contentType = "tier_controls") {
                             val anyTierOpen = compsByTier.any { (tier, _) -> expandedTierNames.contains(tier.name) }
                             val hextech = LocalHextechColors.current
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -527,7 +522,7 @@ fun MetaSnapshotsScreen(
                         compsByTier.forEach { (tier, tierComps) ->
                             val isTierExpanded = expandedTierNames.contains(tier.name)
                             item(
-                                key = "tier_header_${environment.name}_${tier.name}",
+                                key = "tier_header_${tier.name}",
                                 contentType = "tier_header"
                             ) {
                                 TierSubHeaderCard(

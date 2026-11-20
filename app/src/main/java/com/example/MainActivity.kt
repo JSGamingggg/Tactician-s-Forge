@@ -333,16 +333,17 @@ private fun AuthenticatedOrGuestWorkspace(
 
 
     val themeMode by mainViewModel.themeMode.collectAsStateWithLifecycle()
-    val environment by mainViewModel.selectedEnvironment.collectAsStateWithLifecycle()
-    val metaComps by mainViewModel.metaComps.collectAsStateWithLifecycle()
-    val championTiers by mainViewModel.championTiers.collectAsStateWithLifecycle()
-    val itemTiers by mainViewModel.itemTiers.collectAsStateWithLifecycle()
-    val augmentTiers by mainViewModel.augmentTiers.collectAsStateWithLifecycle()
-    val patchFeed by mainViewModel.patchFeed.collectAsStateWithLifecycle()
+    val activeEnvSnapshot by mainViewModel.activeEnvSnapshot.collectAsStateWithLifecycle()
+    val environment = activeEnvSnapshot.environment
+    val metaComps = activeEnvSnapshot.comps
+    val championTiers = activeEnvSnapshot.champions
+    val itemTiers = activeEnvSnapshot.items
+    val augmentTiers = activeEnvSnapshot.augments
+    val patchFeed = activeEnvSnapshot.patches
+    val offlineCacheStatus = activeEnvSnapshot.cacheStatus
     val favoritesState by mainViewModel.favoritesState.collectAsStateWithLifecycle()
     val preferences by mainViewModel.preferencesState.collectAsStateWithLifecycle()
     val liveVersionInfo by mainViewModel.liveVersionInfo.collectAsStateWithLifecycle()
-    val offlineCacheStatus by mainViewModel.offlineCacheStatus.collectAsStateWithLifecycle()
     val isRefreshingVersions by mainViewModel.isRefreshingVersions.collectAsStateWithLifecycle()
     val snackbarMessage by mainViewModel.snackbarMessage.collectAsStateWithLifecycle()
     val copiedCompId by mainViewModel.copiedCompId.collectAsStateWithLifecycle()

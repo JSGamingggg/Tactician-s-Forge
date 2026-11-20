@@ -431,7 +431,9 @@ class TftAcademyCompsScraper(
                             expectedSetNumber = targetSetNum
                         )
                     ) {
-                        comp
+                        val normalizedExisting = com.example.data.teamplanner.TftTeamPlannerCodeEncoder
+                            .normalizeCodeForTarget(comp.teamPlannerCode, targetEnvironment, targetSetNum)
+                        if (normalizedExisting != comp.teamPlannerCode) comp.copy(teamPlannerCode = normalizedExisting) else comp
                     } else {
                         val slugFromUrl = comp.sourceUrl.substringAfterLast('/').takeIf {
                             it.isNotBlank() && !it.equals("comps", true) && !it.equals("set$targetSetNum", true)
@@ -442,7 +444,8 @@ class TftAcademyCompsScraper(
                             compId = comp.id
                         )
                         val resolvedCode = when {
-                            !directCode.isNullOrBlank() -> directCode
+                            !directCode.isNullOrBlank() -> com.example.data.teamplanner.TftTeamPlannerCodeEncoder
+                                .normalizeCodeForTarget(directCode, targetEnvironment, targetSetNum)
                             siteBundle.siteCatalog != null -> {
                                 val encoded = com.example.data.teamplanner.TftTeamPlannerCodeEncoder
                                     .encodeCompWithCatalog(comp, siteBundle.siteCatalog)
@@ -452,6 +455,16 @@ class TftAcademyCompsScraper(
                         }
                         if (resolvedCode.isNotBlank()) comp.copy(teamPlannerCode = resolvedCode) else comp
                     }
+                }
+            }
+        } else {
+            enriched = enriched.map { comp ->
+                if (comp.teamPlannerCode.isNotBlank()) {
+                    val normalizedExisting = com.example.data.teamplanner.TftTeamPlannerCodeEncoder
+                        .normalizeCodeForTarget(comp.teamPlannerCode, targetEnvironment, targetSetNum)
+                    if (normalizedExisting != comp.teamPlannerCode) comp.copy(teamPlannerCode = normalizedExisting) else comp
+                } else {
+                    comp
                 }
             }
         }
@@ -492,11 +505,21 @@ class TftAcademyCompsScraper(
                 val preservedSourceUrl = comp.sourceUrl
                     .takeIf { it.contains("tftacademy.com", ignoreCase = true) }
                     ?: envSourceUrl
+                val normalizedTeamCode = if (comp.teamPlannerCode.isNotBlank()) {
+                    com.example.data.teamplanner.TftTeamPlannerCodeEncoder.normalizeCodeForTarget(
+                        rawCode = comp.teamPlannerCode,
+                        environment = targetEnv,
+                        targetSetNum = expectedSetNumber ?: if (targetEnv == TftEnvironment.PBE) 19 else 18
+                    )
+                } else {
+                    ""
+                }
                 comp.copy(
                     environment = targetEnv,
                     patchTag = patchTag,
                     setName = resolvedSetName,
-                    sourceUrl = preservedSourceUrl
+                    sourceUrl = preservedSourceUrl,
+                    teamPlannerCode = normalizedTeamCode
                 )
             }
     }
@@ -1130,7 +1153,17 @@ class TftAcademyCompsScraper(
                             val rawTeamCode = extractEmbeddedTeamPlannerCode(
                                 node = node,
                                 expectedSetNumber = expectedSetNum
-                            )
+                            ).let { code ->
+                                if (code.isNotBlank()) {
+                                    com.example.data.teamplanner.TftTeamPlannerCodeEncoder.normalizeCodeForTarget(
+                                        rawCode = code,
+                                        environment = targetEnv,
+                                        targetSetNum = expectedSetNum
+                                    )
+                                } else {
+                                    ""
+                                }
+                            }
 
                             out.add(
                                 MetaComp(
@@ -1366,6 +1399,13 @@ class TftAcademyCompsScraper(
             val domExpectedSetNum = extractSetNumber(cardSet) ?: if (targetEnv == TftEnvironment.PBE) 19 else 18
             val domTeamCode = com.example.data.teamplanner.TftTeamPlannerCodeEncoder
                 .extractFirstValidV02Code(blockHtml, expectedSetNumber = domExpectedSetNum)
+                ?.let { code ->
+                    com.example.data.teamplanner.TftTeamPlannerCodeEncoder.normalizeCodeForTarget(
+                        rawCode = code,
+                        environment = targetEnv,
+                        targetSetNum = domExpectedSetNum
+                    )
+                }
                 .orEmpty()
             comps.add(
                 MetaComp(

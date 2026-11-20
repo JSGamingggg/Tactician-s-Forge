@@ -79,10 +79,10 @@ object TftAcademySiteCodeExtractor {
         setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
     )
     private val EMBEDDED_V02_REGEX = Regex(
-        """0[2-9][0-9a-fA-F]{30}(?:TFTSet|TFT)[A-Za-z0-9_-]+"""
+        """0[2-9][0-9a-fA-F]{30}(?:TFTSet[A-Za-z0-9_-]+|TFT[A-Za-z0-9_-]+|Set\d+[A-Za-z0-9_-]*|None)"""
     )
     private val SET_SUFFIX_REGEX = Regex(
-        """["'](TFTSet\d+[A-Za-z0-9_-]*)["']"""
+        """["']((?:TFTSet|Set)\d+[A-Za-z0-9_-]*|None)["']"""
     )
     private val JS_DIRECT_CODE_MAP_ENTRY_REGEX = Regex(
         """["']?((?:TFT|DA|PT)\d{2}_[A-Za-z0-9_]+|DA_[A-Za-z0-9_]+(?:18|19))["']?\s*:\s*(?:["']([0-9a-fA-F]{2,3})["']|0x([0-9a-fA-F]{2,3})\b|(\d{2,4})\b)"""

@@ -35,6 +35,7 @@ import com.example.update.GitHubReleaseInfo
 import com.google.firebase.firestore.FirebaseFirestoreException
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,6 +56,16 @@ sealed interface UiState<out T> {
     data class Error(val message: String) : UiState<Nothing>
 }
 
+data class EnvironmentSnapshot(
+    val environment: TftEnvironment,
+    val comps: List<MetaComp>,
+    val champions: List<ChampionTierEntry>,
+    val items: List<ItemTierEntry>,
+    val augments: List<AugmentTierEntry>,
+    val patches: List<PatchUpdateRecord>,
+    val cacheStatus: OfflineCacheStatus
+)
+
 class MainViewModel(
     private val currentUserId: String?, // null = Guest Mode (local-only, 0 Firestore queries)
     private val metaRepository: MetaRepository,
@@ -65,6 +76,9 @@ class MainViewModel(
 ) : ViewModel() {
 
     private var activeSyncJob: Job? = null
+    private var envPersistJob: Job? = null
+    private var hasUserExplicitlySelectedEnv = false
+    private val prefetchedEnvsInSession = mutableSetOf<TftEnvironment>()
 
     private val initialBundle = metaRepository.peekOfflineBundle()
 
@@ -115,7 +129,12 @@ class MainViewModel(
             localStore.preferencesFlow
                 .onEach { prefs ->
                     _themeMode.value = ThemeMode.fromRaw(prefs.themeMode)
-                    _selectedEnvironment.value = TftEnvironment.fromRaw(prefs.selectedEnvironment)
+                    if (!hasUserExplicitlySelectedEnv) {
+                        val persistedEnv = TftEnvironment.fromRaw(prefs.selectedEnvironment)
+                        if (_selectedEnvironment.value != persistedEnv) {
+                            _selectedEnvironment.value = persistedEnv
+                        }
+                    }
                 }
                 .stateIn(
                     scope = viewModelScope,
@@ -139,7 +158,12 @@ class MainViewModel(
             }
                 .onEach { prefs ->
                     _themeMode.value = ThemeMode.fromRaw(prefs.themeMode)
-                    _selectedEnvironment.value = TftEnvironment.fromRaw(prefs.selectedEnvironment)
+                    if (!hasUserExplicitlySelectedEnv) {
+                        val persistedEnv = TftEnvironment.fromRaw(prefs.selectedEnvironment)
+                        if (_selectedEnvironment.value != persistedEnv) {
+                            _selectedEnvironment.value = persistedEnv
+                        }
+                    }
                 }
                 .stateIn(
                     scope = viewModelScope,
@@ -217,6 +241,40 @@ class MainViewModel(
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
         initialValue = metaRepository.getPatches(TftEnvironment.LIVE, initialBundle)
     )
+
+    val activeEnvSnapshot: StateFlow<EnvironmentSnapshot> =
+        combine(
+            _selectedEnvironment,
+            _metaBundle,
+            _isOfflineFallback,
+            PrefetchTelemetryStore.status
+        ) { env, bundle, offlineFallback, prefetchStatus ->
+            EnvironmentSnapshot(
+                environment = env,
+                comps = metaRepository.getComps(env, bundle),
+                champions = metaRepository.getChampions(env, bundle),
+                items = metaRepository.getItems(env, bundle),
+                augments = metaRepository.getAugments(env, bundle),
+                patches = metaRepository.getPatches(env, bundle),
+                cacheStatus = bundle.toCacheStatus(isOfflineFallback = offlineFallback, environment = env).copy(
+                    prefetchedAssetsCount = prefetchStatus.totalReadyCount,
+                    totalPrefetchAssets = prefetchStatus.totalPlannedCount,
+                    isPrefetchingAssets = prefetchStatus.isRunning
+                )
+            )
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = EnvironmentSnapshot(
+                environment = TftEnvironment.LIVE,
+                comps = metaRepository.getComps(TftEnvironment.LIVE, initialBundle),
+                champions = metaRepository.getChampions(TftEnvironment.LIVE, initialBundle),
+                items = metaRepository.getItems(TftEnvironment.LIVE, initialBundle),
+                augments = metaRepository.getAugments(TftEnvironment.LIVE, initialBundle),
+                patches = metaRepository.getPatches(TftEnvironment.LIVE, initialBundle),
+                cacheStatus = initialBundle.toCacheStatus(environment = TftEnvironment.LIVE)
+            )
+        )
 
     init {
         viewModelScope.launch {
@@ -381,12 +439,14 @@ class MainViewModel(
                         sync.newPbePatchDetected ||
                         sync.compsUpdatedDetected ||
                         sync.newlyAddedComps.isNotEmpty()
-                    MetaPrefetchScheduler.enqueuePrefetch(
-                        context = appContext,
-                        scope = if (hasDelta) PrefetchScope.DELTA_SYNC else PrefetchScope.ALL,
-                        refreshSnapshot = false,
-                        replaceExisting = hasDelta
-                    )
+                    viewModelScope.launch(Dispatchers.IO) {
+                        MetaPrefetchScheduler.enqueuePrefetch(
+                            context = appContext,
+                            scope = if (hasDelta) PrefetchScope.DELTA_SYNC else PrefetchScope.ALL,
+                            refreshSnapshot = false,
+                            replaceExisting = hasDelta
+                        )
+                    }
                 }
 
                 if (notifyIfUpdated) {
@@ -416,17 +476,21 @@ class MainViewModel(
     }
 
     fun setEnvironment(env: TftEnvironment) {
+        hasUserExplicitlySelectedEnv = true
+        if (_selectedEnvironment.value == env) return
         _selectedEnvironment.value = env
-        appContext?.let { ctx ->
-            MetaPrefetchScheduler.enqueuePrefetch(
-                context = ctx,
-                scope = if (env == TftEnvironment.PBE) PrefetchScope.PBE else PrefetchScope.LIVE,
-                refreshSnapshot = false,
-                warmMemoryCount = 24,
-                replaceExisting = false
-            )
-        }
-        viewModelScope.launch {
+        val shouldPrefetch = appContext != null && prefetchedEnvsInSession.add(env)
+        envPersistJob?.cancel()
+        envPersistJob = viewModelScope.launch(Dispatchers.IO) {
+            if (shouldPrefetch && appContext != null) {
+                MetaPrefetchScheduler.enqueuePrefetch(
+                    context = appContext,
+                    scope = if (env == TftEnvironment.PBE) PrefetchScope.PBE else PrefetchScope.LIVE,
+                    refreshSnapshot = false,
+                    warmMemoryCount = 24,
+                    replaceExisting = false
+                )
+            }
             localStore.updatePreferences(environment = env)
             if (!currentUserId.isNullOrBlank()) {
                 val p = preferencesState.value

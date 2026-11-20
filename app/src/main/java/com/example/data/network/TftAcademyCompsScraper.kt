@@ -402,7 +402,61 @@ class TftAcademyCompsScraper(
             }
         }
 
-        val sorted = combined.sortedWith(
+        var enriched = combined
+        val targetSetNum = detectedSet?.first ?: if (targetEnvironment == TftEnvironment.PBE) 19 else 18
+        if (enriched.any {
+                !com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(
+                    it.teamPlannerCode,
+                    expectedSetNumber = targetSetNum
+                )
+            }
+        ) {
+            val siteBundle = com.example.data.teamplanner.TftAcademySiteCodeExtractor.extractFromPageAndSite(
+                pageUrl = compUrlForEnvironment(targetEnvironment),
+                pageHtml = html,
+                expectedSetNumber = targetSetNum,
+                client = client,
+                includeRemoteAssets = includeRemoteBundles
+            )
+            siteBundle.siteCatalog?.let { siteCatalog ->
+                com.example.data.teamplanner.TftTeamPlannerCodeEncoder.cacheVerifiedCatalogFromSite(
+                    environment = targetEnvironment,
+                    catalog = siteCatalog
+                )
+            }
+            if (!siteBundle.isEmpty()) {
+                enriched = enriched.map { comp ->
+                    if (com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(
+                            comp.teamPlannerCode,
+                            expectedSetNumber = targetSetNum
+                        )
+                    ) {
+                        comp
+                    } else {
+                        val slugFromUrl = comp.sourceUrl.substringAfterLast('/').takeIf {
+                            it.isNotBlank() && !it.equals("comps", true) && !it.equals("set$targetSetNum", true)
+                        }
+                        val directCode = siteBundle.lookupDirectCode(
+                            compSlug = slugFromUrl,
+                            title = comp.title,
+                            compId = comp.id
+                        )
+                        val resolvedCode = when {
+                            !directCode.isNullOrBlank() -> directCode
+                            siteBundle.siteCatalog != null -> {
+                                val encoded = com.example.data.teamplanner.TftTeamPlannerCodeEncoder
+                                    .encodeCompWithCatalog(comp, siteBundle.siteCatalog)
+                                if (encoded.isSuccess) encoded.code else ""
+                            }
+                            else -> ""
+                        }
+                        if (resolvedCode.isNotBlank()) comp.copy(teamPlannerCode = resolvedCode) else comp
+                    }
+                }
+            }
+        }
+
+        val sorted = enriched.sortedWith(
             compareBy<MetaComp> { it.tier.sortOrder }
                 .thenBy { it.avgPlacement }
                 .thenBy { it.title.lowercase(Locale.US) }
@@ -435,11 +489,14 @@ class TftAcademyCompsScraper(
                 } else {
                     comp.setName
                 }
+                val preservedSourceUrl = comp.sourceUrl
+                    .takeIf { it.contains("tftacademy.com", ignoreCase = true) }
+                    ?: envSourceUrl
                 comp.copy(
                     environment = targetEnv,
                     patchTag = patchTag,
                     setName = resolvedSetName,
-                    sourceUrl = envSourceUrl
+                    sourceUrl = preservedSourceUrl
                 )
             }
     }

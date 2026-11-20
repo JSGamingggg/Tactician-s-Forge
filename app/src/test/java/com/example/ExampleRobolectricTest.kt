@@ -979,7 +979,8 @@ class ExampleRobolectricTest {
         val scraper = TftAcademyCompsScraper(mockClient)
         val result = scraper.fetchPbeTeamComps("19.1-PBE")
 
-        assertEquals(listOf(TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL), requestedUrls)
+        assertTrue(requestedUrls.first() == TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL)
+        assertTrue(requestedUrls.all { it.startsWith(TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL) })
         assertTrue(result.fetchedFromNetwork)
         assertEquals("Set 19: Prismatic Tour (PBE)", result.detectedPbeSet)
         assertEquals(1, result.pbeComps.size)
@@ -988,7 +989,7 @@ class ExampleRobolectricTest {
         assertEquals("Prismatic Tour Jinx", comp.title)
         assertEquals(TierRank.S, comp.tier)
         assertEquals(TftEnvironment.PBE, comp.environment)
-        assertEquals(TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL, comp.sourceUrl)
+        assertTrue(comp.sourceUrl.startsWith(TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL))
         assertEquals("Jinx", comp.carryName)
         assertEquals("Set 19", comp.setName)
         assertTrue(comp.levelingGuide.contains("Stage 4: Roll on 8"))
@@ -1018,7 +1019,7 @@ class ExampleRobolectricTest {
             .build()
         val apiResult = TftAcademyCompsScraper(apiClient).fetchPbeTeamComps("19.1-PBE")
         assertEquals(1, apiResult.pbeComps.size)
-        assertEquals(TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL, apiResult.pbeComps.first().sourceUrl)
+        assertTrue(apiResult.pbeComps.first().sourceUrl.startsWith(TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL))
     }
 
     @Test
@@ -3081,6 +3082,148 @@ class ExampleRobolectricTest {
         }
         org.junit.Assert.assertFalse(unavailable.isSuccess)
         org.junit.Assert.assertFalse(unavailable.code.startsWith("01"))
+    }
+
+    @Test
+    fun `tftacademy site code extractor decodes sveltekit data json and js chunks and prioritizes site copy code`() {
+        val exactSiteCode = "024b04b14b24b34b44b54b6000000000TFTSet19"
+
+        // 1. SvelteKit `/__data.json` devalue unflattening extracts exact site copy code per comp
+        val devalueDataJson = """
+            {
+              "type": "data",
+              "nodes": [
+                {
+                  "type": "data",
+                  "data": [
+                    {"guides": 1},
+                    [2],
+                    {"title": 3, "compSlug": 4, "teamCode": 5},
+                    "Hyperpop Reroll",
+                    "set19-hyperpop-reroll",
+                    "$exactSiteCode"
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val decodedNodes = com.example.data.teamplanner.TftAcademySiteCodeExtractor.decodeSvelteKitDataJsonNodes(devalueDataJson)
+        assertEquals(1, decodedNodes.size)
+        val extractedMap = LinkedHashMap<String, String>()
+        com.example.data.teamplanner.TftAcademySiteCodeExtractor.extractDirectCompCodesFromJson(
+            node = decodedNodes.first(),
+            expectedSetNumber = 19,
+            out = extractedMap
+        )
+        assertEquals(exactSiteCode, extractedMap["hyperpopreroll"])
+        assertEquals(exactSiteCode, extractedMap["set19hyperpopreroll"])
+
+        // 2. Minified SvelteKit `_app/immutable/chunks/*.js` champion map & object array extraction
+        val minifiedJsChunk = """
+            const SET_SUFFIX="TFTSet19";
+            const PLANNER_MAP={TFT19_Ziggs:"4b0",TFT19_Lulu:"4b1",TFT19_Kobuko:"4b2",TFT19_Tristana:"4b3",TFT19_Seraphine_Indie:"4b4",TFT19_Swain:"4b5",TFT19_Teemo:"4b6"};
+        """.trimIndent()
+        val jsCatalog = com.example.data.teamplanner.TftAcademySiteCodeExtractor.extractCatalogFromJsText(
+            jsText = minifiedJsChunk,
+            expectedSetNumber = 19,
+            detectedSetSuffix = "TFTSet19"
+        )
+        assertNotNull(jsCatalog)
+        val pbeComp = MetaComp(
+            id = "tftacademy_pbe_hyperpop_reroll",
+            title = "Hyperpop Reroll",
+            tier = TierRank.S,
+            environment = TftEnvironment.PBE,
+            setName = "Set 19",
+            patchTag = "19.1-PBE",
+            playstyle = "1-Cost Reroll",
+            avgPlacement = 3.45,
+            top4Rate = 62.0,
+            winRate = 18.0,
+            pickRate = 4.2,
+            trendDelta = "+0.3",
+            isTrending = true,
+            carryName = "Ziggs",
+            coreUnits = listOf("Ziggs", "Lulu", "Kobuko", "Tristana", "Seraphine", "Swain", "Teemo"),
+            traits = listOf("5 Hyperpop"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Slow roll at 5",
+            notes = "",
+            sourceUrl = "https://tftacademy.com/tierlist/comps/set19/set19-hyperpop-reroll"
+        )
+        val encodedFromJs = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(pbeComp, jsCatalog!!)
+        assertTrue(encodedFromJs.isSuccess)
+        assertEquals(exactSiteCode, encodedFromJs.code)
+
+        // 3. End-to-end scraper + site-first priority: pulls exact code from `/tierlist/comps/set19/__data.json`
+        //    and preserves each comp's dedicated guide sourceUrl in enforceSetAlignment
+        val apiPayload = """
+            {
+              "guides": [
+                {
+                  "title": "Hyperpop Reroll",
+                  "compSlug": "set19-hyperpop-reroll",
+                  "tier": "S",
+                  "style": "1-Cost Reroll",
+                  "set": 19,
+                  "isPublic": true,
+                  "finalComp": [
+                    {"apiName": "TFT19_Kobuko", "boardIndex": 2},
+                    {"apiName": "TFT19_Ziggs", "boardIndex": 21},
+                    {"apiName": "TFT19_Lulu", "boardIndex": 22},
+                    {"apiName": "TFT19_Tristana", "boardIndex": 23},
+                    {"apiName": "TFT19_Seraphine_Indie", "boardIndex": 24},
+                    {"apiName": "TFT19_Swain", "boardIndex": 3},
+                    {"apiName": "TFT19_Teemo", "boardIndex": 25}
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val envelope = org.json.JSONObject().apply {
+            put("status", 200)
+            put("body", apiPayload)
+        }.toString()
+        val pageHtml = """
+            <html>
+              <head>
+                <link rel="modulepreload" href="/_app/immutable/chunks/planner.abc123.js">
+              </head>
+              <body>
+                <h1>Set 19 Tier List</h1>
+                <script type="application/json" data-sveltekit-fetched data-url="/api/tierlist/comps?set=19">$envelope</script>
+              </body>
+            </html>
+        """.trimIndent()
+        val siteClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val (code, bodyStr) = when {
+                    url.endsWith("/tierlist/comps/set19/__data.json") -> 200 to devalueDataJson
+                    url.endsWith("/tierlist/comps/set19") -> 200 to pageHtml
+                    url.contains("planner.abc123.js") -> 200 to minifiedJsChunk
+                    else -> 404 to "{}"
+                }
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(code)
+                    .message(if (code == 200) "OK" else "Not Found")
+                    .body(okhttp3.ResponseBody.create(null, bodyStr))
+                    .build()
+            }
+            .build()
+
+        val scraper = TftAcademyCompsScraper(siteClient)
+        val fetched = scraper.fetchPbeTeamComps("19.1-PBE", defaultPbeSetNumber = 19)
+        assertEquals(1, fetched.pbeComps.size)
+        val scrapedHyperpop = fetched.pbeComps.first()
+        assertEquals(exactSiteCode, scrapedHyperpop.teamPlannerCode)
+        assertEquals(
+            "https://tftacademy.com/tierlist/comps/set19/set19-hyperpop-reroll",
+            scrapedHyperpop.sourceUrl
+        )
     }
 
     @Test

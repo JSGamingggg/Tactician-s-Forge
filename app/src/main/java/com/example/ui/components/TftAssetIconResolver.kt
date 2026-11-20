@@ -328,7 +328,7 @@ object TftAssetIconResolver {
 
     fun getChampionTraits(nameOrId: String, environment: TftEnvironment? = null): List<String> {
         val norm = normalizeLookupKey(nameOrId)
-        val cleanNorm = normalizeLookupKey(formatRiotAssetLabel(nameOrId))
+        val cleanNorm = normalizeLookupKey(formatChampionDisplayName(nameOrId))
         if (environment == TftEnvironment.PBE) {
             (pbeChampionTraits[norm] ?: pbeChampionTraits[cleanNorm])?.let { return it }
         }
@@ -341,7 +341,7 @@ object TftAssetIconResolver {
 
     fun getChampionCost(nameOrId: String, environment: TftEnvironment? = null): Int? {
         val norm = normalizeLookupKey(nameOrId)
-        val cleanNorm = normalizeLookupKey(formatRiotAssetLabel(nameOrId))
+        val cleanNorm = normalizeLookupKey(formatChampionDisplayName(nameOrId))
         if (environment == TftEnvironment.PBE) {
             (pbeChampionCosts[norm] ?: pbeChampionCosts[cleanNorm])?.let { return it }
         }
@@ -385,7 +385,7 @@ object TftAssetIconResolver {
         if (raw.isEmpty()) return null
 
         val norm = normalizeLookupKey(raw)
-        val cleanName = formatRiotAssetLabel(raw)
+        val cleanName = formatChampionDisplayName(raw)
         val cleanNorm = normalizeLookupKey(cleanName)
 
         // 0. For PBE comps/champions, prefer verified Set 19 portraits first
@@ -442,7 +442,7 @@ object TftAssetIconResolver {
         if (raw.isEmpty()) return null
 
         val norm = normalizeLookupKey(raw)
-        val cleanName = formatRiotAssetLabel(raw)
+        val cleanName = formatChampionDisplayName(raw)
         val cleanNorm = normalizeLookupKey(cleanName)
         val baseCleanNorm = if (cleanName.contains("(")) {
             normalizeLookupKey(cleanName.substringBefore("(").trim())

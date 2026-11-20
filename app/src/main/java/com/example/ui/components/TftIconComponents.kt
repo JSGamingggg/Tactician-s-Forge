@@ -109,7 +109,11 @@ fun championMonogram(name: String): String {
 
 private val REGEX_PREFIX_TFT = Regex("^(?:DA|TFT\\d*)_(?:\\d+_)?(?:Item|Augment|Trait|Champion|Artifact|Component)?_?", RegexOption.IGNORE_CASE)
 private val REGEX_PREFIX_SET = Regex("^Set\\d+_", RegexOption.IGNORE_CASE)
-private val REGEX_SUFFIX_ROLE = Regex("_(?:AD|AP|Tank|Carry)$", RegexOption.IGNORE_CASE)
+private val REGEX_SUFFIX_ROLE = Regex("_(?:AD|AP|Tank|Carry|Base|Small|Indie|RisingStar|Superstar)$", RegexOption.IGNORE_CASE)
+private val REGEX_PRESERVE_COMPOUND_CHAMP = Regex(
+    "^(?:Akali_(?:KDA|TrueDamage)|Dr_Mundo|Lee_Sin|Miss_Fortune|Renata_Glasc|Twisted_Fate|Baron_Nashor|Master_Yi|Tahm_Kench|Xin_Zhao|Aurelion_Sol|Jarvan_IV)$",
+    RegexOption.IGNORE_CASE
+)
 private val REGEX_SUFFIX_SMALL = Regex("(Small)$")
 private val REGEX_SUFFIX_DIGITS = Regex("(\\D)\\d{2}$")
 private val REGEX_CAMEL = Regex("([a-z])([A-Z])")
@@ -124,7 +128,8 @@ private var formattedLabelCacheRevision: Int = -1
 
 /**
  * Formats raw Riot Data/API identifiers (e.g. "TFT18_Item_JeweledGauntlet",
- * "TFT18_Augment_ElderwoodCrest", "Set18_Elderwood") into readable display labels.
+ * "TFT19_Seraphine_Indie", "TFT18_Augment_ElderwoodCrest", "Set18_Elderwood")
+ * into readable display labels.
  */
 fun formatRiotAssetLabel(rawId: String): String {
     val trimmed = rawId.trim()
@@ -149,11 +154,15 @@ fun formatRiotAssetLabel(rawId: String): String {
         if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = trimmed
         return trimmed
     }
-    var stripped = trimmed
+    val withoutPrefixAndRole = trimmed
         .replace(REGEX_PREFIX_TFT, "")
         .replace(REGEX_PREFIX_SET, "")
         .replace(REGEX_SUFFIX_ROLE, "")
-        .substringAfterLast("_")
+    var stripped = if (REGEX_PRESERVE_COMPOUND_CHAMP.matches(withoutPrefixAndRole)) {
+        withoutPrefixAndRole.replace('_', ' ')
+    } else {
+        withoutPrefixAndRole.substringAfterLast("_")
+    }
         .replace(REGEX_SUFFIX_SMALL, "")
         .replace(REGEX_SUFFIX_DIGITS, "$1")
     if (stripped.startsWith("Emblem") && stripped.length > 6) {
@@ -192,6 +201,20 @@ fun formatRiotAssetLabel(rawId: String): String {
         formattedLabelCache[trimmed] = formatted
     }
     return formatted
+}
+
+/**
+ * Normalizes a champion unit identifier into its clean display name.
+ * Handles Set 19 Seraphine form IDs (`TFT19_Seraphine_Indie`, cached `"Indie"` unit slots,
+ * `"Seraphine Indie"`, `"Seraphine Rising Star"`, `"Seraphine Superstar"`) without affecting
+ * trait chips where `"Indie"` is a valid trait name.
+ */
+fun formatChampionDisplayName(rawId: String): String {
+    val label = formatRiotAssetLabel(rawId)
+    return when (label.lowercase()) {
+        "indie", "seraphine indie", "seraphine rising star", "seraphine superstar" -> "Seraphine"
+        else -> label
+    }
 }
 
 private val EXTERNAL_SOURCE_SENTENCE_REGEX = Regex(
@@ -261,12 +284,12 @@ fun TftChampionAvatar(
 ) {
     val context = LocalContext.current
     val rev = TftAssetIconResolver.catalogRevision
-    val cleanName = remember(name, rev) { formatRiotAssetLabel(name) }
-    val primaryUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
-        TftAssetIconResolver.resolveSquareChampionPortraitUrl(name, environment)
+    val cleanName = remember(name, rev) { formatChampionDisplayName(name) }
+    val primaryUrl = remember(cleanName, environment, TftAssetIconResolver.ddragonVersion, rev) {
+        TftAssetIconResolver.resolveSquareChampionPortraitUrl(cleanName, environment)
     }
-    val fallbackUrl = remember(name, environment, TftAssetIconResolver.ddragonVersion, rev) {
-        TftAssetIconResolver.resolveChampionIconUrl(name, environment)
+    val fallbackUrl = remember(cleanName, environment, TftAssetIconResolver.ddragonVersion, rev) {
+        TftAssetIconResolver.resolveChampionIconUrl(cleanName, environment)
     }
     var useFallbackUrl by remember(primaryUrl, fallbackUrl) { mutableStateOf(false) }
     val activeUrl = if (useFallbackUrl && !fallbackUrl.isNullOrBlank() && fallbackUrl != primaryUrl) {
@@ -419,7 +442,7 @@ fun TftChampionTile(
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val cleanName = remember(name) { formatRiotAssetLabel(name) }
+    val cleanName = remember(name) { formatChampionDisplayName(name) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier

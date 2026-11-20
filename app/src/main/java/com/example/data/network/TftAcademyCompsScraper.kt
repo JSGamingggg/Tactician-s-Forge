@@ -6,6 +6,7 @@ import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
 import okhttp3.CacheControl
 import okhttp3.OkHttpClient
@@ -950,7 +951,7 @@ class TftAcademyCompsScraper(
                                 .ifBlank { mainChampRaw }
                         )
                         val explicitCarry = if (explicitCarryRaw.isNotBlank()) {
-                            formatRiotAssetLabel(explicitCarryRaw)
+                            formatChampionDisplayName(explicitCarryRaw)
                         } else {
                             ""
                         }
@@ -1070,7 +1071,10 @@ class TftAcademyCompsScraper(
                                 node.optString("teamPlannerCode"),
                                 node.optString("team_planner_code"),
                                 node.optString("plannerCode"),
-                                node.optString("teamBuilderCode")
+                                node.optString("planner_code"),
+                                node.optString("teamBuilderCode"),
+                                node.optString("compCode"),
+                                node.optString("code")
                             ).firstOrNull {
                                 com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(it)
                             }?.trim().orEmpty()
@@ -1186,7 +1190,7 @@ class TftAcademyCompsScraper(
         return (0 until unitsArr.length().coerceAtMost(16)).mapNotNull { idx ->
             when (val u = unitsArr.opt(idx)) {
                 is String -> cleanText(u).takeIf { it.isNotBlank() }?.let { rawName ->
-                    val name = formatRiotAssetLabel(rawName)
+                    val name = formatChampionDisplayName(rawName)
                     val catalogCost = TftAssetIconResolver.getChampionCost(rawName, targetEnv)
                         ?: TftAssetIconResolver.getChampionCost(name, targetEnv)
                     ParsedJsonUnit(
@@ -1209,7 +1213,7 @@ class TftAcademyCompsScraper(
                             .ifBlank { u.optString("championId") }
                             .ifBlank { u.optString("id") }
                     ).takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                    val name = formatRiotAssetLabel(rawName)
+                    val name = formatChampionDisplayName(rawName)
                     val matchesMainChamp = mainChampName.isNotBlank() && name.equals(mainChampName, ignoreCase = true)
                     val catalogCost = TftAssetIconResolver.getChampionCost(rawName, targetEnv)
                         ?: TftAssetIconResolver.getChampionCost(name, targetEnv)

@@ -687,7 +687,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             }
             copyFeedbackClearJob?.cancel()
             copyFeedbackClearJob = serviceScope.launch {
-                delay(3000L)
+                delay(if (copyBannerIsErrorState.value) 4500L else 3000L)
                 copiedCompIdState.value = null
                 copyBannerMessageState.value = null
                 copyBannerIsErrorState.value = false
@@ -1806,7 +1806,7 @@ private fun OverlayDrawerContent(
                             ) {
                                 if (!inlineBrowseChips) {
                                     OverlayEnvChip(
-                                        label = "${envFilter.label} Comps ($envScopedCompsCount)",
+                                        label = "Comps ($envScopedCompsCount)",
                                         selected = browseMode == OverlayBrowseMode.ALL_COMPS,
                                         icon = Icons.AutoMirrored.Filled.FormatListBulleted,
                                         onClick = {
@@ -1814,7 +1814,7 @@ private fun OverlayDrawerContent(
                                         }
                                     )
                                     OverlayEnvChip(
-                                        label = "Favorites ($envScopedFavoritesCount)",
+                                        label = "Favs ($envScopedFavoritesCount)",
                                         selected = browseMode == OverlayBrowseMode.FAVORITES,
                                         icon = Icons.Filled.Star,
                                         onClick = {
@@ -1830,7 +1830,7 @@ private fun OverlayDrawerContent(
                                 }
                                 val activeFinderCount = sessionState.activeArmyFilterCount
                                 OverlayEnvChip(
-                                    label = if (activeFinderCount > 0) "Champs/Items ($activeFinderCount)" else "Champs/Items",
+                                    label = if (activeFinderCount > 0) "Find ($activeFinderCount)" else "Find",
                                     selected = sessionState.isArmyFinderOpen || activeFinderCount > 0,
                                     icon = Icons.Default.Search,
                                     accentColor = if (activeFinderCount > 0) BrightGold else ArcaneCyan

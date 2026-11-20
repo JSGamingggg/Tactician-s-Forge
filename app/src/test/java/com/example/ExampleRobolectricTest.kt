@@ -2721,5 +2721,139 @@ class ExampleRobolectricTest {
         assertEquals(340, posX)
         assertEquals(520, posY)
     }
+
+    @Test
+    fun `pbe set 19 team planner resolves codename keys object maps top level arrays endpoint fallbacks and indie seraphine alias`() {
+        val hyperpopComp = MetaComp(
+            id = "tftacademy_pbe_hyperpop_reroll",
+            environment = TftEnvironment.PBE,
+            title = "Hyperpop Reroll",
+            tier = TierRank.S,
+            playstyle = "1-Cost Reroll",
+            avgPlacement = 3.45,
+            top4Rate = 65.0,
+            winRate = 18.5,
+            pickRate = 9.0,
+            trendDelta = "Top Meta",
+            isTrending = true,
+            patchTag = "16.24 PBE",
+            carryName = "Ziggs",
+            traits = listOf("5 Hyperpop", "2 Arcanist", "2 Frontman"),
+            coreUnits = listOf("Kobuko", "Ziggs", "Lulu", "Tristana", "Indie", "Swain", "Teemo"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Ziggs", row = 3, col = 6, cost = 1, isCarry = true, items = listOf("Guinsoo's Rageblade")),
+                HexUnitPlacement("Kobuko", row = 0, col = 3, cost = 1, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Lulu", row = 3, col = 5, cost = 2, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Tristana", row = 3, col = 0, cost = 2, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Indie", row = 3, col = 2, cost = 2, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Swain", row = 0, col = 4, cost = 3, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Teemo", row = 3, col = 4, cost = 5, isCarry = false, items = emptyList())
+            ),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Slow roll at 5",
+            notes = "",
+            setName = "Set 19"
+        )
+
+        // 1. Codename set key with TFT19_* character_ids + Seraphine form variants (Indie base vs Superstar variant)
+        val codenameJson = """
+            {
+              "TFTSet18": [
+                {"character_id": "DA_18_Kobuko", "display_name": "Kobuko", "team_planner_code": 1001},
+                {"character_id": "DA_18_Teemo", "display_name": "Teemo", "team_planner_code": 1002}
+              ],
+              "TFTSetPrismatic": [
+                {"character_id": "TFT19_Ziggs", "display_name": "Ziggs", "team_planner_code": 1200},
+                {"character_id": "TFT19_Kobuko", "display_name": "Kobuko", "team_planner_code": 1201},
+                {"character_id": "TFT19_Lulu", "display_name": "Lulu", "team_planner_code": 1202},
+                {"character_id": "TFT19_Tristana", "display_name": "Tristana", "team_planner_code": 1203},
+                {"character_id": "TFT19_Seraphine_Superstar", "display_name": "Seraphine", "team_planner_code": 1299},
+                {"character_id": "TFT19_Seraphine_Indie", "display_name": "Seraphine", "team_planner_code": 1204},
+                {"character_id": "TFT19_Swain", "display_name": "Swain", "team_planner_code": 1205},
+                {"character_id": "TFT19_Teemo", "display_name": "Teemo", "team_planner_code": 1206}
+              ]
+            }
+        """.trimIndent()
+        val codenameCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(codenameJson)
+        assertNotNull(codenameCatalog)
+        val codenameResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(hyperpopComp, codenameCatalog!!)
+        assertTrue(codenameResult.isSuccess)
+        assertEquals("TFTSetPrismatic", codenameResult.setKey)
+        assertEquals(7, codenameResult.matchedChampions.size)
+        // Base Seraphine_Indie (1204 = 0x4b4) MUST be chosen over Superstar variant (1299 = 0x513)
+        assertTrue(codenameResult.code.contains("4b4"))
+        org.junit.Assert.assertFalse(codenameResult.code.contains("513"))
+
+        // 2. Object-map JSON structure keyed by character_id under pure numeric set key "19"
+        val mapStyleJson = """
+            {
+              "19": {
+                "TFT19_Ziggs": {"display_name": "Ziggs", "team_planner_code": "4b0"},
+                "TFT19_Kobuko": {"display_name": "Kobuko", "team_planner_code": "4b1"},
+                "TFT19_Seraphine_Indie": {"display_name": "Seraphine", "team_planner_code": "4b4"}
+              }
+            }
+        """.trimIndent()
+        val mapCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(mapStyleJson)
+        assertNotNull(mapCatalog)
+        val mapResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(hyperpopComp, mapCatalog!!)
+        assertTrue(mapResult.isSuccess)
+        assertEquals("TFTSet19", mapResult.setKey)
+        assertTrue(Regex("^02[0-9a-f]{30}TFTSet19$").matches(mapResult.code))
+
+        // 3. Network fallback: if primary pbe teamplanner JSON lacks TFTSet19, encoder continues to tftchampions.json array
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        val fallbackArrayJson = """
+            [
+              {"character_id": "TFT19_Ziggs", "display_name": "Ziggs", "team_planner_code": 1200},
+              {"character_id": "TFT19_Kobuko", "display_name": "Kobuko", "team_planner_code": 1201},
+              {"character_id": "TFT19_Lulu", "display_name": "Lulu", "team_planner_code": 1202},
+              {"character_id": "TFT19_Seraphine_Indie", "display_name": "Seraphine", "team_planner_code": 1204}
+            ]
+        """.trimIndent()
+        val fallbackClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val bodyStr = if (url.endsWith("tftchampions-teamplanner.json")) {
+                    """{"TFTSet18":[{"character_id":"DA_18_Kobuko","display_name":"Kobuko","team_planner_code":1001}]}"""
+                } else {
+                    fallbackArrayJson
+                }
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, bodyStr))
+                    .build()
+            }
+            .build()
+        val resolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, fallbackClient)
+        }
+        assertTrue(resolved.isSuccess)
+        assertEquals("TFTSet19", resolved.setKey)
+        assertTrue(resolved.code.startsWith("024b0"))
+        assertEquals(4, resolved.matchedChampions.size)
+    }
+
+    @Test
+    fun `set 19 seraphine indie and multi word champion ids format cleanly without altering indie trait`() {
+        assertEquals("Seraphine", com.example.ui.components.formatRiotAssetLabel("TFT19_Seraphine_Indie"))
+        assertEquals("Seraphine", com.example.ui.components.formatRiotAssetLabel("TFT19_Seraphine_RisingStar"))
+        assertEquals("Seraphine", com.example.ui.components.formatRiotAssetLabel("TFT19_Seraphine_Superstar"))
+        assertEquals("Akali True Damage", com.example.ui.components.formatRiotAssetLabel("TFT19_Akali_TrueDamage"))
+        assertEquals("Akali KDA", com.example.ui.components.formatRiotAssetLabel("TFT19_Akali_KDA"))
+
+        // Cached 'Indie' champion slot normalizes to Seraphine in champion contexts
+        assertEquals("Seraphine", com.example.ui.components.formatChampionDisplayName("Indie"))
+        assertEquals("Seraphine", com.example.ui.components.formatChampionDisplayName("TFT19_Seraphine_Indie"))
+
+        // Trait contexts MUST keep "Indie" intact
+        assertEquals("Indie", com.example.ui.components.formatRiotAssetLabel("Indie"))
+        assertEquals("Indie", com.example.ui.components.formatRiotAssetLabel("TFT19_Trait_Indie"))
+    }
 }
+
 

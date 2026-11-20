@@ -55,6 +55,7 @@ import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemIcon
+import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
 import com.example.ui.theme.ArcaneCyan
 import com.example.ui.theme.BrightGold
@@ -187,16 +188,16 @@ object OverlayArmySearchEngine {
     fun extractCompChampionKeys(comp: MetaComp): Set<String> {
         val keys = LinkedHashSet<String>()
         if (comp.carryName.isNotBlank()) {
-            keys.add(normalize(formatRiotAssetLabel(comp.carryName)))
+            keys.add(normalize(formatChampionDisplayName(comp.carryName)))
         }
         comp.hexPlacements.forEach { p ->
             if (p.unitName.isNotBlank()) {
-                keys.add(normalize(formatRiotAssetLabel(p.unitName)))
+                keys.add(normalize(formatChampionDisplayName(p.unitName)))
             }
         }
         comp.coreUnits.forEach { u ->
             if (u.isNotBlank()) {
-                keys.add(normalize(formatRiotAssetLabel(u)))
+                keys.add(normalize(formatChampionDisplayName(u)))
             }
         }
         return keys
@@ -238,7 +239,7 @@ object OverlayArmySearchEngine {
     ): List<OverlayChampionChoice> {
         val catalogCostByKey = catalogChampions
             .filter { it.environment == environment }
-            .associate { normalize(formatRiotAssetLabel(it.name)) to it.cost }
+            .associate { normalize(formatChampionDisplayName(it.name)) to it.cost }
 
         val countsByKey = LinkedHashMap<String, Int>()
         val displayByKey = LinkedHashMap<String, String>()
@@ -247,7 +248,7 @@ object OverlayArmySearchEngine {
         comps.forEach { comp ->
             val seenInComp = HashSet<String>()
             comp.hexPlacements.forEach { p ->
-                val label = formatRiotAssetLabel(p.unitName).trim()
+                val label = formatChampionDisplayName(p.unitName).trim()
                 val key = normalize(label)
                 if (key.isBlank() || isLikelySummonToken(key)) return@forEach
                 displayByKey.putIfAbsent(key, label)
@@ -258,7 +259,7 @@ object OverlayArmySearchEngine {
                 }
             }
             comp.coreUnits.forEach { rawUnit ->
-                val label = formatRiotAssetLabel(rawUnit).trim()
+                val label = formatChampionDisplayName(rawUnit).trim()
                 val key = normalize(label)
                 if (key.isBlank() || isLikelySummonToken(key)) return@forEach
                 displayByKey.putIfAbsent(key, label)
@@ -349,7 +350,7 @@ object OverlayArmySearchEngine {
         query: String,
         catalogItems: List<ItemTierEntry> = emptyList()
     ): List<MetaComp> {
-        val normalizedChamps = selectedChampions.map { normalize(formatRiotAssetLabel(it)) }.filter { it.isNotBlank() }
+        val normalizedChamps = selectedChampions.map { normalize(formatChampionDisplayName(it)) }.filter { it.isNotBlank() }
         val normalizedItems = selectedItems.map { item ->
             val clean = formatRiotAssetLabel(item)
             val norm = normalize(clean)

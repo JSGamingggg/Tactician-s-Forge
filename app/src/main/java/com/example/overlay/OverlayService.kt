@@ -25,6 +25,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -84,7 +85,9 @@ import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.Icon
@@ -122,6 +125,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -453,6 +461,112 @@ internal fun clampBubbleWindowPosition(
     return desiredX.coerceIn(minX, maxX) to desiredY.coerceIn(minY, maxY)
 }
 
+/**
+ * Unified root touch state machine for the floating overlay bauble.
+ * Handles touches starting from ANY point on the bauble (center, icon, badge, or edge),
+ * cleanly separating taps (open/close drawer) from drags (reposition bauble anywhere).
+ */
+internal class OverlayBaubleGestureController(
+    private val touchSlopPx: Int,
+    private val marginPx: Int,
+    private val currentOriginProvider: () -> Pair<Int, Int>,
+    private val viewSizeProvider: () -> Pair<Int, Int>,
+    private val boundsProvider: () -> OverlayWindowBounds,
+    private val onPressedChanged: (Boolean) -> Unit,
+    private val onDraggingChanged: (Boolean) -> Unit,
+    private val onPositionUpdated: (Int, Int) -> Unit,
+    private val onTap: () -> Unit
+) {
+    private var startX = 0
+    private var startY = 0
+    private var initialRawX = 0f
+    private var initialRawY = 0f
+    private var moved = false
+    private var tracking = false
+
+    fun onTouchEvent(actionMasked: Int, rawX: Float, rawY: Float): Boolean {
+        val (viewW, viewH) = viewSizeProvider()
+        val bounds = boundsProvider()
+
+        return when (actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val (originX, originY) = currentOriginProvider()
+                startX = originX
+                startY = originY
+                initialRawX = rawX
+                initialRawY = rawY
+                moved = false
+                tracking = true
+                onPressedChanged(true)
+                onDraggingChanged(false)
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!tracking) return false
+                val dx = (rawX - initialRawX).roundToInt()
+                val dy = (rawY - initialRawY).roundToInt()
+                if (moved || abs(dx) > touchSlopPx || abs(dy) > touchSlopPx) {
+                    moved = true
+                    onDraggingChanged(true)
+                    val (clampedX, clampedY) = clampBubbleWindowPosition(
+                        desiredX = startX + dx,
+                        desiredY = startY + dy,
+                        viewWidthPx = viewW,
+                        viewHeightPx = viewH,
+                        bounds = bounds,
+                        marginPx = marginPx
+                    )
+                    onPositionUpdated(clampedX, clampedY)
+                }
+                true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!tracking) return false
+                tracking = false
+                onPressedChanged(false)
+                onDraggingChanged(false)
+                if (moved) {
+                    val (curX, curY) = currentOriginProvider()
+                    val (clampedX, clampedY) = clampBubbleWindowPosition(
+                        desiredX = curX,
+                        desiredY = curY,
+                        viewWidthPx = viewW,
+                        viewHeightPx = viewH,
+                        bounds = bounds,
+                        marginPx = marginPx
+                    )
+                    onPositionUpdated(clampedX, clampedY)
+                } else {
+                    onTap()
+                }
+                moved = false
+                true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (!tracking) return false
+                tracking = false
+                onPressedChanged(false)
+                onDraggingChanged(false)
+                if (moved) {
+                    val (curX, curY) = currentOriginProvider()
+                    val (clampedX, clampedY) = clampBubbleWindowPosition(
+                        desiredX = curX,
+                        desiredY = curY,
+                        viewWidthPx = viewW,
+                        viewHeightPx = viewH,
+                        bounds = bounds,
+                        marginPx = marginPx
+                    )
+                    onPositionUpdated(clampedX, clampedY)
+                }
+                moved = false
+                true
+            }
+            else -> false
+        }
+    }
+}
+
 class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
     private lateinit var windowManager: WindowManager
@@ -464,7 +578,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     private var drawerView: ComposeView? = null
     private lateinit var drawerLayoutParams: WindowManager.LayoutParams
-    private var bubbleView: ComposeView? = null
+    private var bubbleView: View? = null
+    private var bubbleComposeContentView: ComposeView? = null
     private lateinit var bubbleLayoutParams: WindowManager.LayoutParams
 
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -474,6 +589,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private val displayState = mutableStateOf(OverlayDisplayState.BUBBLE)
     private val dockEdgeState = mutableStateOf(OverlayDockEdge.LEFT)
     private val isDraggingState = mutableStateOf(false)
+    private val isBaublePressedState = mutableStateOf(false)
     private val customWidthDpState = mutableStateOf<Float?>(null)
     private val customHeightDpState = mutableStateOf<Float?>(null)
     private var savedExpandedOriginPx: Pair<Int, Int>? = null
@@ -486,6 +602,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private val sessionState = OverlaySessionState()
     private val copiedCompIdState = mutableStateOf<String?>(null)
     private val copyBannerMessageState = mutableStateOf<String?>(null)
+    private val copyBannerIsErrorState = mutableStateOf(false)
+    private var isSearchInputFocused = false
     private var copyFeedbackClearJob: Job? = null
     private var favoritesObserverJob: Job? = null
     private var activeOverlaySyncJob: Job? = null
@@ -534,30 +652,45 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private fun warmTeamPlannerMappings() {
         serviceScope.launch {
             runCatching {
-                TftTeamPlannerCodeEncoder.ensureMappingLoaded(applicationContext, TftEnvironment.LIVE)
-                TftTeamPlannerCodeEncoder.ensureMappingLoaded(applicationContext, TftEnvironment.PBE)
+                TftTeamPlannerCodeEncoder.ensureMappingLoaded(
+                    context = applicationContext,
+                    environment = TftEnvironment.LIVE,
+                    requiredSetNumber = 18
+                )
+                TftTeamPlannerCodeEncoder.ensureMappingLoaded(
+                    context = applicationContext,
+                    environment = TftEnvironment.PBE,
+                    requiredSetNumber = 19
+                )
             }
         }
     }
 
     private fun copyCompTeamCode(comp: MetaComp) {
         copyFeedbackClearJob?.cancel()
-        copyBannerMessageState.value = "Generating Team Planner code for ${comp.title}…"
+        copyBannerIsErrorState.value = false
+        copyBannerMessageState.value = "Syncing ${comp.environment.label} Team Planner code for ${comp.title}…"
         serviceScope.launch {
             val result = TftTeamPlannerCodeEncoder.resolveTeamCode(applicationContext, comp)
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            clipboard?.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
-            copiedCompIdState.value = comp.id
-            copyBannerMessageState.value = if (result.isVerifiedRiotMapping) {
-                "Copied Team Planner code for ${comp.title} • Paste in TFT"
+            if (result.isSuccess) {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                clipboard?.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
+                copiedCompIdState.value = comp.id
+                copyBannerIsErrorState.value = false
+                copyBannerMessageState.value =
+                    "Copied ${result.setKey} code (${result.matchedChampions.size} units) • Paste in TFT"
             } else {
-                "Copied code for ${comp.title} (offline IDs — sync online to verify)"
+                copiedCompIdState.value = null
+                copyBannerIsErrorState.value = true
+                copyBannerMessageState.value =
+                    result.errorMessage ?: "Could not load Riot ${result.setKey} IDs — check connection"
             }
             copyFeedbackClearJob?.cancel()
             copyFeedbackClearJob = serviceScope.launch {
-                delay(2600L)
+                delay(3000L)
                 copiedCompIdState.value = null
                 copyBannerMessageState.value = null
+                copyBannerIsErrorState.value = false
             }
         }
     }
@@ -920,11 +1053,15 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         drawerLayoutParams.gravity = Gravity.TOP or Gravity.START
         drawerLayoutParams.width = effectiveWpx
         drawerLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
-        drawerLayoutParams.flags = if (isOpen) {
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        } else {
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if (!isOpen) {
+            isSearchInputFocused = false
         }
+        drawerLayoutParams.flags = when {
+            !isOpen -> WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            isSearchInputFocused -> WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            else -> WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        drawerLayoutParams.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
 
         if (isOpen) {
             val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
@@ -940,6 +1077,25 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                     windowManager.updateViewLayout(view, drawerLayoutParams)
                     view.requestLayout()
                 }
+            }
+        }
+    }
+
+    private fun setDrawerSearchFocusable(focusable: Boolean) {
+        if (!::drawerLayoutParams.isInitialized) return
+        val isOpen = displayState.value == OverlayDisplayState.EXPANDED
+        val nextFocused = focusable && isOpen
+        if (isSearchInputFocused == nextFocused) return
+        isSearchInputFocused = nextFocused
+        drawerLayoutParams.flags = when {
+            !isOpen -> WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            nextFocused -> WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            else -> WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        drawerLayoutParams.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
+        drawerView?.let { view ->
+            if (view.isAttachedToWindow) {
+                runCatching { windowManager.updateViewLayout(view, drawerLayoutParams) }
             }
         }
     }
@@ -1011,6 +1167,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         sessionState = sessionState,
                         copiedCompId = copiedCompIdState.value,
                         copyBannerMessage = copyBannerMessageState.value,
+                        copyBannerIsError = copyBannerIsErrorState.value,
+                        onSearchFocusChanged = ::setDrawerSearchFocusable,
                         windowOriginProvider = { drawerLayoutParams.x to drawerLayoutParams.y },
                         windowSizeProvider = {
                             val b = currentWindowBounds()
@@ -1037,6 +1195,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         onExtendFullWidth = ::extendExpandedToFullWidth,
                         onResetExpandedSize = ::resetExpandedSizeAndPosition,
                         onCloseDrawer = {
+                            setDrawerSearchFocusable(false)
                             transitionDisplayState(OverlayDisplayState.BUBBLE)
                         },
                         onRefresh = {
@@ -1084,85 +1243,12 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             setViewTreeLifecycleOwner(this@OverlayService)
             setViewTreeViewModelStoreOwner(this@OverlayService)
             setViewTreeSavedStateRegistryOwner(this@OverlayService)
-
-            var startX = initialBubbleX
-            var startY = initialBubbleY
-            var initialTouchX = 0f
-            var initialTouchY = 0f
-            var moved = false
-            val touchSlopPx = ViewConfiguration.get(this@OverlayService).scaledTouchSlop.coerceAtLeast(8)
-
-            setOnTouchListener { view, event ->
-                val viewW = view.width.takeIf { it > 0 } ?: defaultBubbleSizePx
-                val viewH = view.height.takeIf { it > 0 } ?: defaultBubbleSizePx
-                val bounds = currentWindowBounds()
-
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        startX = bubbleLayoutParams.x
-                        startY = bubbleLayoutParams.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
-                        moved = false
-                        isDraggingState.value = false
-                        // Return false so Compose Surface(onClick = ::toggleDrawerExpanded) receives taps
-                        false
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = (event.rawX - initialTouchX).roundToInt()
-                        val dy = (event.rawY - initialTouchY).roundToInt()
-                        if (moved || abs(dx) > touchSlopPx || abs(dy) > touchSlopPx) {
-                            moved = true
-                            isDraggingState.value = true
-                            val (clampedX, clampedY) = clampBubbleWindowPosition(
-                                desiredX = startX + dx,
-                                desiredY = startY + dy,
-                                viewWidthPx = viewW,
-                                viewHeightPx = viewH,
-                                bounds = bounds,
-                                marginPx = dpToPx(6)
-                            )
-                            bubbleLayoutParams.gravity = Gravity.TOP or Gravity.START
-                            bubbleLayoutParams.x = clampedX
-                            bubbleLayoutParams.y = clampedY
-                            savedBubblePosPx = clampedX to clampedY
-                            if (this.isAttachedToWindow) {
-                                runCatching { windowManager.updateViewLayout(this, bubbleLayoutParams) }
-                            }
-                        }
-                        moved
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        isDraggingState.value = false
-                        if (moved) {
-                            val (clampedX, clampedY) = clampBubbleWindowPosition(
-                                desiredX = bubbleLayoutParams.x,
-                                desiredY = bubbleLayoutParams.y,
-                                viewWidthPx = viewW,
-                                viewHeightPx = viewH,
-                                bounds = bounds,
-                                marginPx = dpToPx(6)
-                            )
-                            if (clampedX != bubbleLayoutParams.x || clampedY != bubbleLayoutParams.y) {
-                                bubbleLayoutParams.x = clampedX
-                                bubbleLayoutParams.y = clampedY
-                                if (this.isAttachedToWindow) {
-                                    runCatching { windowManager.updateViewLayout(this, bubbleLayoutParams) }
-                                }
-                            }
-                            savedBubblePosPx = bubbleLayoutParams.x to bubbleLayoutParams.y
-                        }
-                        moved
-                    }
-                    else -> false
-                }
-            }
-
             setContent {
                 TacticiansForgeTheme {
                     OverlayFloatingBauble(
                         isDrawerOpen = displayState.value == OverlayDisplayState.EXPANDED,
                         isDragging = isDraggingState.value,
+                        isPressed = isBaublePressedState.value,
                         allCompsCount = allCompsState.value.size,
                         favoritesCount = favoriteDocsState.value.size,
                         onToggleDrawer = ::toggleDrawerExpanded
@@ -1171,11 +1257,62 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             }
         }
 
+        val touchSlopPx = ViewConfiguration.get(this@OverlayService).scaledTouchSlop.coerceAtLeast(8)
+        val bubbleContainer = object : FrameLayout(this) {
+            private val gestureController = OverlayBaubleGestureController(
+                touchSlopPx = touchSlopPx,
+                marginPx = dpToPx(6),
+                currentOriginProvider = { bubbleLayoutParams.x to bubbleLayoutParams.y },
+                viewSizeProvider = {
+                    (width.takeIf { it > 0 } ?: defaultBubbleSizePx) to
+                        (height.takeIf { it > 0 } ?: defaultBubbleSizePx)
+                },
+                boundsProvider = ::currentWindowBounds,
+                onPressedChanged = { pressed -> isBaublePressedState.value = pressed },
+                onDraggingChanged = { dragging -> isDraggingState.value = dragging },
+                onPositionUpdated = { clampedX, clampedY ->
+                    bubbleLayoutParams.gravity = Gravity.TOP or Gravity.START
+                    bubbleLayoutParams.x = clampedX
+                    bubbleLayoutParams.y = clampedY
+                    savedBubblePosPx = clampedX to clampedY
+                    if (isAttachedToWindow) {
+                        runCatching { windowManager.updateViewLayout(this, bubbleLayoutParams) }
+                    }
+                },
+                onTap = { performClick() }
+            )
+
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                // Intercept at the root container BEFORE child Compose views so dragging works
+                // seamlessly from ANY point on the bauble (center, icon, badge, or edge).
+                return gestureController.onTouchEvent(ev.actionMasked, ev.rawX, ev.rawY) ||
+                    super.dispatchTouchEvent(ev)
+            }
+
+            override fun performClick(): Boolean {
+                super.performClick()
+                toggleDrawerExpanded()
+                return true
+            }
+        }.apply {
+            setViewTreeLifecycleOwner(this@OverlayService)
+            setViewTreeViewModelStoreOwner(this@OverlayService)
+            setViewTreeSavedStateRegistryOwner(this@OverlayService)
+            addView(
+                bubbleComposeView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+
         // Attach drawer first, then bubble second so the bauble always remains visible above the drawer
         drawerView = drawerComposeView
         windowManager.addView(drawerComposeView, drawerLayoutParams)
-        bubbleView = bubbleComposeView
-        windowManager.addView(bubbleComposeView, bubbleLayoutParams)
+        bubbleComposeContentView = bubbleComposeView
+        bubbleView = bubbleContainer
+        windowManager.addView(bubbleContainer, bubbleLayoutParams)
     }
 
     override fun onDestroy() {
@@ -1189,8 +1326,11 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         sessionState.reset()
         serviceScope.cancel()
         OverlayController.setRunning(false)
+        bubbleComposeContentView?.let { composeView ->
+            runCatching { composeView.disposeComposition() }
+        }
+        bubbleComposeContentView = null
         bubbleView?.let { view ->
-            runCatching { view.disposeComposition() }
             if (view.isAttachedToWindow) {
                 runCatching { windowManager.removeView(view) }
             }
@@ -1220,13 +1360,18 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 private fun OverlayFloatingBauble(
     isDrawerOpen: Boolean,
     isDragging: Boolean,
+    isPressed: Boolean,
     allCompsCount: Int,
     favoritesCount: Int,
     onToggleDrawer: () -> Unit
 ) {
     val badgeCount = if (favoritesCount > 0) favoritesCount else allCompsCount
     val dragScale by animateFloatAsState(
-        targetValue = if (isDragging) 1.09f else 1f,
+        targetValue = when {
+            isDragging -> 1.09f
+            isPressed -> 0.95f
+            else -> 1f
+        },
         animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
         label = "overlayBubbleDragScale"
     )
@@ -1237,6 +1382,11 @@ private fun OverlayFloatingBauble(
             else -> listOf(BrightGold, ArcaneCyan)
         }
     )
+    val actionLabel = if (isDrawerOpen) {
+        "Close HexTome Live Match Overlay or drag anywhere to move"
+    } else {
+        "Open HexTome Live Match Overlay or drag anywhere to move"
+    }
 
     Box(
         modifier = Modifier
@@ -1246,8 +1396,9 @@ private fun OverlayFloatingBauble(
                 scaleY = dragScale
             }
     ) {
+        // Non-clickable Surface so root touch handler receives 100% of drag & tap events
+        // across the entire bauble surface, while preserving accessibility button semantics.
         Surface(
-            onClick = onToggleDrawer,
             shape = CircleShape,
             color = if (isDrawerOpen) DeepSlate.copy(alpha = 0.98f) else ObsidianVoid.copy(alpha = 0.96f),
             border = BorderStroke(
@@ -1257,20 +1408,28 @@ private fun OverlayFloatingBauble(
             shadowElevation = if (isDragging || isDrawerOpen) 16.dp else 10.dp,
             modifier = Modifier
                 .size(58.dp)
+                .semantics(mergeDescendants = true) {
+                    role = Role.Button
+                    contentDescription = actionLabel
+                    onClick(label = actionLabel) {
+                        onToggleDrawer()
+                        true
+                    }
+                }
                 .testTag("overlay_bubble_button")
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (isDrawerOpen) {
                     Icon(
                         imageVector = Icons.Default.CloseFullscreen,
-                        contentDescription = "Close HexTome Live Match Overlay",
+                        contentDescription = null,
                         tint = ArcaneCyan,
                         modifier = Modifier.size(24.dp)
                     )
                 } else {
                     Image(
                         painter = painterResource(id = R.drawable.ic_hextome_emblem),
-                        contentDescription = "Open HexTome Live Match Overlay",
+                        contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
@@ -1293,15 +1452,6 @@ private fun OverlayFloatingBauble(
                             fontWeight = FontWeight.Bold
                         )
                     }
-                } else if (isDrawerOpen) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 5.dp)
-                            .width(16.dp)
-                            .height(3.dp)
-                            .background(BrightGold, RoundedCornerShape(2.dp))
-                    )
                 }
             }
         }
@@ -1322,6 +1472,8 @@ private fun OverlayDrawerContent(
     sessionState: OverlaySessionState,
     copiedCompId: String?,
     copyBannerMessage: String?,
+    copyBannerIsError: Boolean,
+    onSearchFocusChanged: (Boolean) -> Unit,
     windowOriginProvider: () -> Pair<Int, Int>,
     windowSizeProvider: () -> Pair<Float, Float>,
     densityProvider: () -> Float,
@@ -1396,20 +1548,52 @@ private fun OverlayDrawerContent(
         matched + extra
     }
 
-    val envScopedCompsCount = remember(mergedAllComps, envFilter) {
-        mergedAllComps.count { it.environment == envFilter }
+    val envAllComps = remember(mergedAllComps, envFilter) {
+        mergedAllComps.filter { it.environment == envFilter }
     }
+    val envCatalogItems = remember(allItems, envFilter) {
+        allItems.filter { it.environment == envFilter }
+    }
+    val championChoices = remember(envAllComps, allChampions, envFilter) {
+        OverlayArmySearchEngine.extractChampionChoices(envAllComps, allChampions, envFilter)
+    }
+    val itemChoices = remember(envAllComps, allItems, envFilter) {
+        OverlayArmySearchEngine.extractItemChoices(envAllComps, allItems, envFilter)
+    }
+
+    val envScopedCompsCount = envAllComps.size
     val envScopedFavoritesCount = remember(favoriteComps, envFilter) {
         favoriteComps.count { it.environment == envFilter }
     }
 
-    val displayed = remember(mergedAllComps, favoriteComps, browseMode, envFilter, tierFilter) {
+    val selectedChampions = sessionState.selectedChampions
+    val selectedItems = sessionState.selectedItems
+    val finderQuery = sessionState.finderQuery
+
+    val displayed = remember(
+        mergedAllComps,
+        favoriteComps,
+        browseMode,
+        envFilter,
+        tierFilter,
+        selectedChampions,
+        selectedItems,
+        finderQuery,
+        envCatalogItems
+    ) {
         val source = if (browseMode == OverlayBrowseMode.FAVORITES) favoriteComps else mergedAllComps
-        source.filter { comp ->
+        val envAndTierFiltered = source.filter { comp ->
             val matchesEnv = comp.environment == envFilter
             val matchesTier = tierFilter == null || comp.tier == tierFilter
             matchesEnv && matchesTier
         }
+        OverlayArmySearchEngine.filterArmies(
+            comps = envAndTierFiltered,
+            selectedChampions = selectedChampions,
+            selectedItems = selectedItems,
+            query = finderQuery,
+            catalogItems = envCatalogItems
+        )
     }
     val displayedByTier = remember(displayed) {
         groupCompsByTier(displayed)
@@ -1644,6 +1828,18 @@ private fun OverlayDrawerContent(
                                 OverlayEnvChip("PBE", envFilter == TftEnvironment.PBE, Icons.Default.Science) {
                                     sessionState.selectEnvironment(TftEnvironment.PBE)
                                 }
+                                val activeFinderCount = sessionState.activeArmyFilterCount
+                                OverlayEnvChip(
+                                    label = if (activeFinderCount > 0) "Champs/Items ($activeFinderCount)" else "Champs/Items",
+                                    selected = sessionState.isArmyFinderOpen || activeFinderCount > 0,
+                                    icon = Icons.Default.Search,
+                                    accentColor = if (activeFinderCount > 0) BrightGold else ArcaneCyan
+                                ) {
+                                    if (sessionState.isArmyFinderOpen) {
+                                        onSearchFocusChanged(false)
+                                    }
+                                    sessionState.toggleArmyFinder()
+                                }
                                 TierRank.entries.forEach { t ->
                                     val tColor = when (t) {
                                         TierRank.S -> TierSColor
@@ -1661,7 +1857,7 @@ private fun OverlayDrawerContent(
                                         sessionState.toggleTierFilter(t)
                                     }
                                 }
-                                if (displayedByTier.isNotEmpty()) {
+                                if (displayedByTier.isNotEmpty() && !sessionState.hasActiveArmyFilters) {
                                     val anyOpen = displayedByTier.any { expandedOverlayTiers.contains(it.first) }
                                     OverlayEnvChip(
                                         label = if (anyOpen) "Close All" else "Open All",
@@ -1674,6 +1870,38 @@ private fun OverlayDrawerContent(
                                         )
                                     }
                                 }
+                            }
+                            if (sessionState.hasActiveArmyFilters) {
+                                OverlayActiveArmyFiltersBar(
+                                    selectedChampions = selectedChampions,
+                                    selectedItems = selectedItems,
+                                    finderQuery = finderQuery,
+                                    matchedCount = displayed.size,
+                                    environment = envFilter,
+                                    onRemoveChampion = { sessionState.toggleSelectedChampion(it) },
+                                    onRemoveItem = { sessionState.toggleSelectedItem(it) },
+                                    onClearQuery = { sessionState.updateFinderQuery("") },
+                                    onClearAll = {
+                                        onSearchFocusChanged(false)
+                                        sessionState.clearArmyFilters()
+                                    },
+                                    modifier = Modifier.padding(bottom = 6.dp)
+                                )
+                            }
+                            AnimatedVisibility(visible = sessionState.isArmyFinderOpen) {
+                                OverlayArmyFinderPanel(
+                                    environment = envFilter,
+                                    sessionState = sessionState,
+                                    championChoices = championChoices,
+                                    itemChoices = itemChoices,
+                                    matchedArmiesCount = displayed.size,
+                                    onSearchFocusChanged = onSearchFocusChanged,
+                                    onClosePanel = {
+                                        onSearchFocusChanged(false)
+                                        sessionState.updateArmyFinderOpen(false)
+                                    },
+                                    modifier = Modifier.padding(bottom = 6.dp)
+                                )
                             }
                         } else {
                             Spacer(Modifier.height(6.dp))
@@ -1829,21 +2057,44 @@ private fun OverlayDrawerContent(
                                         )
                                     }
                                 } else if (displayed.isEmpty()) {
-                                    Box(
+                                    Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .background(DeepSlate, RoundedCornerShape(12.dp))
-                                            .padding(14.dp)
+                                            .padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         Text(
-                                            text = if (activeMode == OverlayBrowseMode.FAVORITES) {
-                                                "No ${activeEnv.label} favorites yet. Tap the Star icon on any composition to add it."
-                                            } else {
-                                                "No compositions match the active ${activeEnv.label} or tier filter."
+                                            text = when {
+                                                sessionState.hasActiveArmyFilters ->
+                                                    "No ${activeEnv.label} armies include all selected champions/items."
+                                                activeMode == OverlayBrowseMode.FAVORITES ->
+                                                    "No ${activeEnv.label} favorites yet. Tap the Star icon on any composition to add it."
+                                                else ->
+                                                    "No compositions match the active ${activeEnv.label} or tier filter."
                                             },
                                             style = MaterialTheme.typography.bodySmall,
                                             color = Color(0xFF93A1B8)
                                         )
+                                        if (sessionState.hasActiveArmyFilters) {
+                                            Surface(
+                                                onClick = {
+                                                    onSearchFocusChanged(false)
+                                                    sessionState.clearArmyFilters()
+                                                },
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = ArcaneCyan.copy(alpha = 0.16f),
+                                                border = BorderStroke(1.dp, ArcaneCyan.copy(alpha = 0.6f))
+                                            ) {
+                                                Text(
+                                                    text = "Clear Champion & Item Filters",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = ArcaneCyan,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 } else {
                                     val listState = rememberLazyListState(
@@ -1865,7 +2116,7 @@ private fun OverlayDrawerContent(
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         displayedByTier.forEach { (tier, tierComps) ->
-                                            val isTierOpen = expandedOverlayTiers.contains(tier)
+                                            val isTierOpen = sessionState.hasActiveArmyFilters || expandedOverlayTiers.contains(tier)
                                             item(
                                                 key = "overlay_tier_header_${activeMode}_${activeEnv}_${tier.name}",
                                                 contentType = "overlay_tier_header"
@@ -1963,10 +2214,13 @@ private fun OverlayDrawerContent(
                         }
 
                         AnimatedVisibility(visible = !copyBannerMessage.isNullOrBlank()) {
+                            val bannerBg = if (copyBannerIsError) Color(0xFF3A2312) else Color(0xFF103128)
+                            val bannerBorder = if (copyBannerIsError) Color(0xFFF39C12) else Color(0xFF2ECC71)
+                            val bannerTextColor = if (copyBannerIsError) Color(0xFFFFE5B8) else Color(0xFFD6F9E5)
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF103128),
-                                border = BorderStroke(1.dp, Color(0xFF2ECC71)),
+                                color = bannerBg,
+                                border = BorderStroke(1.dp, bannerBorder),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(top = 6.dp)
@@ -1978,16 +2232,16 @@ private fun OverlayDrawerContent(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Check,
+                                        imageVector = if (copyBannerIsError) Icons.Default.Warning else Icons.Default.Check,
                                         contentDescription = null,
-                                        tint = Color(0xFF2ECC71),
+                                        tint = bannerBorder,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Text(
                                         text = copyBannerMessage.orEmpty(),
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFFD6F9E5),
+                                        color = bannerTextColor,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )

@@ -2325,27 +2325,30 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `tft team planner code encoder generates valid riot v02 10-slot hex code skipping summon tokens and resolving aliases`() {
-        val mockCDragonJson = """
+    fun `tft team planner code encoder generates valid riot v02 codes for LIVE Set 18 and PBE Set 19 without cross-set contamination`() {
+        val mockLiveCDragonJson = """
             {
+              "TFTSet16": [
+                {"character_id": "TFT16_Ezreal", "display_name": "Ezreal", "team_planner_code": 99}
+              ],
               "TFTSet18": [
+                {"character_id": "DA_Lux18_Blackthorn", "display_name": "Lux", "team_planner_code": 3840},
                 {"character_id": "DA_18_Ezreal", "display_name": "Ezreal", "team_planner_code": 16},
-                {"character_id": "DA_18_Sentry", "display_name": "Sentry", "team_planner_code": 257},
+                {"character_id": "DA_18_Sentry", "display_name": "Sentry", "team_planner_code": 1065},
                 {"character_id": "DA_Lux18_Base", "display_name": "Lux", "team_planner_code": 4095},
                 {"character_id": "DA_CrimsonRaptor18", "display_name": "Crimson Raptor", "team_planner_code": 7},
-                {"character_id": "DA_18_GnarSmall", "display_name": "Gnar", "team_planner_code": 42}
-              ],
-              "TFTSet17": [
-                {"character_id": "TFT17_Ahri", "display_name": "Ahri", "team_planner_code": 1}
+                {"character_id": "DA_18_GnarSmall", "display_name": "Gnar", "team_planner_code": 42},
+                {"character_id": "DA_Cinderling18", "display_name": "Cinderling", "team_planner_code": 1015}
               ]
             }
         """.trimIndent()
 
-        val catalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(mockCDragonJson)
-        assertNotNull(catalog)
-        assertTrue(catalog!!.isFromRiotCommunityDragon)
+        val liveCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(mockLiveCDragonJson)
+        assertNotNull(liveCatalog)
+        assertTrue(liveCatalog!!.isFromRiotCommunityDragon)
 
-        val comp = MetaComp(
+        // League client patchTag "16.23" must NOT cause LIVE Set 18 comp to target TFTSet16
+        val liveComp = MetaComp(
             id = "set18-ezreal-pebbles",
             environment = TftEnvironment.LIVE,
             title = "Ezreal Pebbles Reroll",
@@ -2357,16 +2360,17 @@ class ExampleRobolectricTest {
             pickRate = 9.5,
             trendDelta = "+0.2",
             isTrending = true,
-            patchTag = "18.7",
+            patchTag = "16.23",
             carryName = "Ezreal",
             traits = listOf("Elderwood"),
-            coreUnits = listOf("Ezreal", "Pebbles", "Lux", "Mama Beak", "Gnar", "Stonebark Tree", "Lifeblossom"),
+            coreUnits = listOf("Ezreal", "Pebbles", "Lux", "Mama Beak", "Gnar", "Cinderling", "Stonebark Tree", "Lifeblossom"),
             hexPlacements = listOf(
                 HexUnitPlacement("Ezreal", row = 3, col = 0, cost = 4, isCarry = true, items = listOf("IE", "LW", "GS")),
                 HexUnitPlacement("Pebbles", row = 0, col = 3, cost = 3, isCarry = false, items = listOf("Warmog", "Bramble")),
                 HexUnitPlacement("Lux", row = 3, col = 6, cost = 3, isCarry = false, items = emptyList()),
                 HexUnitPlacement("Mama Beak", row = 1, col = 2, cost = 2, isCarry = false, items = emptyList()),
                 HexUnitPlacement("Gnar", row = 0, col = 4, cost = 2, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Cinderling", row = 1, col = 5, cost = 1, isCarry = false, items = emptyList()),
                 HexUnitPlacement("Stonebark Tree", row = 0, col = 1, cost = 1, isCarry = false, items = emptyList())
             ),
             augmentPriorities = listOf("Combat", "Econ"),
@@ -2375,41 +2379,215 @@ class ExampleRobolectricTest {
             setName = "Set 18"
         )
 
-        val result = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(comp, catalog)
-        assertEquals("TFTSet18", result.setKey)
-        assertTrue(com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(result.code))
-        assertTrue(Regex("^02[0-9a-f]{30}TFTSet18$").matches(result.code))
-        // Order: Ezreal (010, carry), Pebbles/Sentry (101, 2 items), Lux (fff, cost 3), Mama Beak (007, cost 2), Gnar (02a, cost 2) + 5 empty slots (000)
-        assertEquals("02010101fff00702a000000000000000TFTSet18", result.code)
-        assertEquals(5, result.matchedChampions.size)
-        assertTrue(result.skippedUnits.contains("Stonebark Tree"))
-        assertTrue(result.skippedUnits.contains("Lifeblossom"))
+        val liveResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(liveComp, liveCatalog)
+        assertTrue(liveResult.isSuccess)
+        assertEquals("TFTSet18", liveResult.setKey)
+        assertTrue(com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(liveResult.code))
+        assertTrue(Regex("^02[0-9a-f]{30}TFTSet18$").matches(liveResult.code))
+        // Order: Ezreal (010, carry), Pebbles/Sentry (429=1065, 2 items), Lux Base (fff=4095, NOT Blackthorn variant),
+        // Mama Beak (007), Gnar (02a), Cinderling (3f7=1015) + 4 empty slots (000)
+        assertEquals("02010429fff00702a3f7000000000000TFTSet18", liveResult.code)
+        assertEquals(6, liveResult.matchedChampions.size)
+        assertTrue(liveResult.skippedUnits.contains("Stonebark Tree"))
+        assertTrue(liveResult.skippedUnits.contains("Lifeblossom"))
 
-        // Explicit direct teamPlannerCode passthrough
+        // Hex-string team_planner_code values ("429" and "3f7") must parse in base 16 (not decimal 429 -> 1ad)
+        val mockHexStringJson = """
+            {
+              "TFTSet18": [
+                {"character_id": "DA_18_Sentry", "display_name": "Sentry", "team_planner_code": "429"},
+                {"character_id": "DA_Cinderling18", "display_name": "Cinderling", "team_planner_code": "3f7"}
+              ]
+            }
+        """.trimIndent()
+        val hexCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(mockHexStringJson)
+        assertNotNull(hexCatalog)
+        val hexResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(
+            liveComp.copy(
+                carryName = "Pebbles",
+                coreUnits = listOf("Pebbles", "Cinderling"),
+                hexPlacements = listOf(
+                    HexUnitPlacement("Pebbles", row = 0, col = 3, cost = 3, isCarry = true, items = emptyList()),
+                    HexUnitPlacement("Cinderling", row = 1, col = 4, cost = 1, isCarry = false, items = emptyList())
+                )
+            ),
+            hexCatalog!!
+        )
+        assertTrue(hexResult.isSuccess)
+        assertEquals("024293f7000000000000000000000000TFTSet18", hexResult.code)
+
+        // PBE Set 19 encoding resolves Riot internal aliases (Wukong -> TFT19_MonkeyKing, Renata Glasc, Akali KDA)
+        val mockPbeJson = """
+            {
+              "TFTSet10": [
+                {"character_id": "TFT10_Ahri", "display_name": "Ahri", "team_planner_code": 11},
+                {"character_id": "TFT10_Akali", "display_name": "Akali", "team_planner_code": 12}
+              ],
+              "TFTSet19": [
+                {"character_id": "TFT19_MonkeyKing", "display_name": "Wukong", "team_planner_code": 1280},
+                {"character_id": "TFT19_AkaliKDA", "display_name": "Akali KDA", "team_planner_code": 1281},
+                {"character_id": "TFT19_Renata", "display_name": "Renata", "team_planner_code": 1282}
+              ]
+            }
+        """.trimIndent()
+        val pbeCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(mockPbeJson)
+        assertNotNull(pbeCatalog)
+
+        val pbeComp = liveComp.copy(
+            id = "pbe-set19-prismatic",
+            environment = TftEnvironment.PBE,
+            title = "Prismatic Wukong KDA",
+            patchTag = "16.24 PBE",
+            setName = "Set 19 PBE",
+            carryName = "Wukong",
+            coreUnits = listOf("Wukong", "Akali KDA", "Renata Glasc"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Wukong", row = 0, col = 3, cost = 5, isCarry = true, items = listOf("Bloodthirster")),
+                HexUnitPlacement("Akali KDA", row = 2, col = 5, cost = 4, isCarry = false, items = emptyList()),
+                HexUnitPlacement("Renata Glasc", row = 3, col = 0, cost = 3, isCarry = false, items = emptyList())
+            )
+        )
+        val pbeResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(pbeComp, pbeCatalog!!)
+        assertTrue(pbeResult.isSuccess)
+        assertEquals("TFTSet19", pbeResult.setKey)
+        assertTrue(Regex("^02[0-9a-f]{30}TFTSet19$").matches(pbeResult.code))
+        // 1280=500, 1281=501, 1282=502
+        assertEquals("02500501502000000000000000000000TFTSet19", pbeResult.code)
+
+        // Strict set guard: PBE Set 19 comp MUST NOT fall back to TFTSet18 or TFTSet10 when TFTSet19 is missing
+        val wrongSetResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(pbeComp, liveCatalog)
+        org.junit.Assert.assertFalse(wrongSetResult.isSuccess)
+        assertEquals("", wrongSetResult.code)
+        assertEquals("TFTSet19", wrongSetResult.setKey)
+
+        // Explicit direct teamPlannerCode passthrough (must match target set)
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val directCode = "02010101fff00702a000000000000000TFTSet18"
-        val directComp = comp.copy(teamPlannerCode = directCode)
+        val directCode = "02010429fff00702a3f7000000000000TFTSet18"
+        val directComp = liveComp.copy(teamPlannerCode = directCode)
         val directResult = kotlinx.coroutines.runBlocking {
             com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, directComp)
         }
+        assertTrue(directResult.isSuccess)
         assertEquals(directCode, directResult.code)
         assertTrue(directResult.isVerifiedRiotMapping)
 
-        // Offline preload fallback works deterministically when network is unavailable
+        // Offline uncached resolution MUST fail cleanly rather than emitting bogus synthetic 001/002/003 codes
         com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
         val offlineClient = okhttp3.OkHttpClient.Builder()
             .addInterceptor { throw java.io.IOException("Offline test") }
             .build()
         val offlineResult = kotlinx.coroutines.runBlocking {
-            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, comp, offlineClient)
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, liveComp, offlineClient)
         }
-        assertTrue(com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(offlineResult.code))
-        assertTrue(offlineResult.code.endsWith("TFTSet18"))
-        assertTrue(offlineResult.matchedChampions.isNotEmpty())
+        org.junit.Assert.assertFalse(offlineResult.isSuccess)
+        assertEquals("", offlineResult.code)
+        assertNotNull(offlineResult.errorMessage)
     }
 
     @Test
-    fun `overlay session state preserves last clicked filters expanded tiers scroll and selected comp until reset on full close`() {
+    fun `overlay army search engine filters comps by multiple champions completed items base component recipes and query`() {
+        val ezrealComp = MetaComp(
+            id = "live-ezreal",
+            environment = TftEnvironment.LIVE,
+            title = "Elderwood Ezreal",
+            tier = TierRank.S,
+            playstyle = "Fast 8",
+            avgPlacement = 3.8,
+            top4Rate = 60.0,
+            winRate = 17.0,
+            pickRate = 8.0,
+            trendDelta = "+0.3",
+            isTrending = true,
+            patchTag = "16.23",
+            carryName = "Ezreal",
+            traits = listOf("Elderwood", "Sniper"),
+            coreUnits = listOf("Ezreal", "Pebbles", "Gnar"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Ezreal", row = 3, col = 0, cost = 4, isCarry = true, items = listOf("Infinity Edge", "Last Whisper")),
+                HexUnitPlacement("Pebbles", row = 0, col = 3, cost = 3, isCarry = false, items = listOf("Warmog's Armor"))
+            ),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Fast 8",
+            notes = "",
+            setName = "Set 18"
+        )
+        val luxComp = ezrealComp.copy(
+            id = "live-lux",
+            title = "Coven Lux",
+            carryName = "Lux",
+            traits = listOf("Coven", "Invoker"),
+            coreUnits = listOf("Lux", "Pebbles", "Amumu"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Lux", row = 3, col = 6, cost = 3, isCarry = true, items = listOf("Spear of Shojin", "Jeweled Gauntlet")),
+                HexUnitPlacement("Pebbles", row = 0, col = 3, cost = 3, isCarry = false, items = listOf("Bramble Vest"))
+            )
+        )
+        val comps = listOf(ezrealComp, luxComp)
+
+        // Single champion matches both comps sharing Pebbles
+        val pebblesArmies = com.example.overlay.OverlayArmySearchEngine.filterArmies(
+            comps = comps,
+            selectedChampions = setOf("Pebbles"),
+            selectedItems = emptySet(),
+            query = ""
+        )
+        assertEquals(listOf("live-ezreal", "live-lux"), pebblesArmies.map { it.id })
+
+        // Multi-champion AND intersection narrows to Lux comp
+        val pebblesAndLux = com.example.overlay.OverlayArmySearchEngine.filterArmies(
+            comps = comps,
+            selectedChampions = setOf("Pebbles", "Lux"),
+            selectedItems = emptySet(),
+            query = ""
+        )
+        assertEquals(listOf("live-lux"), pebblesAndLux.map { it.id })
+
+        // Exact completed item filter
+        val ieArmies = com.example.overlay.OverlayArmySearchEngine.filterArmies(
+            comps = comps,
+            selectedChampions = emptySet(),
+            selectedItems = setOf("Infinity Edge"),
+            query = ""
+        )
+        assertEquals(listOf("live-ezreal"), ieArmies.map { it.id })
+
+        // Base component recipe matching: B.F. Sword builds both Infinity Edge (Ezreal) and Spear of Shojin (Lux)
+        val bfSwordArmies = com.example.overlay.OverlayArmySearchEngine.filterArmies(
+            comps = comps,
+            selectedChampions = emptySet(),
+            selectedItems = setOf("B.F. Sword"),
+            query = ""
+        )
+        assertEquals(listOf("live-ezreal", "live-lux"), bfSwordArmies.map { it.id })
+
+        // Combined base component (Tear -> Spear of Shojin) + Champion (Pebbles) narrows to Lux comp
+        val tearAndPebbles = com.example.overlay.OverlayArmySearchEngine.filterArmies(
+            comps = comps,
+            selectedChampions = setOf("Pebbles"),
+            selectedItems = setOf("Tear of the Goddess"),
+            query = ""
+        )
+        assertEquals(listOf("live-lux"), tearAndPebbles.map { it.id })
+
+        // Free-text query matches trait or item
+        val invokerQuery = com.example.overlay.OverlayArmySearchEngine.filterArmies(
+            comps = comps,
+            selectedChampions = emptySet(),
+            selectedItems = emptySet(),
+            query = "invoker"
+        )
+        assertEquals(listOf("live-lux"), invokerQuery.map { it.id })
+
+        // Choice extraction surfaces champions and both base components + completed items
+        val champChoices = com.example.overlay.OverlayArmySearchEngine.extractChampionChoices(comps, emptyList(), TftEnvironment.LIVE)
+        assertTrue(champChoices.any { it.name == "Pebbles" && it.compCount == 2 })
+        val itemChoices = com.example.overlay.OverlayArmySearchEngine.extractItemChoices(comps, emptyList(), TftEnvironment.LIVE)
+        assertTrue(itemChoices.any { it.name == "B.F. Sword" && it.isComponent && it.compCount == 2 })
+        assertTrue(itemChoices.any { it.name == "Infinity Edge" && !it.isComponent && it.compCount == 1 })
+    }
+
+    @Test
+    fun `overlay session state preserves last clicked filters army finder selections expanded tiers scroll and selected comp until reset on full close`() {
         val state = com.example.overlay.OverlaySessionState()
 
         // Clean initial defaults
@@ -2422,13 +2600,21 @@ class ExampleRobolectricTest {
         assertEquals(0, state.listScrollIndex)
         assertEquals(0, state.listScrollOffset)
         assertEquals(0, state.detailScrollOffset)
+        org.junit.Assert.assertFalse(state.isArmyFinderOpen)
+        org.junit.Assert.assertFalse(state.hasActiveArmyFilters)
 
-        // User interacts with overlay controls and opens a comp
+        // User interacts with overlay controls, Army Finder, and opens a comp
         state.selectEnvironment(TftEnvironment.PBE)
         state.selectBrowseMode(com.example.overlay.OverlayBrowseMode.FAVORITES)
         state.toggleTierFilter(TierRank.S)
         state.toggleTierExpanded(TierRank.S)
         state.toggleTierExpanded(TierRank.A)
+        state.toggleArmyFinder()
+        state.selectFinderTab(com.example.overlay.OverlayFinderTab.ITEMS)
+        state.selectFinderItemScope(com.example.overlay.OverlayItemFilterScope.COMPONENTS)
+        state.toggleSelectedChampion("Wukong")
+        state.toggleSelectedItem("B.F. Sword")
+        state.updateFinderQuery("kda")
         state.updateListScroll(index = 2, offset = 140)
         state.selectComp("pbe-comp-01")
         state.updateDetailScroll(offset = 220)
@@ -2439,11 +2625,25 @@ class ExampleRobolectricTest {
         assertEquals(TftEnvironment.PBE, state.envFilter)
         assertEquals(TierRank.S, state.tierFilter)
         assertEquals(setOf(TierRank.S, TierRank.A), state.expandedTiers)
+        assertTrue(state.isArmyFinderOpen)
+        assertEquals(com.example.overlay.OverlayFinderTab.ITEMS, state.finderTab)
+        assertEquals(com.example.overlay.OverlayItemFilterScope.COMPONENTS, state.finderItemScope)
+        assertEquals(setOf("Wukong"), state.selectedChampions)
+        assertEquals(setOf("B.F. Sword"), state.selectedItems)
+        assertEquals("kda", state.finderQuery)
+        assertEquals(3, state.activeArmyFilterCount)
+        assertTrue(state.hasActiveArmyFilters)
         assertEquals(2, state.listScrollIndex)
         assertEquals(140, state.listScrollOffset)
         assertEquals("pbe-comp-01", state.selectedCompId)
         assertEquals(220, state.detailScrollOffset)
         assertEquals("Ahri" to 4, state.inspectedChampion)
+
+        // Switching LIVE <-> PBE clears set-specific champion/item filters cleanly
+        state.selectEnvironment(TftEnvironment.LIVE)
+        assertTrue(state.selectedChampions.isEmpty())
+        assertTrue(state.selectedItems.isEmpty())
+        assertEquals("", state.finderQuery)
 
         // Full overlay close resets every field back to clean defaults
         state.reset()
@@ -2456,5 +2656,70 @@ class ExampleRobolectricTest {
         assertEquals(0, state.listScrollIndex)
         assertEquals(0, state.listScrollOffset)
         assertEquals(0, state.detailScrollOffset)
+        org.junit.Assert.assertFalse(state.isArmyFinderOpen)
+        assertEquals(com.example.overlay.OverlayFinderTab.CHAMPIONS, state.finderTab)
+        assertEquals(com.example.overlay.OverlayItemFilterScope.ALL, state.finderItemScope)
+        assertTrue(state.selectedChampions.isEmpty())
+        assertTrue(state.selectedItems.isEmpty())
+        assertEquals("", state.finderQuery)
+    }
+
+    @Test
+    fun `overlay bauble gesture controller drags smoothly from center or any point and taps to toggle`() {
+        val bounds = com.example.overlay.OverlayWindowBounds(
+            widthPx = 1080,
+            heightPx = 2400,
+            safeLeftPx = 0,
+            safeTopPx = 80,
+            safeRightPx = 0,
+            safeBottomPx = 60,
+            density = 3f
+        )
+        var posX = 40
+        var posY = 120
+        var pressed = false
+        var dragging = false
+        var toggleCount = 0
+
+        val controller = com.example.overlay.OverlayBaubleGestureController(
+            touchSlopPx = 12,
+            marginPx = 18,
+            currentOriginProvider = { posX to posY },
+            viewSizeProvider = { 192 to 192 },
+            boundsProvider = { bounds },
+            onPressedChanged = { pressed = it },
+            onDraggingChanged = { dragging = it },
+            onPositionUpdated = { x, y ->
+                posX = x
+                posY = y
+            },
+            onTap = { toggleCount += 1 }
+        )
+
+        // 1. Tap right in the center of the bauble (within touch slop) -> toggles drawer without moving
+        assertTrue(controller.onTouchEvent(android.view.MotionEvent.ACTION_DOWN, 136f, 216f))
+        assertTrue(pressed)
+        org.junit.Assert.assertFalse(dragging)
+        assertTrue(controller.onTouchEvent(android.view.MotionEvent.ACTION_MOVE, 141f, 220f))
+        org.junit.Assert.assertFalse(dragging)
+        assertTrue(controller.onTouchEvent(android.view.MotionEvent.ACTION_UP, 141f, 220f))
+        org.junit.Assert.assertFalse(pressed)
+        assertEquals(1, toggleCount)
+        assertEquals(40, posX)
+        assertEquals(120, posY)
+
+        // 2. Drag starting right in the center of the bauble -> moves bauble smoothly & does NOT toggle
+        assertTrue(controller.onTouchEvent(android.view.MotionEvent.ACTION_DOWN, 136f, 216f))
+        assertTrue(controller.onTouchEvent(android.view.MotionEvent.ACTION_MOVE, 436f, 616f))
+        assertTrue(dragging)
+        assertEquals(340, posX)
+        assertEquals(520, posY)
+        assertTrue(controller.onTouchEvent(android.view.MotionEvent.ACTION_UP, 436f, 616f))
+        org.junit.Assert.assertFalse(dragging)
+        org.junit.Assert.assertFalse(pressed)
+        assertEquals(1, toggleCount)
+        assertEquals(340, posX)
+        assertEquals(520, posY)
     }
 }
+

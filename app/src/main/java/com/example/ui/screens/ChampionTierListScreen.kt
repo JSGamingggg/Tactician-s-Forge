@@ -75,8 +75,6 @@ import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
 import com.example.ui.components.HextechPanelCard
 import com.example.ui.components.CheckForUpdatesButton
-import com.example.ui.components.PatchTierAlertBanner
-import com.example.ui.components.PatchTierDetailsDialog
 import com.example.ui.components.TftAssetIconResolver
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
@@ -139,10 +137,6 @@ fun ChampionTierListScreen(
     var expandedId by remember { mutableStateOf<String?>(null) }
     var inspectedChampion by remember { mutableStateOf<Pair<String, Int?>?>(null) }
     var inspectedSynergyComp by remember { mutableStateOf<MetaComp?>(null) }
-    var showPatchDetailsDialog by remember { mutableStateOf(false) }
-    val latestPatch = remember(patches, environment) {
-        patches.firstOrNull { it.environment == environment } ?: patches.firstOrNull()
-    }
 
     val availableCosts = remember(champions) { extractChampionCosts(champions) }
     val availableTraitOptions = remember(champions, TftAssetIconResolver.catalogRevision) {
@@ -330,13 +324,6 @@ fun ChampionTierListScreen(
             else -> 1
         }
 
-        if (showPatchDetailsDialog) {
-            PatchTierDetailsDialog(
-                patch = latestPatch,
-                onDismiss = { showPatchDetailsDialog = false }
-            )
-        }
-
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
@@ -360,16 +347,6 @@ fun ChampionTierListScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-        }
-
-        if (latestPatch != null) {
-            item {
-                PatchTierAlertBanner(
-                    latestPatch = latestPatch,
-                    environment = environment,
-                    onOpenDetails = { showPatchDetailsDialog = true }
-                )
             }
         }
 

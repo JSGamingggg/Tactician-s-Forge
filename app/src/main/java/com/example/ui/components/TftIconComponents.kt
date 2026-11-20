@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Diamond
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.GpsFixed
@@ -84,6 +86,7 @@ import coil.size.Scale
 import com.example.R
 import com.example.data.model.AugmentTier
 import com.example.data.model.ItemCategory
+import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
@@ -215,6 +218,46 @@ fun formatChampionDisplayName(rawId: String): String {
         "indie", "seraphine indie", "seraphine rising star", "seraphine superstar" -> "Seraphine"
         else -> label
     }
+}
+
+/**
+ * Resolves the gold cost (1g..5g/7g) of a champion within a [MetaComp], checking hex placements
+ * first (by raw ID and normalized display name) and then Riot's live/preloaded catalog.
+ */
+fun resolveCompUnitCost(unitName: String, comp: MetaComp): Int {
+    val cleanTarget = formatChampionDisplayName(unitName).lowercase()
+    val rawTarget = unitName.trim().lowercase()
+    val placementCost = comp.hexPlacements.firstOrNull { placement ->
+        val pRaw = placement.unitName.trim().lowercase()
+        val pClean = formatChampionDisplayName(placement.unitName).lowercase()
+        pRaw == rawTarget || pClean == cleanTarget
+    }?.cost?.takeIf { it > 0 }
+    if (placementCost != null) return placementCost
+
+    val resolverCost = TftAssetIconResolver.getChampionCost(unitName, comp.environment)
+        ?: TftAssetIconResolver.getChampionCost(formatChampionDisplayName(unitName), comp.environment)
+    if (resolverCost != null && resolverCost > 0) return resolverCost
+
+    return if (unitName.equals(comp.carryName, ignoreCase = true) ||
+        cleanTarget == formatChampionDisplayName(comp.carryName).lowercase()
+    ) 4 else 3
+}
+
+/**
+ * Orders a composition's core champions from 1-cost upwards (1g -> 2g -> 3g -> 4g -> 5g -> 7g),
+ * preserving original order among units of the same gold cost.
+ */
+fun sortCompUnitsByCostAscending(comp: MetaComp): List<String> {
+    if (comp.coreUnits.size <= 1) return comp.coreUnits
+    return comp.coreUnits
+        .withIndex()
+        .sortedWith(
+            compareBy<IndexedValue<String>> { indexed ->
+                val cost = resolveCompUnitCost(indexed.value, comp)
+                if (cost in 1..10) cost else 99
+            }.thenBy { it.index }
+        )
+        .map { it.value }
 }
 
 private val EXTERNAL_SOURCE_SENTENCE_REGEX = Regex(
@@ -945,51 +988,106 @@ fun TftAugmentChip(
 }
 
 @Composable
-fun CheckForUpdatesButton(
-    isRefreshing: Boolean,
-    onCheckUpdatesClick: () -> Unit,
+fun SplitCheckForUpdatesRow(
+    isRefreshingComps: Boolean,
+    isCheckingAppUpdate: Boolean,
+    onCheckCompUpdates: () -> Unit,
+    onCheckAppUpdates: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    FilledTonalButton(
-        onClick = onCheckUpdatesClick,
-        enabled = !isRefreshing,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
-        ),
-        colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-            contentColor = MaterialTheme.colorScheme.onSurface
-        ),
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .testTag("check_for_updates_button")
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        if (isRefreshing) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.secondary
-            )
-        } else {
-            Icon(
-                imageVector = Icons.Default.Refresh,
-                contentDescription = stringResource(R.string.check_for_updates),
-                tint = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.size(18.dp)
+        FilledTonalButton(
+            onClick = onCheckCompUpdates,
+            enabled = !isRefreshingComps,
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+            border = BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+            ),
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ),
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag("check_for_comp_updates_button")
+        ) {
+            if (isRefreshingComps) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = stringResource(R.string.check_for_comp_updates),
+                    tint = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = stringResource(
+                    if (isRefreshingComps) R.string.checking_for_comp_updates else R.string.check_for_comp_updates
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                textAlign = TextAlign.Center,
+                overflow = TextOverflow.Ellipsis
             )
         }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = stringResource(
-                if (isRefreshing) R.string.checking_for_updates else R.string.check_for_updates
+
+        FilledTonalButton(
+            onClick = onCheckAppUpdates,
+            enabled = !isCheckingAppUpdate,
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+            border = BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
             ),
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ),
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag("check_for_app_updates_button")
+        ) {
+            if (isCheckingAppUpdate) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Download,
+                    contentDescription = stringResource(R.string.check_for_app_updates),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = stringResource(
+                    if (isCheckingAppUpdate) R.string.checking_for_app_updates else R.string.check_for_app_updates
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                textAlign = TextAlign.Center,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }

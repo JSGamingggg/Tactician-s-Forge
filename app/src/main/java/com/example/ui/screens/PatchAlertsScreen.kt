@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -324,7 +325,7 @@ fun AboutScreen(
                     )
                 }
                 Text(
-                    text = "Shows a draggable HexTome bubble over TFT Mobile that expands into your pinned favorites & 4×7 hex boards.",
+                    text = "Shows a draggable TFT's Helper bubble over TFT Mobile that expands into your pinned favorites & 4×7 hex boards.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -409,8 +410,8 @@ fun AboutScreen(
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Image(
-                            painter = painterResource(id = R.drawable.ic_hextome_emblem),
-                            contentDescription = "HexTome Emblem",
+                            painter = painterResource(id = R.drawable.ic_tfts_helper_emblem),
+                            contentDescription = "TFT's Helper Emblem",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .size(52.dp)
@@ -508,6 +509,46 @@ fun AboutScreen(
                         onAuthError = onAuthError,
                         onSignedOut = onSignedOut
                     )
+                }
+            }
+
+            // Riot Games Terms of Service & Fair Play Compliance
+            item {
+                HextechPanelCard(
+                    modifier = Modifier.testTag("riot_tos_compliance_card")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VerifiedUser,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                            Text(
+                                text = stringResource(R.string.riot_tos_fair_play_title),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Text(
+                            text = stringResource(R.string.riot_tos_fair_play_summary),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = stringResource(R.string.riot_legal_disclaimer),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                        )
+                    }
                 }
             }
 

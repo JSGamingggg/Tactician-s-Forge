@@ -170,6 +170,13 @@ fun AuthWelcomeScreen(
                 MadeByAttributionBadge(
                     modifier = Modifier.padding(top = 4.dp)
                 )
+                Text(
+                    text = stringResource(R.string.riot_legal_disclaimer),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
             }
         }
     }
@@ -204,7 +211,7 @@ private fun AuthHeroBanner(bannerHeight: Dp) {
     ) {
         Image(
             painter = painterResource(id = R.drawable.img_hextech_banner),
-            contentDescription = "HexTome Hextech Arena",
+            contentDescription = "TFT's Helper Tactical Arena",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
@@ -227,8 +234,8 @@ private fun AuthHeroBanner(bannerHeight: Dp) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Image(
-                painter = painterResource(id = R.drawable.ic_hextome_emblem),
-                contentDescription = "HexTome Emblem",
+                painter = painterResource(id = R.drawable.ic_tfts_helper_emblem),
+                contentDescription = "TFT's Helper Emblem",
                 modifier = Modifier
                     .size(56.dp)
                     .clip(CircleShape)

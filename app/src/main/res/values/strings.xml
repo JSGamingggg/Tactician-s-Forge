@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name">HexTome</string>
-    <string name="app_tagline">Set 18 Enchanted Wilds Tactical Companion</string>
+    <string name="app_name">TFT\'s Helper</string>
+    <string name="app_tagline">Unofficial Auto-Battler Meta &amp; Board Companion</string>
     <string name="nav_meta">Meta</string>
     <string name="nav_tiers">Tiers</string>
     <string name="nav_patches">Patches</string>
@@ -19,11 +19,18 @@
     <string name="channel_overlay_name">Live Match Overlay</string>
     <string name="channel_overlay_desc">Persistent control notification while the in-game favorites overlay bubble is active.</string>
     <string name="channel_app_updates_name">App Releases &amp; Updates</string>
-    <string name="channel_app_updates_desc">Notifications when a new HexTome APK release is published to GitHub for in-app updating.</string>
+    <string name="channel_app_updates_desc">Notifications when a new TFT\'s Helper APK release is published to GitHub for in-app updating.</string>
     <string name="overlay_action_stop">Close Overlay</string>
     <string name="overlay_empty_pins">Star a composition and tap the pin icon to display it here during live matches.</string>
     <string name="made_by_credits">Made By JS96 + MK</string>
-    <string name="auto_sync_cadence_summary">Background Alerts: 15m Worker &amp; Alarm • Manual Check for Updates</string>
+    <string name="auto_sync_cadence_summary">Background Alerts: 15m Worker &amp; Alarm • Manual Comp &amp; App Update Checks</string>
     <string name="check_for_updates">Check for Updates</string>
     <string name="checking_for_updates">Checking for Updates…</string>
+    <string name="check_for_comp_updates">Check for Comp Updates</string>
+    <string name="checking_for_comp_updates">Checking Comps…</string>
+    <string name="check_for_app_updates">Check for App Updates</string>
+    <string name="checking_for_app_updates">Checking App…</string>
+    <string name="riot_legal_disclaimer">TFT\'s Helper isn\'t endorsed by Riot Games and doesn\'t reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</string>
+    <string name="riot_tos_fair_play_title">Riot Terms of Service &amp; Fair Play</string>
+    <string name="riot_tos_fair_play_summary">Read-only reference companion built strictly under Riot Games Legal Jibber Jabber and TFT Third-Party Policies: zero memory reading, zero game hooks, zero screen scraping, zero input automation, and no banned augment win-rate overlays. Team codes use standard manual clipboard paste into Riot\'s built-in Team Planner.</string>
 </resources>

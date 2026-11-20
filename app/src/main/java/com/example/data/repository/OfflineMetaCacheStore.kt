@@ -29,7 +29,7 @@ data class OfflineMetaBundle(
     val liveVersionInfo: LiveVersionInfo = LiveVersionInfo(
         livePatchVersion = "18.7",
         pbePatchVersion = "19.1-PBE",
-        source = "HexTome Live Meta Sync",
+        source = "TFT's Helper Live Meta Sync",
         checkedAtMillis = System.currentTimeMillis()
     ),
     val liveComps: List<MetaComp> = MetaCatalogData.liveComps,

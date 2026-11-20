@@ -1,6 +1,6 @@
 {
-  "name": "HexTome",
-  "description": "Teamfight Tactics companion app with LIVE & PBE meta snapshots, champion/item/augment tier lists, champion inspector, patch alerts, cloud-synced favorites, and a floating live-match overlay.",
+  "name": "TFT's Helper",
+  "description": "Unofficial Teamfight Tactics companion app with LIVE & PBE meta snapshots, champion/item/augment tier lists, champion inspector, patch alerts, cloud-synced favorites, and a Riot ToS-compliant floating live-match overlay.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

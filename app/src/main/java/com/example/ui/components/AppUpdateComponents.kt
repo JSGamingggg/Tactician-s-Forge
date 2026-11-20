@@ -796,7 +796,7 @@ fun AppUpdateSettingsCard(
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Check GitHub for App Update")
+                    Text(androidx.compose.ui.res.stringResource(com.example.R.string.check_for_app_updates))
                 }
             }
         }

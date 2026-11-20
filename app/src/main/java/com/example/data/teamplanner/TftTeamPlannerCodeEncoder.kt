@@ -79,12 +79,14 @@ object TftTeamPlannerCodeEncoder {
         "https://raw.communitydragon.org/pbe/plugins/rcp-be-lol-game-data/global/default/v1/tftchampions-teamplanner.json"
     const val CDRAGON_PBE_CHAMPIONS_FALLBACK_URL =
         "https://raw.communitydragon.org/pbe/plugins/rcp-be-lol-game-data/global/default/v1/tftchampions.json"
+    const val CDRAGON_PBE_TFT_DATA_URL =
+        "https://raw.communitydragon.org/pbe/cdragon/tft/en_us.json"
 
     private const val BROWSER_USER_AGENT =
         "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36"
 
-    private const val LIVE_CACHE_FILE = "tft_teamplanner_live_v3.json"
-    private const val PBE_CACHE_FILE = "tft_teamplanner_pbe_v3.json"
+    private const val LIVE_CACHE_FILE = "tft_teamplanner_live_v4.json"
+    private const val PBE_CACHE_FILE = "tft_teamplanner_pbe_v4.json"
     private const val PRELOAD_SET18_ASSET = "set18_catalog_preload.json"
     private const val PRELOAD_SET19_ASSET = "set19_pbe_catalog_preload.json"
     private const val CACHE_TTL_MS = 6L * 60L * 60L * 1000L // 6 hours
@@ -95,6 +97,10 @@ object TftTeamPlannerCodeEncoder {
     private val FLEXIBLE_SET_KEY_NUMBER_REGEX = Regex("""^(?:TFTSet|Set|TFT|DA|PT)[\s_-]*(\d+)(?:[^0-9].*)?$""", RegexOption.IGNORE_CASE)
     private val PURE_SET_NUMBER_REGEX = Regex("""^(\d{1,2})$""")
     private val CHAR_ID_SET_NUMBER_REGEX = Regex("""^(?:TFT|DA|PT)[\s_]*(\d{1,2})_|^DA_[A-Za-z]+(\d{2})(?:_|$)""", RegexOption.IGNORE_CASE)
+    private val NON_PLAYABLE_UNIT_REGEX = Regex(
+        """(?:dummy|prop|minion|summon|golem|training|chest|turret|herald|carousel|portal|crystal|tree|lifeblossom|stonebark|protector)""",
+        RegexOption.IGNORE_CASE
+    )
 
     private val memoryCatalogs = ConcurrentHashMap<TftEnvironment, TeamPlannerCatalog>()
     @Volatile
@@ -367,8 +373,12 @@ object TftTeamPlannerCodeEncoder {
 
         // 4. Do NOT emit bogus synthetic `001/002/003` codes that fail in Riot's TFT Team Planner
         val detail = diagnostics
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
             .distinct()
-            .firstOrNull { it.isNotBlank() }
+            .take(3)
+            .joinToString(" • ")
+            .takeIf { it.isNotBlank() }
         val userError = if (detail != null) {
             "Could not load Riot $expectedSetKey IDs ($detail)."
         } else {
@@ -489,16 +499,23 @@ object TftTeamPlannerCodeEncoder {
                 val rootArray = JSONArray(trimmed)
                 val grouped = LinkedHashMap<String, JSONArray>()
                 for (i in 0 until rootArray.length()) {
-                    val obj = rootArray.optJSONObject(i) ?: continue
-                    val charId = obj.optString("character_id")
-                        .ifBlank { obj.optString("characterId") }
-                        .ifBlank { obj.optString("apiName") }
-                        .ifBlank { obj.optString("id") }
+                    val rawObj = rootArray.optJSONObject(i) ?: continue
+                    val rec = rawObj.optJSONObject("character_record")
+                        ?: rawObj.optJSONObject("characterRecord")
+                        ?: rawObj
+                    val charId = rec.optString("character_id")
+                        .ifBlank { rec.optString("characterId") }
+                        .ifBlank { rec.optString("apiName") }
+                        .ifBlank { rec.optString("id") }
+                        .ifBlank { rawObj.optString("character_id") }
+                        .ifBlank { rawObj.optString("apiName") }
                         .trim()
-                    val explicitSetKey = obj.optString("set")
-                        .ifBlank { obj.optString("set_key") }
-                        .ifBlank { obj.optString("setKey") }
-                        .ifBlank { obj.optString("set_id") }
+                    val explicitSetKey = rec.optString("set")
+                        .ifBlank { rec.optString("set_key") }
+                        .ifBlank { rec.optString("setKey") }
+                        .ifBlank { rec.optString("set_id") }
+                        .ifBlank { rawObj.optString("set") }
+                        .ifBlank { rawObj.optString("set_key") }
                         .trim()
                     val resolvedKey = when {
                         explicitSetKey.isNotBlank() -> {
@@ -511,7 +528,7 @@ object TftTeamPlannerCodeEncoder {
                         }
                         else -> extractSetNumberFromCharacterId(charId)?.let { "TFTSet$it" }
                     } ?: continue
-                    grouped.getOrPut(resolvedKey) { JSONArray() }.put(obj)
+                    grouped.getOrPut(resolvedKey) { JSONArray() }.put(rawObj)
                 }
                 grouped.forEach { (setKey, arr) ->
                     val mapping = parseSetArray(setKey, arr, extraDisplayNameByNormalizedId, requireExplicitCodes)
@@ -521,17 +538,38 @@ object TftTeamPlannerCodeEncoder {
                 }
             } else {
                 val root = JSONObject(trimmed)
+                // Support cdragon/tft/en_us.json `setData` array: [{ "mutator": "TFTSet19", "number": 19, "champions": [...] }]
+                val setDataArr = root.optJSONArray("setData")
+                if (setDataArr != null) {
+                    for (i in 0 until setDataArr.length()) {
+                        val setObj = setDataArr.optJSONObject(i) ?: continue
+                        val champs = setObj.optJSONArray("champions") ?: continue
+                        val mutator = setObj.optString("mutator").trim()
+                        val setNum = setObj.optInt("number", -1).takeIf { it in 1..99 }
+                        val resolvedKey = mutator.ifBlank { setNum?.let { "TFTSet$it" }.orEmpty() }
+                        if (resolvedKey.isBlank()) continue
+                        val mapping = parseSetArray(resolvedKey, champs, extraDisplayNameByNormalizedId, requireExplicitCodes)
+                        if (mapping != null && mapping.entries.isNotEmpty()) {
+                            setsMap[mapping.setKey] = mapping
+                        }
+                    }
+                }
                 val containerObj = root.optJSONObject("sets")
                     ?: root.optJSONObject("data")
                     ?: root
                 val setKeys = containerObj.keys()
                 while (setKeys.hasNext()) {
                     val setKey = setKeys.next()
+                    if (setKey == "setData" || setKey == "items") continue
                     val rawNode = containerObj.opt(setKey) ?: continue
                     val arr = extractChampionArrayFromSetNode(rawNode) ?: continue
                     val mapping = parseSetArray(setKey, arr, extraDisplayNameByNormalizedId, requireExplicitCodes)
                     if (mapping != null && mapping.entries.isNotEmpty()) {
-                        setsMap[setKey] = mapping
+                        // Prefer v02 explicit-code mapping over v01 fallback if same key exists from setData
+                        val existing = setsMap[mapping.setKey]
+                        if (existing == null || (!existing.usesVersion02 && mapping.usesVersion02)) {
+                            setsMap[mapping.setKey] = mapping
+                        }
                     }
                 }
             }
@@ -555,6 +593,26 @@ object TftTeamPlannerCodeEncoder {
                     ?: rawNode.optJSONArray("items")
                     ?: rawNode.optJSONArray("data")
                     ?: run {
+                        // Check any nested JSONArray whose elements look like champion objects
+                        val arrayKeys = rawNode.keys()
+                        while (arrayKeys.hasNext()) {
+                            val k = arrayKeys.next()
+                            val candidateArr = rawNode.optJSONArray(k) ?: continue
+                            if (candidateArr.length() > 0) {
+                                val firstObj = candidateArr.optJSONObject(0)
+                                if (firstObj != null && (
+                                        firstObj.has("character_id") ||
+                                            firstObj.has("characterId") ||
+                                            firstObj.has("character_record") ||
+                                            firstObj.has("apiName") ||
+                                            firstObj.has("team_planner_code") ||
+                                            firstObj.has("teamPlannerCode")
+                                        )
+                                ) {
+                                    return candidateArr
+                                }
+                            }
+                        }
                         // Support map-style set objects keyed by character_id: { "TFT19_Ziggs": { "team_planner_code": 1152 } }
                         val synthesized = JSONArray()
                         val keys = rawNode.keys()
@@ -568,12 +626,16 @@ object TftTeamPlannerCodeEncoder {
                                 child.has("plannerCode") ||
                                 child.has("character_id") ||
                                 child.has("characterId") ||
+                                child.has("character_record") ||
                                 child.has("display_name") ||
                                 child.has("name") ||
                                 child.has("path")
                             ) {
                                 val clone = JSONObject(child.toString())
-                                if (clone.optString("character_id").isBlank() && clone.optString("characterId").isBlank()) {
+                                if (clone.optString("character_id").isBlank() &&
+                                    clone.optString("characterId").isBlank() &&
+                                    !clone.has("character_record")
+                                ) {
                                     clone.put("character_id", k)
                                 }
                                 synthesized.put(clone)
@@ -597,7 +659,8 @@ object TftTeamPlannerCodeEncoder {
             val displayName: String,
             val pathSlug: String,
             val rawCodeValue: Any?,
-            val isVariant: Boolean
+            val isVariant: Boolean,
+            val isPlayableShopUnit: Boolean
         )
 
         val rawEntries = mutableListOf<RawEntry>()
@@ -615,25 +678,35 @@ object TftTeamPlannerCodeEncoder {
                         displayName = enrichedDisplayName,
                         pathSlug = "",
                         rawCodeValue = null,
-                        isVariant = isChampionTraitVariant(charId, enrichedDisplayName)
+                        isVariant = isChampionTraitVariant(charId, enrichedDisplayName),
+                        isPlayableShopUnit = true
                     )
                 )
                 continue
             }
-            val obj = rawItem as? JSONObject ?: continue
-            val charId = obj.optString("character_id")
-                .ifBlank { obj.optString("characterId") }
-                .ifBlank { obj.optString("apiName") }
-                .ifBlank { obj.optString("id") }
+            val outerObj = rawItem as? JSONObject ?: continue
+            // Unwrap Riot's `v1/tftchampions.json` `character_record` wrapper if present
+            val rec = outerObj.optJSONObject("character_record")
+                ?: outerObj.optJSONObject("characterRecord")
+                ?: outerObj
+            val charId = rec.optString("character_id")
+                .ifBlank { rec.optString("characterId") }
+                .ifBlank { rec.optString("apiName") }
+                .ifBlank { rec.optString("id") }
+                .ifBlank { outerObj.optString("character_id") }
+                .ifBlank { outerObj.optString("apiName") }
                 .trim()
-            val pathStr = obj.optString("path")
-                .ifBlank { obj.optString("squareIconPath") }
-                .ifBlank { obj.optString("icon") }
+            val pathStr = rec.optString("path")
+                .ifBlank { outerObj.optString("path") }
+                .ifBlank { rec.optString("squareIconPath") }
+                .ifBlank { rec.optString("icon") }
                 .trim()
             val pathSlug = extractSlugFromAssetPath(pathStr)
-            val rawDisplayName = obj.optString("display_name")
-                .ifBlank { obj.optString("displayName") }
-                .ifBlank { obj.optString("name") }
+            val rawDisplayName = rec.optString("display_name")
+                .ifBlank { rec.optString("displayName") }
+                .ifBlank { rec.optString("name") }
+                .ifBlank { outerObj.optString("display_name") }
+                .ifBlank { outerObj.optString("name") }
                 .trim()
             val enrichedDisplayName = rawDisplayName.ifBlank {
                 extraDisplayNameByNormalizedId[normalizeKey(charId)]
@@ -642,15 +715,22 @@ object TftTeamPlannerCodeEncoder {
             }
             if (charId.isBlank() && enrichedDisplayName.isBlank()) continue
 
-            val rawCodeVal = extractRawPlannerCodeValue(obj)
+            val rawCodeVal = extractRawPlannerCodeValue(rec) ?: extractRawPlannerCodeValue(outerObj)
             val isVariant = isChampionTraitVariant(charId, enrichedDisplayName)
+            val traitsArr = rec.optJSONArray("traits")
+            val costVal = if (rec.has("cost")) rec.optInt("cost", -1) else -1
+            val hasExplicitEmptyTraits = traitsArr != null && traitsArr.length() == 0
+            val hasInvalidCost = costVal == 0 || costVal >= 11
+            val isNonShopProp = NON_PLAYABLE_UNIT_REGEX.containsMatchIn(charId) && (traitsArr == null || traitsArr.length() == 0)
+            val isPlayableShopUnit = !hasExplicitEmptyTraits && !hasInvalidCost && !isNonShopProp
             rawEntries.add(
                 RawEntry(
                     characterId = charId.ifBlank { enrichedDisplayName },
                     displayName = enrichedDisplayName,
                     pathSlug = pathSlug,
                     rawCodeValue = rawCodeVal,
-                    isVariant = isVariant
+                    isVariant = isVariant,
+                    isPlayableShopUnit = isPlayableShopUnit
                 )
             )
         }
@@ -674,19 +754,27 @@ object TftTeamPlannerCodeEncoder {
             return null
         }
 
+        val effectiveRawEntries = if (hasExplicitCodes) {
+            rawEntries
+        } else {
+            val playable = rawEntries.filter { it.isPlayableShopUnit }
+            if (playable.isNotEmpty()) playable else rawEntries
+        }
+        val effectiveExplicitCodes = if (hasExplicitCodes) parsedExplicitCodes else emptyList()
+
         val setNum = extractSetNumberFromKey(setKey)
-            ?: inferSetNumberFromCharacterIds(rawEntries.map { it.characterId })
+            ?: inferSetNumberFromCharacterIds(effectiveRawEntries.map { it.characterId })
         // Use Version 02 (3-hex-digit 12-bit Riot IDs) whenever explicit `team_planner_code` values are present;
         // if Riot omits `team_planner_code`, use Version 01 (2-hex-digit 1-based alphabetical index) instead of bogus 02/001.
         val usesVersion02 = hasExplicitCodes
 
-        val sortedForFallback = rawEntries.sortedBy { it.characterId.lowercase(Locale.US) }
+        val sortedForFallback = effectiveRawEntries.sortedBy { it.characterId.lowercase(Locale.US) }
         val fallbackIndexByCharId = sortedForFallback.mapIndexed { idx, e -> e.characterId to (idx + 1) }.toMap()
 
         val entries = mutableListOf<TeamPlannerChampionEntry>()
-        rawEntries.forEachIndexed { idx, raw ->
+        effectiveRawEntries.forEachIndexed { idx, raw ->
             val codeInt = if (hasExplicitCodes) {
-                parsedExplicitCodes[idx]?.takeIf { it > 0 } ?: return@forEachIndexed
+                effectiveExplicitCodes[idx]?.takeIf { it > 0 } ?: return@forEachIndexed
             } else {
                 fallbackIndexByCharId[raw.characterId] ?: return@forEachIndexed
             }
@@ -991,14 +1079,16 @@ object TftTeamPlannerCodeEncoder {
         val endpoints = if (environment == TftEnvironment.PBE) {
             listOf(
                 CandidateEndpoint(CDRAGON_PBE_TEAMPLANNER_URL, "pbe-planner"),
+                CandidateEndpoint(CDRAGON_PBE_CHAMPIONS_FALLBACK_URL, "pbe-champs"),
                 CandidateEndpoint(CDRAGON_LIVE_TEAMPLANNER_URL, "live-planner"),
-                CandidateEndpoint(CDRAGON_PBE_CHAMPIONS_FALLBACK_URL, "pbe-champs", requireExplicitCodes = true)
+                CandidateEndpoint(CDRAGON_LIVE_CHAMPIONS_FALLBACK_URL, "live-champs"),
+                CandidateEndpoint(CDRAGON_PBE_TFT_DATA_URL, "pbe-tft")
             )
         } else {
             listOf(
                 CandidateEndpoint(CDRAGON_LIVE_TEAMPLANNER_URL, "live-planner"),
                 CandidateEndpoint(CDRAGON_PBE_TEAMPLANNER_URL, "pbe-planner"),
-                CandidateEndpoint(CDRAGON_LIVE_CHAMPIONS_FALLBACK_URL, "live-champs", requireExplicitCodes = true)
+                CandidateEndpoint(CDRAGON_LIVE_CHAMPIONS_FALLBACK_URL, "live-champs")
             )
         }
 
@@ -1011,6 +1101,7 @@ object TftTeamPlannerCodeEncoder {
 
         val diagnostics = mutableListOf<String>()
         var firstParsedFallback: TeamPlannerCatalog? = null
+        var bestV01Match: Pair<TeamPlannerCatalog, String>? = null
 
         for (endpoint in endpoints) {
             val req = Request.Builder()
@@ -1058,19 +1149,36 @@ object TftTeamPlannerCodeEncoder {
                 firstParsedFallback = parsed
             }
 
-            val matchesRequired = requiredSetNumber == null ||
-                selectStrictSetMapping(parsed, requiredSetNumber, unitCandidates) != null
+            val matchedSet = if (requiredSetNumber == null) {
+                parsed.sets.values.firstOrNull()
+            } else {
+                selectStrictSetMapping(parsed, requiredSetNumber, unitCandidates)
+            }
 
-            if (matchesRequired) {
-                memoryCatalogs[environment] = parsed
-                runCatching {
-                    cacheFileFor(context, environment).writeText(body, Charsets.UTF_8)
+            if (matchedSet != null) {
+                if (matchedSet.usesVersion02 || requiredSetNumber == null) {
+                    memoryCatalogs[environment] = parsed
+                    runCatching {
+                        cacheFileFor(context, environment).writeText(body, Charsets.UTF_8)
+                    }
+                    return FetchCatalogOutcome(parsed, diagnostics)
+                } else if (bestV01Match == null) {
+                    // Keep verified Riot v01 alphabetical mapping while checking if a later endpoint has v02 IDs
+                    bestV01Match = parsed to body
                 }
-                return FetchCatalogOutcome(parsed, diagnostics)
             } else {
                 val availableKeys = parsed.sets.keys.toList().takeLast(4).joinToString(",")
                 diagnostics.add("${endpoint.label}: sets [$availableKeys]")
             }
+        }
+
+        if (bestV01Match != null) {
+            val (v01Catalog, v01Body) = bestV01Match
+            memoryCatalogs[environment] = v01Catalog
+            runCatching {
+                cacheFileFor(context, environment).writeText(v01Body, Charsets.UTF_8)
+            }
+            return FetchCatalogOutcome(v01Catalog, diagnostics)
         }
 
         if (firstParsedFallback != null) {

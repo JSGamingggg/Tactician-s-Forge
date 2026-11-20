@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "HexTome"
+rootProject.name = "TFT's Helper"
 
 include(":app")

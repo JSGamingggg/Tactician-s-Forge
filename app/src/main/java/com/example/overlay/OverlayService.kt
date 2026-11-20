@@ -177,7 +177,9 @@ import com.example.ui.components.championCostColor
 import com.example.ui.components.computeHexAvatarPixelBounds
 import com.example.ui.components.formatRiotAssetLabel
 import com.example.ui.components.resolveChampionDetailProfile
+import com.example.ui.components.resolveCompUnitCost
 import com.example.ui.components.sanitizeExternalSourceMentions
+import com.example.ui.components.sortCompUnitsByCostAscending
 import com.example.ui.util.DisplayRefreshRateHelper
 import com.example.ui.screens.groupCompsByTier
 import com.example.ui.theme.ArcaneCyan
@@ -340,12 +342,16 @@ internal fun resolveOverlayWindowScreenOrientation(
     @Suppress("UNUSED_PARAMETER") state: OverlayDisplayState
 ): Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 
+internal const val DEFAULT_LANDSCAPE_OVERLAY_WIDTH_DP = 650
+internal const val DEFAULT_LANDSCAPE_OVERLAY_HEIGHT_DP = 391
+
 data class OverlayDrawerDimensions(
     val widthDp: Dp,
     val maxHeightDp: Dp,
     val isLandscape: Boolean,
     val useSideDetailPane: Boolean = widthDp >= 480.dp,
-    val useTwoColumnCards: Boolean = widthDp >= 430.dp
+    val useTwoColumnCards: Boolean = widthDp >= 430.dp,
+    val useFixedDefaultHeight: Boolean = isLandscape
 )
 
 internal fun computeOverlayDrawerDimensions(
@@ -356,14 +362,19 @@ internal fun computeOverlayDrawerDimensions(
     val safeH = screenHeightDp.coerceAtLeast(240)
     val isLandscape = safeW > safeH
     val widthDp = if (isLandscape) {
-        // Adapt dynamically to take advantage of the full usable device width
-        (safeW - 16).coerceAtLeast(320).dp
+        // Default to 650dp in landscape, clamped safely inside usable screen width on compact displays
+        DEFAULT_LANDSCAPE_OVERLAY_WIDTH_DP
+            .coerceAtMost((safeW - 16).coerceAtLeast(280))
+            .dp
     } else {
         // Keep landscape card proportions (width > height) even if opened before display finishes rotating
         (safeW - 16).coerceAtLeast(260).dp
     }
     val maxHeightDp = if (isLandscape) {
-        (safeH - 20).coerceIn(220, 480).dp
+        // Default to 391dp in landscape, clamped safely inside usable screen height on compact displays
+        DEFAULT_LANDSCAPE_OVERLAY_HEIGHT_DP
+            .coerceAtMost((safeH - 16).coerceAtLeast(190))
+            .dp
     } else {
         (widthDp.value * 0.78f)
             .roundToInt()
@@ -376,9 +387,20 @@ internal fun computeOverlayDrawerDimensions(
         maxHeightDp = maxHeightDp,
         isLandscape = isLandscape,
         useSideDetailPane = widthDp >= 480.dp,
-        useTwoColumnCards = widthDp >= 430.dp
+        useTwoColumnCards = widthDp >= 430.dp,
+        useFixedDefaultHeight = isLandscape
     )
 }
+
+internal fun shouldResetOverlaySizeForOrientationChange(
+    previousIsLandscape: Boolean?,
+    currentIsLandscape: Boolean
+): Boolean = previousIsLandscape != null && previousIsLandscape != currentIsLandscape
+
+internal fun resolveEffectiveOverlayHeightDp(
+    customHeightDp: Dp?,
+    defaultDims: OverlayDrawerDimensions
+): Dp? = customHeightDp ?: defaultDims.maxHeightDp.takeIf { defaultDims.useFixedDefaultHeight }
 
 data class OverlaySizeBounds(
     val minWidthDp: Float,
@@ -594,6 +616,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private val customHeightDpState = mutableStateOf<Float?>(null)
     private var savedExpandedOriginPx: Pair<Int, Int>? = null
     private var savedBubblePosPx: Pair<Int, Int>? = null
+    private var lastKnownIsLandscape: Boolean? = null
     private val configurationVersion = mutableIntStateOf(0)
     private val allCompsState = mutableStateOf<List<MetaComp>>(emptyList())
     private val allChampionsState = mutableStateOf<List<ChampionTierEntry>>(emptyList())
@@ -876,14 +899,28 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         return computeOverlayDrawerDimensions(screenWidthDp = widthDp, screenHeightDp = heightDp)
     }
 
+    private fun syncOrientationTransition(bounds: OverlayWindowBounds) {
+        val currentIsLandscape = bounds.usableWidthPx > bounds.usableHeightPx
+        if (shouldResetOverlaySizeForOrientationChange(lastKnownIsLandscape, currentIsLandscape)) {
+            customWidthDpState.value = null
+            customHeightDpState.value = null
+            savedExpandedOriginPx = null
+        }
+        lastKnownIsLandscape = currentIsLandscape
+    }
+
     private fun activeExpandedHeightDpValue(bounds: OverlayWindowBounds = currentWindowBounds()): Float {
         customHeightDpState.value?.let { return it }
+        val defaultDims = currentDrawerDimensions(bounds)
+        if (defaultDims.useFixedDefaultHeight) {
+            return defaultDims.maxHeightDp.value
+        }
         val measuredPx = drawerView?.height?.takeIf { it > 0 }
         if (measuredPx != null) {
             val sizeBounds = currentSizeBounds(bounds)
             return (measuredPx / bounds.density).coerceIn(sizeBounds.minHeightDp, sizeBounds.maxHeightDp)
         }
-        return currentDrawerDimensions(bounds).maxHeightDp.value
+        return defaultDims.maxHeightDp.value
     }
 
     private fun applyExpandedBoundsToWindow(
@@ -897,12 +934,13 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         val sizeBounds = currentSizeBounds(bounds)
         val defaultDims = currentDrawerDimensions(bounds)
         val (clampedW, clampedH) = clampOverlayCustomSize(widthDp, heightDp, defaultDims, sizeBounds)
+        val effectiveFixedH = resolveEffectiveOverlayHeightDp(clampedH, defaultDims)
 
         customWidthDpState.value = widthDp?.let { clampedW.value }
         customHeightDpState.value = clampedH?.value
 
         val effectiveWpx = (clampedW.value * bounds.density).roundToInt()
-        val effectiveHpx = ((clampedH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
+        val effectiveHpx = ((effectiveFixedH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
         val minLeftX = bounds.safeLeftPx + dpToPx(8)
         val maxLeftX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - dpToPx(8)).coerceAtLeast(minLeftX)
         val minTopY = bounds.safeTopPx + dpToPx(8)
@@ -910,7 +948,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
         drawerLayoutParams.gravity = Gravity.TOP or Gravity.START
         drawerLayoutParams.width = effectiveWpx
-        drawerLayoutParams.height = if (clampedH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
+        drawerLayoutParams.height = if (effectiveFixedH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
         val candidateX = targetX ?: savedExpandedOriginPx?.first ?: drawerLayoutParams.x
         val candidateY = targetY ?: savedExpandedOriginPx?.second ?: drawerLayoutParams.y
         val clampedX = candidateX.coerceIn(minLeftX, maxLeftX)
@@ -959,6 +997,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
 
     private fun clampOverlayPositionForCurrentBounds() {
         val bounds = currentWindowBounds()
+        syncOrientationTransition(bounds)
         val expandedMarginPx = dpToPx(8)
         val minY = bounds.safeTopPx + expandedMarginPx
 
@@ -971,21 +1010,24 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                 defaultDims,
                 sizeBounds
             )
+            val effectiveFixedH = resolveEffectiveOverlayHeightDp(activeH, defaultDims)
             if (customWidthDpState.value != null) customWidthDpState.value = activeW.value
             if (customHeightDpState.value != null) customHeightDpState.value = activeH?.value
 
             val effectiveWpx = (activeW.value * bounds.density).roundToInt()
-            val effectiveHpx = ((activeH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
+            val effectiveHpx = ((effectiveFixedH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
             val minExpandedX = bounds.safeLeftPx + expandedMarginPx
             val maxExpandedX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - expandedMarginPx).coerceAtLeast(minExpandedX)
             val maxExpandedY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - expandedMarginPx).coerceAtLeast(minY)
+            val defaultExpandedX = if (defaultDims.isLandscape) (minExpandedX + maxExpandedX) / 2 else minExpandedX
+            val defaultExpandedY = if (defaultDims.isLandscape) (minY + maxExpandedY) / 2 else (bounds.safeTopPx + dpToPx(72))
 
             drawerLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.EXPANDED)
             drawerLayoutParams.gravity = Gravity.TOP or Gravity.START
             drawerLayoutParams.width = effectiveWpx
-            drawerLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
-            val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
-            val preferredY = savedExpandedOriginPx?.second ?: (bounds.safeTopPx + dpToPx(72))
+            drawerLayoutParams.height = if (effectiveFixedH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
+            val preferredX = savedExpandedOriginPx?.first ?: defaultExpandedX
+            val preferredY = savedExpandedOriginPx?.second ?: defaultExpandedY
             drawerLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
             drawerLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
             DisplayRefreshRateHelper.applyToLayoutParams(this, drawerLayoutParams)
@@ -1033,6 +1075,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private fun syncDrawerWindowState(isOpen: Boolean) {
         if (!::drawerLayoutParams.isInitialized) return
         val bounds = currentWindowBounds()
+        syncOrientationTransition(bounds)
         val expandedMarginPx = dpToPx(8)
         val minY = bounds.safeTopPx + expandedMarginPx
         val defaultDims = currentDrawerDimensions(bounds)
@@ -1043,16 +1086,19 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             defaultDims,
             sizeBounds
         )
+        val effectiveFixedH = resolveEffectiveOverlayHeightDp(activeH, defaultDims)
         val effectiveWpx = (activeW.value * bounds.density).roundToInt()
-        val effectiveHpx = ((activeH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
+        val effectiveHpx = ((effectiveFixedH?.value ?: defaultDims.maxHeightDp.value) * bounds.density).roundToInt()
         val minExpandedX = bounds.safeLeftPx + expandedMarginPx
         val maxExpandedX = (bounds.widthPx - bounds.safeRightPx - effectiveWpx - expandedMarginPx).coerceAtLeast(minExpandedX)
         val maxExpandedY = (bounds.heightPx - bounds.safeBottomPx - effectiveHpx - expandedMarginPx).coerceAtLeast(minY)
+        val defaultExpandedX = if (defaultDims.isLandscape) (minExpandedX + maxExpandedX) / 2 else minExpandedX
+        val defaultExpandedY = if (defaultDims.isLandscape) (minY + maxExpandedY) / 2 else (bounds.safeTopPx + dpToPx(72))
 
         drawerLayoutParams.screenOrientation = resolveOverlayWindowScreenOrientation(displayState.value)
         drawerLayoutParams.gravity = Gravity.TOP or Gravity.START
         drawerLayoutParams.width = effectiveWpx
-        drawerLayoutParams.height = if (activeH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
+        drawerLayoutParams.height = if (effectiveFixedH != null) effectiveHpx else WindowManager.LayoutParams.WRAP_CONTENT
         if (!isOpen) {
             isSearchInputFocused = false
         }
@@ -1064,8 +1110,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         drawerLayoutParams.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
 
         if (isOpen) {
-            val preferredX = savedExpandedOriginPx?.first ?: minExpandedX
-            val preferredY = savedExpandedOriginPx?.second ?: (bounds.safeTopPx + dpToPx(72))
+            val preferredX = savedExpandedOriginPx?.first ?: defaultExpandedX
+            val preferredY = savedExpandedOriginPx?.second ?: defaultExpandedY
             drawerLayoutParams.x = preferredX.coerceIn(minExpandedX, maxExpandedX)
             drawerLayoutParams.y = preferredY.coerceIn(minY, maxExpandedY)
         }
@@ -1125,21 +1171,32 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         }
 
         val initialBounds = currentWindowBounds()
+        lastKnownIsLandscape = initialBounds.usableWidthPx > initialBounds.usableHeightPx
         val initialDrawerDims = currentDrawerDimensions(initialBounds)
+        val initialFixedHeightDp = resolveEffectiveOverlayHeightDp(null, initialDrawerDims)
         val initialDrawerWpx = (initialDrawerDims.widthDp.value * initialBounds.density).roundToInt()
+        val initialDrawerHpx = ((initialFixedHeightDp?.value ?: initialDrawerDims.maxHeightDp.value) * initialBounds.density).roundToInt()
         val initialMarginPx = dpToPx(8)
-        val initialDrawerY = (initialBounds.safeTopPx + dpToPx(72))
-            .coerceAtMost((initialBounds.heightPx - initialBounds.safeBottomPx - dpToPx(200)).coerceAtLeast(initialBounds.safeTopPx + initialMarginPx))
+        val initialMinX = initialBounds.safeLeftPx + initialMarginPx
+        val initialMaxX = (initialBounds.widthPx - initialBounds.safeRightPx - initialDrawerWpx - initialMarginPx).coerceAtLeast(initialMinX)
+        val initialMinY = initialBounds.safeTopPx + initialMarginPx
+        val initialMaxY = (initialBounds.heightPx - initialBounds.safeBottomPx - initialDrawerHpx - initialMarginPx).coerceAtLeast(initialMinY)
+        val initialDrawerX = if (initialDrawerDims.isLandscape) (initialMinX + initialMaxX) / 2 else initialMinX
+        val initialDrawerY = if (initialDrawerDims.isLandscape) {
+            (initialMinY + initialMaxY) / 2
+        } else {
+            (initialBounds.safeTopPx + dpToPx(72)).coerceIn(initialMinY, initialMaxY)
+        }
 
         drawerLayoutParams = WindowManager.LayoutParams(
             initialDrawerWpx,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (initialFixedHeightDp != null) initialDrawerHpx else WindowManager.LayoutParams.WRAP_CONTENT,
             windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = initialBounds.safeLeftPx + initialMarginPx
+            x = initialDrawerX
             y = initialDrawerY
             screenOrientation = resolveOverlayWindowScreenOrientation(OverlayDisplayState.EXPANDED)
             DisplayRefreshRateHelper.applyToLayoutParams(this@OverlayService, this)
@@ -1383,9 +1440,9 @@ private fun OverlayFloatingBauble(
         }
     )
     val actionLabel = if (isDrawerOpen) {
-        "Close HexTome Live Match Overlay or drag anywhere to move"
+        "Close TFT's Helper Live Match Overlay or drag anywhere to move"
     } else {
-        "Open HexTome Live Match Overlay or drag anywhere to move"
+        "Open TFT's Helper Live Match Overlay or drag anywhere to move"
     }
 
     Box(
@@ -1428,7 +1485,7 @@ private fun OverlayFloatingBauble(
                     )
                 } else {
                     Image(
-                        painter = painterResource(id = R.drawable.ic_hextome_emblem),
+                        painter = painterResource(id = R.drawable.ic_tfts_helper_emblem),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
@@ -1508,12 +1565,14 @@ private fun OverlayDrawerContent(
         defaultDims = defaultDrawerDims,
         bounds = sizeBounds
     )
+    val effectiveFixedHeightDp = resolveEffectiveOverlayHeightDp(activeHeightDp, defaultDrawerDims)
     val drawerDims = OverlayDrawerDimensions(
         widthDp = activeWidthDp,
-        maxHeightDp = activeHeightDp ?: defaultDrawerDims.maxHeightDp,
+        maxHeightDp = effectiveFixedHeightDp ?: defaultDrawerDims.maxHeightDp,
         isLandscape = defaultDrawerDims.isLandscape,
         useSideDetailPane = activeWidthDp >= 480.dp,
-        useTwoColumnCards = activeWidthDp >= 430.dp
+        useTwoColumnCards = activeWidthDp >= 430.dp,
+        useFixedDefaultHeight = defaultDrawerDims.useFixedDefaultHeight
     )
     val isCustomResized = customWidthDp != null || customHeightDp != null
     if (!isOpen) return
@@ -1609,10 +1668,10 @@ private fun OverlayDrawerContent(
     var resizeStartSize by remember { mutableStateOf(drawerDims.widthDp.value to drawerDims.maxHeightDp.value) }
     var resizeStartRaw by remember { mutableStateOf(0f to 0f) }
 
-    val surfaceSizeModifier = if (activeHeightDp != null) {
+    val surfaceSizeModifier = if (effectiveFixedHeightDp != null) {
         Modifier
             .width(activeWidthDp)
-            .height(activeHeightDp)
+            .height(effectiveFixedHeightDp)
     } else {
         Modifier
             .width(activeWidthDp)
@@ -1630,14 +1689,14 @@ private fun OverlayDrawerContent(
         modifier = surfaceSizeModifier.testTag("overlay_expanded_drawer")
     ) {
         Box(
-            modifier = if (activeHeightDp != null) {
+            modifier = if (effectiveFixedHeightDp != null) {
                 Modifier.fillMaxWidth().fillMaxHeight()
             } else {
                 Modifier.fillMaxWidth()
             }
         ) {
             Column(
-                modifier = (if (activeHeightDp != null) {
+                modifier = (if (effectiveFixedHeightDp != null) {
                     Modifier.fillMaxWidth().fillMaxHeight()
                 } else {
                     Modifier.fillMaxWidth()
@@ -1730,8 +1789,12 @@ private fun OverlayDrawerContent(
                         IconButton(
                             onClick = {
                                 if (isAtFullWidth) {
-                                    val compactW = (sizeBounds.maxWidthDp * 0.62f)
-                                        .coerceAtLeast(sizeBounds.minWidthDp)
+                                    val compactW = if (defaultDrawerDims.isLandscape) {
+                                        defaultDrawerDims.widthDp.value
+                                    } else {
+                                        (sizeBounds.maxWidthDp * 0.62f)
+                                            .coerceAtLeast(sizeBounds.minWidthDp)
+                                    }
                                     onResizeExpandedWindow(compactW, customHeightDp, null)
                                 } else {
                                     onExtendFullWidth()
@@ -1910,7 +1973,7 @@ private fun OverlayDrawerContent(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .weight(1f, fill = activeHeightDp != null)
+                                .weight(1f, fill = effectiveFixedHeightDp != null)
                         ) {
                             AnimatedContent(
                                 targetState = Triple(browseMode, envFilter, tierFilter) to (selectedComp?.id to inspectedOverlayChampion?.first),
@@ -1932,7 +1995,7 @@ private fun OverlayDrawerContent(
                                             fallbackCost = activeOverlayChamp.second
                                         )
                                     }
-                                    val paneHeightModifier = if (activeHeightDp != null) {
+                                    val paneHeightModifier = if (effectiveFixedHeightDp != null) {
                                         Modifier.fillMaxHeight()
                                     } else {
                                         Modifier.heightIn(max = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp))
@@ -2016,7 +2079,7 @@ private fun OverlayDrawerContent(
                                 } else if (selectedComp != null) {
                                     val leftWeight = if (drawerDims.widthDp >= 600.dp) 0.49f else 0.46f
                                     val rightWeight = 1f - leftWeight
-                                    val paneHeightModifier = if (activeHeightDp != null) {
+                                    val paneHeightModifier = if (effectiveFixedHeightDp != null) {
                                         Modifier.fillMaxHeight()
                                     } else {
                                         Modifier.heightIn(max = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp))
@@ -2024,7 +2087,7 @@ private fun OverlayDrawerContent(
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .then(if (activeHeightDp != null) Modifier.fillMaxHeight() else Modifier),
+                                            .then(if (effectiveFixedHeightDp != null) Modifier.fillMaxHeight() else Modifier),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                                         verticalAlignment = Alignment.Top
                                     ) {
@@ -2046,7 +2109,7 @@ private fun OverlayDrawerContent(
                                         )
                                         OverlayHexBoardRightPane(
                                             comp = selectedComp,
-                                            fillAvailableHeight = activeHeightDp != null,
+                                            fillAvailableHeight = effectiveFixedHeightDp != null,
                                             maxPaneHeightDp = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp),
                                             onChampionClick = { unitName, cost ->
                                                 sessionState.inspectChampion(unitName, cost)
@@ -2712,9 +2775,12 @@ private fun OverlayCompLeftDetailPane(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                comp.coreUnits.take(10).forEach { unit ->
+                val sortedUnits = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
+                    sortCompUnitsByCostAscending(comp)
+                }
+                sortedUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
-                    val unitCost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3
+                    val unitCost = resolveCompUnitCost(unit, comp)
                     TftChampionTile(
                         name = unit,
                         cost = unitCost,
@@ -3037,9 +3103,12 @@ private fun OverlayCompCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                comp.coreUnits.take(10).forEach { unit ->
+                val sortedUnits = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
+                    sortCompUnitsByCostAscending(comp)
+                }
+                sortedUnits.take(10).forEach { unit ->
                     val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
-                    val unitCost = unitCosts[unit] ?: if (isCarryUnit) 4 else 3
+                    val unitCost = resolveCompUnitCost(unit, comp)
                     TftChampionTile(
                         name = unit,
                         cost = unitCost,

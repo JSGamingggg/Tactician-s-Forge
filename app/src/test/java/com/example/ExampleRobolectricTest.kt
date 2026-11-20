@@ -645,10 +645,11 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `overlay drawer dimensions adapt to full device width and enable side detail pane in landscape`() {
+    fun `overlay drawer dimensions default to 650x391dp in landscape and adapt safely to compact viewports`() {
         val portraitViewport = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 411, screenHeightDp = 915)
         assertFalse(portraitViewport.isLandscape)
         assertFalse(portraitViewport.useSideDetailPane)
+        assertFalse(portraitViewport.useFixedDefaultHeight)
         assertEquals((411 - 16).dp, portraitViewport.widthDp)
         assertTrue(portraitViewport.widthDp > portraitViewport.maxHeightDp)
         assertTrue(portraitViewport.maxHeightDp.value < 915f)
@@ -657,22 +658,42 @@ class ExampleRobolectricTest {
         assertTrue(landscapePhone.isLandscape)
         assertTrue(landscapePhone.useSideDetailPane)
         assertTrue(landscapePhone.useTwoColumnCards)
-        assertEquals((915 - 16).dp, landscapePhone.widthDp)
-        assertTrue(landscapePhone.widthDp > landscapePhone.maxHeightDp)
-        assertTrue(landscapePhone.maxHeightDp.value <= 411f - 20f)
+        assertTrue(landscapePhone.useFixedDefaultHeight)
+        assertEquals(650.dp, landscapePhone.widthDp)
+        assertEquals(391.dp, landscapePhone.maxHeightDp)
+        assertEquals(
+            391.dp,
+            com.example.overlay.resolveEffectiveOverlayHeightDp(
+                customHeightDp = null,
+                defaultDims = landscapePhone
+            )
+        )
+        assertEquals(
+            null,
+            com.example.overlay.resolveEffectiveOverlayHeightDp(
+                customHeightDp = null,
+                defaultDims = portraitViewport
+            )
+        )
 
         val compactLandscape = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 640, screenHeightDp = 360)
         assertTrue(compactLandscape.isLandscape)
         assertTrue(compactLandscape.useSideDetailPane)
+        assertTrue(compactLandscape.useFixedDefaultHeight)
         assertEquals((640 - 16).dp, compactLandscape.widthDp)
-        assertTrue(compactLandscape.widthDp > compactLandscape.maxHeightDp)
-        assertTrue(compactLandscape.maxHeightDp.value <= 360f - 20f)
+        assertEquals((360 - 16).dp, compactLandscape.maxHeightDp)
 
         val tabletLandscape = com.example.overlay.computeOverlayDrawerDimensions(screenWidthDp = 1280, screenHeightDp = 800)
         assertTrue(tabletLandscape.isLandscape)
         assertTrue(tabletLandscape.useSideDetailPane)
-        assertEquals((1280 - 16).dp, tabletLandscape.widthDp)
-        assertTrue(tabletLandscape.maxHeightDp <= 480.dp)
+        assertTrue(tabletLandscape.useFixedDefaultHeight)
+        assertEquals(650.dp, tabletLandscape.widthDp)
+        assertEquals(391.dp, tabletLandscape.maxHeightDp)
+
+        assertTrue(com.example.overlay.shouldResetOverlaySizeForOrientationChange(previousIsLandscape = false, currentIsLandscape = true))
+        assertTrue(com.example.overlay.shouldResetOverlaySizeForOrientationChange(previousIsLandscape = true, currentIsLandscape = false))
+        assertFalse(com.example.overlay.shouldResetOverlaySizeForOrientationChange(previousIsLandscape = null, currentIsLandscape = true))
+        assertFalse(com.example.overlay.shouldResetOverlaySizeForOrientationChange(previousIsLandscape = true, currentIsLandscape = true))
     }
 
     @Test
@@ -2853,6 +2874,152 @@ class ExampleRobolectricTest {
         // Trait contexts MUST keep "Indie" intact
         assertEquals("Indie", com.example.ui.components.formatRiotAssetLabel("Indie"))
         assertEquals("Indie", com.example.ui.components.formatRiotAssetLabel("TFT19_Trait_Indie"))
+    }
+
+    @Test
+    fun `team composition champions sort strictly by gold cost ascending from 1g upwards`() {
+        val mixedComp = MetaComp(
+            id = "test_cost_sort",
+            title = "Hyperpop Reroll",
+            tier = TierRank.S,
+            environment = TftEnvironment.PBE,
+            setName = "Set 19",
+            patchTag = "19.1-PBE",
+            playstyle = "1-Cost Reroll",
+            avgPlacement = 3.45,
+            top4Rate = 62.0,
+            winRate = 18.0,
+            pickRate = 4.2,
+            trendDelta = "+0.3",
+            isTrending = true,
+            carryName = "Ziggs",
+            coreUnits = listOf("Swain", "Teemo", "Tristana", "Seraphine", "Kobuko", "Ziggs", "Lulu"),
+            traits = listOf("5 Hyperpop"),
+            hexPlacements = listOf(
+                HexUnitPlacement(row = 0, col = 3, unitName = "Swain", cost = 5, stars = 2),
+                HexUnitPlacement(row = 3, col = 6, unitName = "Teemo", cost = 4, stars = 2),
+                HexUnitPlacement(row = 3, col = 5, unitName = "Tristana", cost = 3, stars = 2),
+                HexUnitPlacement(row = 3, col = 4, unitName = "Seraphine", cost = 4, stars = 2),
+                HexUnitPlacement(row = 0, col = 2, unitName = "Kobuko", cost = 2, stars = 2),
+                HexUnitPlacement(row = 3, col = 0, unitName = "Ziggs", cost = 1, stars = 3, isCarry = true),
+                HexUnitPlacement(row = 3, col = 1, unitName = "Lulu", cost = 1, stars = 3)
+            ),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Slow roll at 5",
+            notes = ""
+        )
+
+        val sorted = com.example.ui.components.sortCompUnitsByCostAscending(mixedComp)
+        assertEquals(
+            listOf("Ziggs", "Lulu", "Kobuko", "Tristana", "Teemo", "Seraphine", "Swain"),
+            sorted
+        )
+        val sortedCosts = sorted.map { com.example.ui.components.resolveCompUnitCost(it, mixedComp) }
+        assertEquals(listOf(1, 1, 2, 3, 4, 4, 5), sortedCosts)
+    }
+
+    @Test
+    fun `set 19 pbe team planner unwraps character_record and falls back to cdragon tft data v01 when explicit codes absent`() {
+        val hyperpopComp = MetaComp(
+            id = "pbe_set19_hyperpop_test",
+            title = "Hyperpop Reroll",
+            tier = TierRank.S,
+            environment = TftEnvironment.PBE,
+            setName = "Set 19: Prismatic Tour",
+            patchTag = "19.1-PBE",
+            playstyle = "1-Cost Reroll",
+            avgPlacement = 3.45,
+            top4Rate = 62.0,
+            winRate = 18.0,
+            pickRate = 4.2,
+            trendDelta = "+0.3",
+            isTrending = true,
+            carryName = "Ziggs",
+            coreUnits = listOf("Ziggs", "Lulu", "Kobuko", "Tristana", "Teemo", "Seraphine", "Swain"),
+            traits = listOf("5 Hyperpop"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Slow roll at 5",
+            notes = ""
+        )
+
+        // 1. Wrapped `character_record` objects in v1/tftchampions.json with explicit team_planner_code
+        val wrappedV2Json = """
+            [
+              {"character_record": {"character_id": "TFT19_Ziggs", "display_name": "Ziggs", "team_planner_code": 1200, "cost": 1, "traits": ["Hyperpop"]}},
+              {"character_record": {"character_id": "TFT19_Lulu", "display_name": "Lulu", "team_planner_code": 1201, "cost": 1, "traits": ["Hyperpop"]}},
+              {"character_record": {"character_id": "TFT19_Kobuko", "display_name": "Kobuko", "team_planner_code": 1202, "cost": 2, "traits": ["Hyperpop"]}}
+            ]
+        """.trimIndent()
+        val wrappedCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(wrappedV2Json)
+        assertNotNull(wrappedCatalog)
+        val wrappedRes = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(hyperpopComp, wrappedCatalog!!)
+        assertTrue(wrappedRes.isSuccess)
+        assertEquals("TFTSet19", wrappedRes.setKey)
+        assertTrue(wrappedRes.code.startsWith("024b0"))
+        assertEquals(3, wrappedRes.matchedChampions.size)
+
+        // 2. Live PBE scenario: pbe-planner only returns TFTSet17/TFTSet18, pbe-champs lacks team_planner_code,
+        //    so encoder falls back to pbe/cdragon/tft/en_us.json `setData` and emits a valid Riot v01 `01...TFTSet19` code.
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        val cdragonSetDataJson = """
+            {
+              "setData": [
+                {
+                  "mutator": "TFTSet19",
+                  "number": 19,
+                  "champions": [
+                    {"apiName": "TFT19_Ziggs", "name": "Ziggs", "cost": 1, "traits": ["Hyperpop"]},
+                    {"apiName": "TFT19_Lulu", "name": "Lulu", "cost": 1, "traits": ["Hyperpop"]},
+                    {"apiName": "TFT19_Kobuko", "name": "Kobuko", "cost": 2, "traits": ["Hyperpop"]},
+                    {"apiName": "TFT19_Tristana", "name": "Tristana", "cost": 3, "traits": ["Hyperpop"]},
+                    {"apiName": "TFT19_Teemo", "name": "Teemo", "cost": 4, "traits": ["Hyperpop"]},
+                    {"apiName": "TFT19_Seraphine_Indie", "name": "Seraphine", "cost": 4, "traits": ["Hyperpop"]},
+                    {"apiName": "TFT19_Swain", "name": "Swain", "cost": 5, "traits": ["Frontman"]},
+                    {"apiName": "TFT19_TrainingDummy", "name": "Training Dummy", "cost": 11, "traits": []}
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val pbeClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val bodyStr = when {
+                    url.endsWith("tftchampions-teamplanner.json") ->
+                        """{"TFTSet17":[],"TFTSet18":[{"character_id":"DA_18_Kobuko","display_name":"Kobuko","team_planner_code":1001}]}"""
+                    url.endsWith("tftchampions.json") ->
+                        """[{"character_record":{"character_id":"TFT18_Ahri","display_name":"Ahri","cost":4,"traits":["Arcanist"]}}]"""
+                    else -> cdragonSetDataJson
+                }
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, bodyStr))
+                    .build()
+            }
+            .build()
+        val resolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, pbeClient)
+        }
+        assertTrue(resolved.isSuccess)
+        assertEquals("TFTSet19", resolved.setKey)
+        assertTrue(Regex("^01[0-9a-f]{20}TFTSet19$").matches(resolved.code))
+        assertEquals(7, resolved.matchedChampions.size)
+    }
+
+    @Test
+    fun `tfts helper rebrand split update button labels and riot legal disclaimer strings are configured`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        assertEquals("TFT's Helper", context.getString(R.string.app_name))
+        assertEquals("Check for Comp Updates", context.getString(R.string.check_for_comp_updates))
+        assertEquals("Check for App Updates", context.getString(R.string.check_for_app_updates))
+        val disclaimer = context.getString(R.string.riot_legal_disclaimer)
+        assertTrue(disclaimer.contains("isn't endorsed by Riot Games"))
+        assertTrue(disclaimer.contains("Riot Games, Inc."))
     }
 }
 

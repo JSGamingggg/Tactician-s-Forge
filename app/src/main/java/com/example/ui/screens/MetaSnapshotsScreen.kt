@@ -100,7 +100,7 @@ import com.example.ui.components.ChampionDetailModalSheet
 import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
 import com.example.ui.components.HextechPanelCard
-import com.example.ui.components.CheckForUpdatesButton
+import com.example.ui.components.SplitCheckForUpdatesRow
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftChampionTile
@@ -109,7 +109,9 @@ import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
 import com.example.ui.components.environmentSlideTransitionSpec
+import com.example.ui.components.resolveCompUnitCost
 import com.example.ui.components.sanitizeExternalSourceMentions
+import com.example.ui.components.sortCompUnitsByCostAscending
 import com.example.ui.theme.LocalHextechColors
 import com.example.ui.viewmodel.UiState
 import java.util.Locale
@@ -136,9 +138,11 @@ fun MetaSnapshotsScreen(
     liveVersionInfo: LiveVersionInfo?,
     offlineCacheStatus: OfflineCacheStatus,
     isRefreshing: Boolean,
+    isCheckingAppUpdate: Boolean = false,
     isGuestMode: Boolean,
     isOverlayRunning: Boolean,
     onRefreshSync: () -> Unit,
+    onCheckAppUpdates: () -> Unit = {},
     onSignInRequested: () -> Unit,
     onToggleOverlay: () -> Unit,
     onToggleFavorite: (MetaComp) -> Unit,
@@ -322,11 +326,13 @@ fun MetaSnapshotsScreen(
                         }
                     }
 
-                    // Check for Updates Action
+                    // Check for Comp & App Updates Actions
                     item {
-                        CheckForUpdatesButton(
-                            isRefreshing = isRefreshing,
-                            onCheckUpdatesClick = onRefreshSync
+                        SplitCheckForUpdatesRow(
+                            isRefreshingComps = isRefreshing,
+                            isCheckingAppUpdate = isCheckingAppUpdate,
+                            onCheckCompUpdates = onRefreshSync,
+                            onCheckAppUpdates = onCheckAppUpdates
                         )
                     }
 
@@ -880,9 +886,12 @@ private fun MetaCompCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                comp.coreUnits.forEach { unit ->
+                val sortedUnits = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
+                    sortCompUnitsByCostAscending(comp)
+                }
+                sortedUnits.forEach { unit ->
                     val isCarry = unit.equals(comp.carryName, ignoreCase = true)
-                    val cost = placementCostByUnit[unit] ?: if (isCarry) 4 else 3
+                    val cost = resolveCompUnitCost(unit, comp)
                     TftChampionTile(
                         name = unit,
                         cost = cost,

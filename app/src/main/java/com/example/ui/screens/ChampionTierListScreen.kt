@@ -74,7 +74,6 @@ import com.example.ui.components.DeltaBadge
 import com.example.ui.components.EnvironmentToggleBar
 import com.example.ui.components.HextechEmptyState
 import com.example.ui.components.HextechPanelCard
-import com.example.ui.components.CheckForUpdatesButton
 import com.example.ui.components.TftAssetIconResolver
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
@@ -348,13 +347,6 @@ fun ChampionTierListScreen(
                     )
                 }
             }
-        }
-
-        item {
-            CheckForUpdatesButton(
-                isRefreshing = isRefreshing,
-                onCheckUpdatesClick = onRefreshSync
-            )
         }
 
         item {
@@ -1239,15 +1231,16 @@ private fun AugmentTierCard(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Avg Place: ${String.format(Locale.US, "%.2f", augment.avgPlacement)}",
+                    text = "Curated ${augment.tier.label}-Tier Pick",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Top 4: ${augment.top4Rate}%",
+                    text = "${augment.augmentTier.label} Augment",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.secondary
                 )

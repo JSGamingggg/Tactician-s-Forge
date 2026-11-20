@@ -564,11 +564,14 @@ private fun AuthenticatedOrGuestWorkspace(
                                         liveVersionInfo = liveVersionInfo,
                                         offlineCacheStatus = offlineCacheStatus,
                                         isRefreshing = isRefreshingVersions,
+                                        isCheckingAppUpdate = appUpdateState.status is AppUpdateStatus.Checking,
                                         isGuestMode = currentUser == null,
                                         isOverlayRunning = isOverlayRunning,
                                         onRefreshSync = {
                                             mainViewModel.refreshPatchVersions(notifyIfUpdated = true)
-                                            mainViewModel.checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
+                                        },
+                                        onCheckAppUpdates = {
+                                            mainViewModel.checkForAppUpdate(userInitiated = true)
                                         },
                                         onSignInRequested = triggerGoogleSignIn,
                                         onToggleOverlay = toggleOverlayAction,
@@ -600,7 +603,6 @@ private fun AuthenticatedOrGuestWorkspace(
                                             isGuestMode = currentUser == null,
                                             onRefreshSync = {
                                                 mainViewModel.refreshPatchVersions(notifyIfUpdated = true)
-                                                mainViewModel.checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
                                             },
                                             onSignInRequested = triggerGoogleSignIn,
                                             patches = patchFeed,

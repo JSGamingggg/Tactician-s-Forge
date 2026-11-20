@@ -885,11 +885,13 @@ fun ChampionDetailSheetContent(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        comp.coreUnits.take(9).forEach { unitName ->
+                                        val sortedRoster = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
+                                            sortCompUnitsByCostAscending(comp)
+                                        }
+                                        sortedRoster.take(9).forEach { unitName ->
                                             val unitKey = normalizeChampionLookupKey(unitName)
                                             val unitCost = unitCosts[unitKey]
-                                                ?: TftAssetIconResolver.getChampionCost(unitName, comp.environment)
-                                                ?: 3
+                                                ?: resolveCompUnitCost(unitName, comp)
                                             val isUnitCarry = unitKey == normalizeChampionLookupKey(comp.carryName)
                                             val isCurrentUnit = unitKey == normalizeChampionLookupKey(profile.name)
                                             TftChampionAvatar(

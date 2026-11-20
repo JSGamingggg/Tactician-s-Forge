@@ -1,5 +1,7 @@
 package com.example.ui.viewmodel
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -26,6 +28,7 @@ import com.example.notifications.MetaUpdateNotifier
 import com.example.prefetch.MetaPrefetchScheduler
 import com.example.prefetch.PrefetchScope
 import com.example.prefetch.PrefetchTelemetryStore
+import com.example.data.teamplanner.TftTeamPlannerCodeEncoder
 import com.example.update.AppUpdateCoordinator
 import com.example.update.AppUpdateUiState
 import com.example.update.GitHubReleaseInfo
@@ -33,6 +36,7 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -99,6 +103,10 @@ class MainViewModel(
 
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
+
+    private val _copiedCompId = MutableStateFlow<String?>(null)
+    val copiedCompId: StateFlow<String?> = _copiedCompId.asStateFlow()
+    private var copiedCompClearJob: Job? = null
 
     val appUpdateState: StateFlow<AppUpdateUiState> = AppUpdateCoordinator.uiState
 
@@ -607,28 +615,67 @@ class MainViewModel(
         )
 
         viewModelScope.launch {
+            val resolvedCode = appContext?.let { ctx ->
+                runCatching {
+                    TftTeamPlannerCodeEncoder.resolveTeamCode(ctx, customComp)
+                }.getOrNull()?.takeIf { it.isSuccess }?.code.orEmpty()
+            }.orEmpty()
+            val enrichedCustomComp = if (resolvedCode.isNotBlank()) {
+                customComp.copy(teamPlannerCode = resolvedCode)
+            } else {
+                customComp
+            }
             if (currentUserId.isNullOrBlank()) {
                 localStore.saveLocalFavorite(
                     FavoriteCompDoc(
-                        id = customComp.id,
+                        id = enrichedCustomComp.id,
                         userId = "local",
-                        compId = customComp.id,
-                        environment = customComp.environment.name,
-                        title = customComp.title,
-                        tier = customComp.tier.name,
-                        playstyle = customComp.playstyle,
-                        carryName = customComp.carryName,
-                        coreUnits = customComp.coreUnits,
-                        hexPositions = customComp.hexPlacements.map { it.encode() },
+                        compId = enrichedCustomComp.id,
+                        environment = enrichedCustomComp.environment.name,
+                        title = enrichedCustomComp.title,
+                        tier = enrichedCustomComp.tier.name,
+                        playstyle = enrichedCustomComp.playstyle,
+                        carryName = enrichedCustomComp.carryName,
+                        coreUnits = enrichedCustomComp.coreUnits,
+                        hexPositions = enrichedCustomComp.hexPlacements.map { it.encode() },
                         pinnedToOverlay = true,
-                        notes = customComp.notes.takeIf { it.isNotBlank() }
+                        notes = enrichedCustomComp.notes.takeIf { it.isNotBlank() }
                     )
                 )
-                _snackbarMessage.value = "Created & pinned '${customComp.title}'"
+                _snackbarMessage.value = "Created & pinned '${enrichedCustomComp.title}'"
             } else {
-                firestoreRepo.saveFavoriteComp(customComp, pinnedToOverlay = true)
-                    .onSuccess { _snackbarMessage.value = "Synced & pinned '${customComp.title}'" }
+                firestoreRepo.saveFavoriteComp(enrichedCustomComp, pinnedToOverlay = true)
+                    .onSuccess { _snackbarMessage.value = "Synced & pinned '${enrichedCustomComp.title}'" }
                     .onFailure { _snackbarMessage.value = it.localizedMessage ?: "Failed to save composition" }
+            }
+        }
+    }
+
+    fun copyCompTeamCode(comp: MetaComp) {
+        val ctx = appContext ?: run {
+            _snackbarMessage.value = "Clipboard unavailable"
+            return
+        }
+        copiedCompClearJob?.cancel()
+        viewModelScope.launch {
+            val result = TftTeamPlannerCodeEncoder.resolveTeamCode(ctx, comp)
+            if (result.isSuccess) {
+                val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                clipboard?.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
+                _copiedCompId.value = comp.id
+                _snackbarMessage.value =
+                    "Copied ${result.setKey} code (${result.matchedChampions.size} units) • Paste in TFT"
+                copiedCompClearJob?.cancel()
+                copiedCompClearJob = viewModelScope.launch {
+                    delay(3000L)
+                    if (_copiedCompId.value == comp.id) {
+                        _copiedCompId.value = null
+                    }
+                }
+            } else {
+                _copiedCompId.value = null
+                _snackbarMessage.value =
+                    result.errorMessage ?: "Could not load Riot ${result.setKey} IDs — check connection"
             }
         }
     }

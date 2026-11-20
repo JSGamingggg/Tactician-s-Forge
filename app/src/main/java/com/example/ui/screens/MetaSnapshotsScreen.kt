@@ -43,7 +43,9 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PushPin
@@ -148,6 +150,8 @@ fun MetaSnapshotsScreen(
     onToggleFavorite: (MetaComp) -> Unit,
     onTogglePin: (String, Boolean) -> Unit,
     onCreateCustomComp: (String, TftEnvironment, TierRank, String, String, String, String) -> Unit,
+    copiedCompId: String? = null,
+    onCopyCompCode: (MetaComp) -> Unit = {},
     patches: List<PatchUpdateRecord> = emptyList(),
     champions: List<ChampionTierEntry> = emptyList(),
     items: List<ItemTierEntry> = emptyList(),
@@ -169,7 +173,10 @@ fun MetaSnapshotsScreen(
 
     val displayedComps = remember(comps, favorites, showFavoritesOnly, searchQuery, selectedFilter, environment) {
         val baseList = if (showFavoritesOnly) {
-            favorites.filter { it.environment == environment.name }.map { it.toMetaComp() }
+            val compsById = comps.associateBy { it.id }
+            favorites.filter { it.environment == environment.name }.map { fav ->
+                compsById[fav.compId.ifBlank { fav.id }] ?: fav.toMetaComp()
+            }
         } else {
             comps
         }
@@ -557,10 +564,12 @@ fun MetaSnapshotsScreen(
                                                     comp = comp,
                                                     isFavorite = isFav,
                                                     isPinned = isPinned,
+                                                    isCodeCopied = copiedCompId == comp.id,
                                                     onCardClick = { inspectedComp = comp },
                                                     onChampionClick = { unitName, cost ->
                                                         inspectedChampion = unitName to cost
                                                     },
+                                                    onCopyCode = { onCopyCompCode(comp) },
                                                     onToggleFavorite = { onToggleFavorite(comp) },
                                                     onTogglePin = {
                                                         if (!isFav) onToggleFavorite(comp)
@@ -586,10 +595,12 @@ fun MetaSnapshotsScreen(
                                             comp = comp,
                                             isFavorite = isFav,
                                             isPinned = isPinned,
+                                            isCodeCopied = copiedCompId == comp.id,
                                             onCardClick = { inspectedComp = comp },
                                             onChampionClick = { unitName, cost ->
                                                 inspectedChampion = unitName to cost
                                             },
+                                            onCopyCode = { onCopyCompCode(comp) },
                                             onToggleFavorite = { onToggleFavorite(comp) },
                                             onTogglePin = {
                                                 if (!isFav) onToggleFavorite(comp)
@@ -649,6 +660,8 @@ fun MetaSnapshotsScreen(
                                     comp = sideComp,
                                     isFavorite = isFav,
                                     isPinned = isPinned,
+                                    isCodeCopied = copiedCompId == sideComp.id,
+                                    onCopyCode = { onCopyCompCode(sideComp) },
                                     onToggleFavorite = { onToggleFavorite(sideComp) },
                                     onTogglePin = {
                                         if (!isFav) onToggleFavorite(sideComp)
@@ -679,6 +692,8 @@ fun MetaSnapshotsScreen(
                         comp = comp,
                         isFavorite = isFav,
                         isPinned = isPinned,
+                        isCodeCopied = copiedCompId == comp.id,
+                        onCopyCode = { onCopyCompCode(comp) },
                         onToggleFavorite = { onToggleFavorite(comp) },
                         onTogglePin = {
                             if (!isFav) onToggleFavorite(comp)
@@ -730,8 +745,10 @@ private fun MetaCompCard(
     comp: MetaComp,
     isFavorite: Boolean,
     isPinned: Boolean,
+    isCodeCopied: Boolean = false,
     onCardClick: () -> Unit,
     onChampionClick: ((String, Int) -> Unit)? = null,
+    onCopyCode: () -> Unit = {},
     onToggleFavorite: () -> Unit,
     onTogglePin: () -> Unit,
     modifier: Modifier = Modifier
@@ -876,11 +893,23 @@ private fun MetaCompCard(
 
             Spacer(Modifier.height(10.dp))
 
-            Text(
-                text = "Team Roster",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Team Roster",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                AppCopyCodeButton(
+                    compTitle = comp.title,
+                    copied = isCodeCopied,
+                    onClick = onCopyCode,
+                    testTag = "copy_code_${comp.id}"
+                )
+            }
             Spacer(Modifier.height(5.dp))
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -943,12 +972,59 @@ private fun StatCell(
     }
 }
 
+@Composable
+private fun AppCopyCodeButton(
+    compTitle: String,
+    copied: Boolean,
+    onClick: () -> Unit,
+    testTag: String,
+    modifier: Modifier = Modifier
+) {
+    val hextech = LocalHextechColors.current
+    val accent = if (copied) hextech.buff else MaterialTheme.colorScheme.secondary
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        color = accent.copy(alpha = if (copied) 0.22f else 0.14f),
+        border = BorderStroke(1.dp, accent.copy(alpha = if (copied) 0.95f else 0.65f)),
+        modifier = modifier
+            .defaultMinSize(minWidth = 48.dp, minHeight = 36.dp)
+            .testTag(testTag)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                contentDescription = if (copied) {
+                    "Copied TFT Team Planner code for $compTitle"
+                } else {
+                    "Copy TFT Team Planner code for $compTitle"
+                },
+                tint = accent,
+                modifier = Modifier.size(15.dp)
+            )
+            Text(
+                text = if (copied) "Copied" else "Copy Code",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = accent,
+                maxLines = 1
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CompDetailSheetContent(
     comp: MetaComp,
     isFavorite: Boolean,
     isPinned: Boolean,
+    isCodeCopied: Boolean = false,
+    onCopyCode: (() -> Unit)? = null,
     onToggleFavorite: () -> Unit,
     onTogglePin: () -> Unit,
     onChampionClick: ((String, Int) -> Unit)? = null
@@ -1031,6 +1107,38 @@ fun CompDetailSheetContent(
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(if (isPinned) "Pinned Overlay" else "Pin to Overlay")
+            }
+        }
+
+        if (onCopyCode != null) {
+            val hextech = LocalHextechColors.current
+            val accent = if (isCodeCopied) hextech.buff else MaterialTheme.colorScheme.secondary
+            OutlinedButton(
+                onClick = onCopyCode,
+                border = BorderStroke(1.2.dp, accent.copy(alpha = 0.85f)),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = accent.copy(alpha = if (isCodeCopied) 0.22f else 0.12f),
+                    contentColor = accent
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("detail_copy_code_${comp.id}")
+            ) {
+                Icon(
+                    imageVector = if (isCodeCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                    contentDescription = if (isCodeCopied) {
+                        "Copied TFT Team Planner code for ${comp.title}"
+                    } else {
+                        "Copy TFT Team Planner code for ${comp.title}"
+                    },
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (isCodeCopied) "Copied Team Planner Code" else "Copy Team Planner Code",
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 

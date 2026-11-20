@@ -2919,7 +2919,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `set 19 pbe team planner unwraps character_record and falls back to cdragon tft data v01 when explicit codes absent`() {
+    fun `set 19 pbe team planner enforces strict v02 codes resolves metatft and tftacademy live and enriches comps`() {
         val hyperpopComp = MetaComp(
             id = "pbe_set19_hyperpop_test",
             title = "Hyperpop Reroll",
@@ -2940,10 +2940,24 @@ class ExampleRobolectricTest {
             hexPlacements = emptyList(),
             augmentPriorities = emptyList(),
             levelingGuide = "Slow roll at 5",
-            notes = ""
+            notes = "",
+            sourceUrl = "https://tftacademy.com/tierlist/comps/set19/hyperpop-reroll"
         )
 
-        // 1. Wrapped `character_record` objects in v1/tftchampions.json with explicit team_planner_code
+        // 0. Strict v02 validator: modern sets (Set 14+, including Set 18 LIVE & Set 19 PBE) reject legacy v01 codes
+        val legacyV01Set19 = "0101020304050607000000TFTSet19"
+        val validV02Set19 = "024b04b14b24b34b44b54b6000000000TFTSet19"
+        org.junit.Assert.assertFalse(
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(legacyV01Set19, expectedSetNumber = 19)
+        )
+        assertTrue(
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(validV02Set19, expectedSetNumber = 19)
+        )
+        org.junit.Assert.assertFalse(
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(validV02Set19, expectedSetNumber = 18)
+        )
+
+        // 1. Wrapped `character_record` objects in v1/tftchampions.json with explicit v02 team_planner_code
         val wrappedV2Json = """
             [
               {"character_record": {"character_id": "TFT19_Ziggs", "display_name": "Ziggs", "team_planner_code": 1200, "cost": 1, "traits": ["Hyperpop"]}},
@@ -2959,39 +2973,30 @@ class ExampleRobolectricTest {
         assertTrue(wrappedRes.code.startsWith("024b0"))
         assertEquals(3, wrappedRes.matchedChampions.size)
 
-        // 2. Live PBE scenario: pbe-planner only returns TFTSet17/TFTSet18, pbe-champs lacks team_planner_code,
-        //    so encoder falls back to pbe/cdragon/tft/en_us.json `setData` and emits a valid Riot v01 `01...TFTSet19` code.
+        // 2. MetaTFT lookup `{ "units": [...] }` JSON resolves v02 Set 19 codes when CommunityDragon pbe-planner only has Set 17/18
         val context = ApplicationProvider.getApplicationContext<Context>()
         com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
-        val cdragonSetDataJson = """
+        val metaTftLookupJson = """
             {
-              "setData": [
-                {
-                  "mutator": "TFTSet19",
-                  "number": 19,
-                  "champions": [
-                    {"apiName": "TFT19_Ziggs", "name": "Ziggs", "cost": 1, "traits": ["Hyperpop"]},
-                    {"apiName": "TFT19_Lulu", "name": "Lulu", "cost": 1, "traits": ["Hyperpop"]},
-                    {"apiName": "TFT19_Kobuko", "name": "Kobuko", "cost": 2, "traits": ["Hyperpop"]},
-                    {"apiName": "TFT19_Tristana", "name": "Tristana", "cost": 3, "traits": ["Hyperpop"]},
-                    {"apiName": "TFT19_Teemo", "name": "Teemo", "cost": 4, "traits": ["Hyperpop"]},
-                    {"apiName": "TFT19_Seraphine_Indie", "name": "Seraphine", "cost": 4, "traits": ["Hyperpop"]},
-                    {"apiName": "TFT19_Swain", "name": "Swain", "cost": 5, "traits": ["Frontman"]},
-                    {"apiName": "TFT19_TrainingDummy", "name": "Training Dummy", "cost": 11, "traits": []}
-                  ]
-                }
+              "units": [
+                {"apiName": "TFT19_Ziggs", "name": "Ziggs", "team_planner_code": 1200},
+                {"apiName": "TFT19_Lulu", "name": "Lulu", "team_planner_code": 1201},
+                {"apiName": "TFT19_Kobuko", "name": "Kobuko", "team_planner_code": 1202},
+                {"apiName": "TFT19_Tristana", "name": "Tristana", "team_planner_code": 1203},
+                {"apiName": "TFT19_Seraphine_Indie", "name": "Seraphine", "team_planner_code": 1204},
+                {"apiName": "TFT19_Swain", "name": "Swain", "team_planner_code": 1205},
+                {"apiName": "TFT19_Teemo", "name": "Teemo", "team_planner_code": 1206}
               ]
             }
         """.trimIndent()
-        val pbeClient = okhttp3.OkHttpClient.Builder()
+        val metaTftClient = okhttp3.OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val url = chain.request().url.toString()
                 val bodyStr = when {
+                    url.contains("data.metatft.com") -> metaTftLookupJson
                     url.endsWith("tftchampions-teamplanner.json") ->
                         """{"TFTSet17":[],"TFTSet18":[{"character_id":"DA_18_Kobuko","display_name":"Kobuko","team_planner_code":1001}]}"""
-                    url.endsWith("tftchampions.json") ->
-                        """[{"character_record":{"character_id":"TFT18_Ahri","display_name":"Ahri","cost":4,"traits":["Arcanist"]}}]"""
-                    else -> cdragonSetDataJson
+                    else -> """[]"""
                 }
                 okhttp3.Response.Builder()
                     .request(chain.request())
@@ -3002,13 +3007,80 @@ class ExampleRobolectricTest {
                     .build()
             }
             .build()
-        val resolved = kotlinx.coroutines.runBlocking {
-            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, pbeClient)
+        val metaTftResolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, metaTftClient)
         }
-        assertTrue(resolved.isSuccess)
-        assertEquals("TFTSet19", resolved.setKey)
-        assertTrue(Regex("^01[0-9a-f]{20}TFTSet19$").matches(resolved.code))
-        assertEquals(7, resolved.matchedChampions.size)
+        assertTrue(metaTftResolved.isSuccess)
+        assertEquals("TFTSet19", metaTftResolved.setKey)
+        assertTrue(Regex("^02[0-9a-f]{30}TFTSet19$").matches(metaTftResolved.code))
+        assertEquals(7, metaTftResolved.matchedChampions.size)
+
+        // 3. Batch enrichCompsWithTeamCodes automatically attaches v02 copy codes to newly added/updated comps
+        val uncodedComp = hyperpopComp.copy(id = "pbe_set19_newly_added", teamPlannerCode = "")
+        val enriched = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                context = context,
+                comps = listOf(uncodedComp),
+                environment = TftEnvironment.PBE,
+                client = metaTftClient
+            )
+        }
+        assertEquals(1, enriched.size)
+        assertTrue(
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(
+                enriched.first().teamPlannerCode,
+                expectedSetNumber = 19
+            )
+        )
+
+        // 4. Live TFTAcademy guide fallback: when CDragon & MetaTFT lack Set 19 v02 IDs, resolver extracts v02 code from comp guide URL
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        context.filesDir.listFiles()?.filter { it.name.startsWith("tft_teamplanner_") }?.forEach { it.delete() }
+        val tftAcademyGuideClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val (code, bodyStr) = when {
+                    url.contains("tftacademy.com/tierlist/comps/set19/hyperpop-reroll") ->
+                        200 to """<html><body><script>window.__COMP__={"title":"Hyperpop Reroll","teamPlanner":{"code":"$validV02Set19"}};</script></body></html>"""
+                    url.endsWith("tftchampions-teamplanner.json") ->
+                        200 to """{"TFTSet17":[],"TFTSet18":[{"character_id":"DA_18_Kobuko","display_name":"Kobuko","team_planner_code":1001}]}"""
+                    else -> 404 to """{"error":"not found"}"""
+                }
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(code)
+                    .message(if (code == 200) "OK" else "Not Found")
+                    .body(okhttp3.ResponseBody.create(null, bodyStr))
+                    .build()
+            }
+            .build()
+        val academyResolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, tftAcademyGuideClient)
+        }
+        assertTrue(academyResolved.isSuccess)
+        assertEquals(validV02Set19, academyResolved.code)
+        assertEquals("TFTSet19", academyResolved.setKey)
+
+        // 5. Never emits bogus v01 code when NO v02 source has Set 19 IDs
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        context.filesDir.listFiles()?.filter { it.name.startsWith("tft_teamplanner_") }?.forEach { it.delete() }
+        val noSet19Client = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, """{"TFTSet18":[{"character_id":"DA_18_Kobuko","display_name":"Kobuko","team_planner_code":1001}]}"""))
+                    .build()
+            }
+            .build()
+        val unavailable = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, noSet19Client)
+        }
+        org.junit.Assert.assertFalse(unavailable.isSuccess)
+        org.junit.Assert.assertFalse(unavailable.code.startsWith("01"))
     }
 
     @Test

@@ -112,6 +112,8 @@ fun ChampionTierListScreen(
     pinnedIds: Set<String> = emptySet(),
     onToggleFavorite: ((MetaComp) -> Unit)? = null,
     onTogglePin: ((String, Boolean) -> Unit)? = null,
+    copiedCompId: String? = null,
+    onCopyCompCode: ((MetaComp) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var activeSubTab by rememberSaveable { mutableStateOf(TierCatalogTab.CHAMPIONS) }
@@ -753,6 +755,8 @@ fun ChampionTierListScreen(
                     comp = comp,
                     isFavorite = isFav,
                     isPinned = isPinned,
+                    isCodeCopied = copiedCompId == comp.id,
+                    onCopyCode = onCopyCompCode?.let { cb -> { cb(comp) } },
                     onToggleFavorite = { onToggleFavorite?.invoke(comp) },
                     onTogglePin = {
                         if (!isFav) onToggleFavorite?.invoke(comp)

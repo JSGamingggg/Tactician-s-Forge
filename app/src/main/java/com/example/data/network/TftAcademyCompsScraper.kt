@@ -1046,13 +1046,16 @@ class TftAcademyCompsScraper(
                             ).let { if (it in 0.0..1.0) it * 100.0 else it }
 
                             val placements = buildPlacements(parsedUnits, carry)
-                            val slugPart = node.optString("compSlug")
+                            val rawCompSlug = node.optString("compSlug")
                                 .ifBlank { node.optString("slug") }
+                                .trim()
+                            val slugPart = rawCompSlug
                                 .ifBlank { title }
                                 .lowercase(Locale.US)
                                 .replace(Regex("[^a-z0-9]+"), "_")
                                 .trim('_')
                             val compId = "tftacademy_${targetEnv.name.lowercase(Locale.US)}_$slugPart"
+                            val compSourceUrl = buildCompGuideUrl(targetEnv, rawCompSlug)
                             val leveling = cleanText(
                                 node.optString("levelingGuide")
                                     .ifBlank { node.optString("gameplan") }
@@ -1065,19 +1068,12 @@ class TftAcademyCompsScraper(
                                     .ifBlank { node.optString("description") }
                                     .ifBlank { node.optString("augmentsTip") }
                             )
-                            val rawTeamCode = listOf(
-                                node.optString("teamCode"),
-                                node.optString("team_code"),
-                                node.optString("teamPlannerCode"),
-                                node.optString("team_planner_code"),
-                                node.optString("plannerCode"),
-                                node.optString("planner_code"),
-                                node.optString("teamBuilderCode"),
-                                node.optString("compCode"),
-                                node.optString("code")
-                            ).firstOrNull {
-                                com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(it)
-                            }?.trim().orEmpty()
+                            val expectedSetNum = extractSetNumber(resolvedSet)
+                                ?: if (targetEnv == TftEnvironment.PBE) 19 else 18
+                            val rawTeamCode = extractEmbeddedTeamPlannerCode(
+                                node = node,
+                                expectedSetNumber = expectedSetNum
+                            )
 
                             out.add(
                                 MetaComp(
@@ -1101,7 +1097,7 @@ class TftAcademyCompsScraper(
                                     levelingGuide = leveling,
                                     notes = compNotes,
                                     setName = resolvedSet,
-                                    sourceUrl = compUrlForEnvironment(targetEnv),
+                                    sourceUrl = compSourceUrl,
                                     teamPlannerCode = rawTeamCode
                                 )
                             )
@@ -1310,6 +1306,10 @@ class TftAcademyCompsScraper(
             )
             val derivedTraits = deriveTraitsFromUnits(unitNames, targetEnv = targetEnv)
             val slugId = title.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+            val domExpectedSetNum = extractSetNumber(cardSet) ?: if (targetEnv == TftEnvironment.PBE) 19 else 18
+            val domTeamCode = com.example.data.teamplanner.TftTeamPlannerCodeEncoder
+                .extractFirstValidV02Code(blockHtml, expectedSetNumber = domExpectedSetNum)
+                .orEmpty()
             comps.add(
                 MetaComp(
                     id = "tftacademy_${targetEnv.name.lowercase(Locale.US)}_$slugId",
@@ -1350,11 +1350,76 @@ class TftAcademyCompsScraper(
                     levelingGuide = "$playstyle • $cardSet ($patchTag)",
                     notes = "",
                     setName = cardSet,
-                    sourceUrl = compUrlForEnvironment(targetEnv)
+                    sourceUrl = compUrlForEnvironment(targetEnv),
+                    teamPlannerCode = domTeamCode
                 )
             )
         }
         return comps
+    }
+
+    private fun buildCompGuideUrl(targetEnv: TftEnvironment, rawSlug: String): String {
+        val cleanSlug = rawSlug.trim().trimStart('/')
+        if (cleanSlug.isBlank()) return compUrlForEnvironment(targetEnv)
+        if (cleanSlug.startsWith("http://", ignoreCase = true) || cleanSlug.startsWith("https://", ignoreCase = true)) {
+            return cleanSlug
+        }
+        if (cleanSlug.startsWith("tierlist/comps/", ignoreCase = true)) {
+            return "$TFTACADEMY_ORIGIN/$cleanSlug"
+        }
+        val base = compUrlForEnvironment(targetEnv).trimEnd('/')
+        return "$base/$cleanSlug"
+    }
+
+    private fun extractEmbeddedTeamPlannerCode(
+        node: Any?,
+        expectedSetNumber: Int?,
+        depth: Int = 0
+    ): String {
+        if (node == null || depth > 5) return ""
+        return when (node) {
+            is String -> com.example.data.teamplanner.TftTeamPlannerCodeEncoder
+                .extractFirstValidV02Code(node, expectedSetNumber = expectedSetNumber)
+                .orEmpty()
+            is JSONObject -> {
+                val priorityKeys = listOf(
+                    "teamCode",
+                    "team_code",
+                    "teamPlannerCode",
+                    "team_planner_code",
+                    "plannerCode",
+                    "planner_code",
+                    "teamBuilderCode",
+                    "compCode",
+                    "riotCode",
+                    "importCode",
+                    "copyCode",
+                    "code"
+                )
+                for (key in priorityKeys) {
+                    val v = node.optString(key).trim()
+                    if (v.isNotEmpty() &&
+                        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(v, expectedSetNumber)
+                    ) {
+                        return v
+                    }
+                }
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val found = extractEmbeddedTeamPlannerCode(node.opt(keys.next()), expectedSetNumber, depth + 1)
+                    if (found.isNotEmpty()) return found
+                }
+                ""
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length().coerceAtMost(32)) {
+                    val found = extractEmbeddedTeamPlannerCode(node.opt(i), expectedSetNumber, depth + 1)
+                    if (found.isNotEmpty()) return found
+                }
+                ""
+            }
+            else -> ""
+        }
     }
 
     /**

@@ -710,7 +710,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             }
             copyFeedbackClearJob?.cancel()
             copyFeedbackClearJob = serviceScope.launch {
-                delay(if (copyBannerIsErrorState.value) 4500L else 3000L)
+                delay(if (copyBannerIsErrorState.value) 6000L else 3000L)
                 copiedCompIdState.value = null
                 copyBannerMessageState.value = null
                 copyBannerIsErrorState.value = false
@@ -1306,8 +1306,6 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         isDrawerOpen = displayState.value == OverlayDisplayState.EXPANDED,
                         isDragging = isDraggingState.value,
                         isPressed = isBaublePressedState.value,
-                        allCompsCount = allCompsState.value.size,
-                        favoritesCount = favoriteDocsState.value.size,
                         onToggleDrawer = ::toggleDrawerExpanded
                     )
                 }
@@ -1418,11 +1416,8 @@ private fun OverlayFloatingBauble(
     isDrawerOpen: Boolean,
     isDragging: Boolean,
     isPressed: Boolean,
-    allCompsCount: Int,
-    favoritesCount: Int,
     onToggleDrawer: () -> Unit
 ) {
-    val badgeCount = if (favoritesCount > 0) favoritesCount else allCompsCount
     val dragScale by animateFloatAsState(
         targetValue = when {
             isDragging -> 1.09f
@@ -1492,23 +1487,6 @@ private fun OverlayFloatingBauble(
                             .fillMaxSize()
                             .clip(CircleShape)
                     )
-                }
-                if (badgeCount > 0 && !isDrawerOpen) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(5.dp)
-                            .size(18.dp)
-                            .background(ArcaneCyan, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = badgeCount.coerceAtMost(99).toString(),
-                            color = ObsidianVoid,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
                 }
             }
         }

@@ -345,6 +345,7 @@ private fun AuthenticatedOrGuestWorkspace(
     val offlineCacheStatus by mainViewModel.offlineCacheStatus.collectAsStateWithLifecycle()
     val isRefreshingVersions by mainViewModel.isRefreshingVersions.collectAsStateWithLifecycle()
     val snackbarMessage by mainViewModel.snackbarMessage.collectAsStateWithLifecycle()
+    val copiedCompId by mainViewModel.copiedCompId.collectAsStateWithLifecycle()
     val appUpdateState by mainViewModel.appUpdateState.collectAsStateWithLifecycle()
 
     val hasPendingAppUpdate = appUpdateState.status is AppUpdateStatus.UpdateAvailable ||
@@ -578,6 +579,8 @@ private fun AuthenticatedOrGuestWorkspace(
                                         onToggleFavorite = mainViewModel::toggleFavorite,
                                         onTogglePin = mainViewModel::toggleOverlayPin,
                                         onCreateCustomComp = mainViewModel::saveCustomFavorite,
+                                        copiedCompId = copiedCompId,
+                                        onCopyCompCode = mainViewModel::copyCompTeamCode,
                                         patches = patchFeed,
                                         champions = championTiers,
                                         items = itemTiers,
@@ -611,6 +614,8 @@ private fun AuthenticatedOrGuestWorkspace(
                                             pinnedIds = pinIds,
                                             onToggleFavorite = mainViewModel::toggleFavorite,
                                             onTogglePin = mainViewModel::toggleOverlayPin,
+                                            copiedCompId = copiedCompId,
+                                            onCopyCompCode = mainViewModel::copyCompTeamCode,
                                             modifier = contentModifier
                                         )
                                     }

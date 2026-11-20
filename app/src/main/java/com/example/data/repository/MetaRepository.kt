@@ -236,16 +236,37 @@ class MetaRepository(
             val incomingPbeComps = tftAcademyPbeResult?.pbeComps.orEmpty()
 
             // Mirror TFTAcademy (LIVE & PBE Set 19) authoritatively whenever network comps arrive
-            val resolvedLiveComps = if (tftAcademyResult?.fetchedFromNetwork == true && incomingLiveComps.isNotEmpty()) {
+            val rawLiveComps = if (tftAcademyResult?.fetchedFromNetwork == true && incomingLiveComps.isNotEmpty()) {
                 incomingLiveComps
             } else {
                 currentBundle.liveComps
             }
-            val resolvedPbeComps = if (tftAcademyPbeResult?.fetchedFromNetwork == true && incomingPbeComps.isNotEmpty()) {
+            val rawPbeComps = if (tftAcademyPbeResult?.fetchedFromNetwork == true && incomingPbeComps.isNotEmpty()) {
                 incomingPbeComps
             } else {
                 currentBundle.pbeComps
             }
+            // Automatically attach verified v02 Riot Team Planner copy codes to all added/updated comps
+            val resolvedLiveComps = appContext?.let { ctx ->
+                runCatching {
+                    TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                        context = ctx,
+                        comps = rawLiveComps,
+                        environment = TftEnvironment.LIVE,
+                        client = publicClient
+                    )
+                }.getOrNull()
+            } ?: rawLiveComps
+            val resolvedPbeComps = appContext?.let { ctx ->
+                runCatching {
+                    TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                        context = ctx,
+                        comps = rawPbeComps,
+                        environment = TftEnvironment.PBE,
+                        client = publicClient
+                    )
+                }.getOrNull()
+            } ?: rawPbeComps
             val resolvedLiveCatalog = if (syncedFromNetwork) {
                 MetaCatalogSyncHelper.refreshLiveCatalog(
                     existingChampions = currentBundle.liveChampions,

@@ -106,7 +106,8 @@ import com.example.ui.components.SplitCheckForUpdatesRow
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftChampionTile
-import com.example.ui.components.TftHexBoard
+import com.example.ui.components.CompFullBoardRosterSection
+import com.example.ui.components.CompLevelTransitionGuideSection
 import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
@@ -419,7 +420,7 @@ fun MetaSnapshotsScreen(
                                 },
                                 subtitle = when {
                                     showFavoritesOnly -> "Star a ${environment.label} composition or tap Custom to craft your own board."
-                                    awaitingInitialSync -> "Tap Sync to load the latest ${environment.label} tier list and hex boards."
+                                    awaitingInitialSync -> "Tap Sync to load the latest ${environment.label} tier list, unit items, and level guides."
                                     else -> "Try clearing your search or switching between LIVE and PBE snapshots."
                                 },
                                 action = if (awaitingInitialSync && !isRefreshing) {
@@ -656,6 +657,8 @@ fun MetaSnapshotsScreen(
                                     isFavorite = isFav,
                                     isPinned = isPinned,
                                     isCodeCopied = copiedCompId == sideComp.id,
+                                    champions = champions,
+                                    allComps = comps,
                                     onCopyCode = { onCopyCompCode(sideComp) },
                                     onToggleFavorite = { onToggleFavorite(sideComp) },
                                     onTogglePin = {
@@ -688,6 +691,8 @@ fun MetaSnapshotsScreen(
                         isFavorite = isFav,
                         isPinned = isPinned,
                         isCodeCopied = copiedCompId == comp.id,
+                        champions = champions,
+                        allComps = comps,
                         onCopyCode = { onCopyCompCode(comp) },
                         onToggleFavorite = { onToggleFavorite(comp) },
                         onTogglePin = {
@@ -749,12 +754,6 @@ private fun MetaCompCard(
     modifier: Modifier = Modifier
 ) {
     val hextech = LocalHextechColors.current
-    val placementCostByUnit = remember(comp.id, comp.hexPlacements) {
-        comp.hexPlacements.associate { it.unitName to it.cost }
-    }
-    val carryItems = remember(comp.id, comp.hexPlacements) {
-        comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
-    }
 
     HextechPanelCard(
         accentBorder = comp.tier == TierRank.S,
@@ -927,21 +926,6 @@ private fun MetaCompCard(
                     )
                 }
             }
-
-            if (carryItems.isNotEmpty() || comp.augmentPriorities.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    carryItems.forEach { item ->
-                        TftItemChip(itemName = item, compact = true, environment = comp.environment)
-                    }
-                    comp.augmentPriorities.take(2).forEach { aug ->
-                        TftAugmentChip(augmentName = aug, compact = true)
-                    }
-                }
-            }
         }
     }
 }
@@ -1019,6 +1003,8 @@ fun CompDetailSheetContent(
     isFavorite: Boolean,
     isPinned: Boolean,
     isCodeCopied: Boolean = false,
+    champions: List<ChampionTierEntry> = emptyList(),
+    allComps: List<MetaComp> = emptyList(),
     onCopyCode: (() -> Unit)? = null,
     onToggleFavorite: () -> Unit,
     onTogglePin: () -> Unit,
@@ -1056,6 +1042,36 @@ fun CompDetailSheetContent(
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
+        }
+
+        val hextechColors = LocalHextechColors.current
+        // Full Composition Performance Stats Strip
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                        )
+                    ),
+                    RoundedCornerShape(12.dp)
+                )
+                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 9.dp)
+                .testTag("comp_detail_stats_${comp.id}"),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            StatCell(
+                label = "AVG",
+                value = String.format(Locale.US, "%.2f", comp.avgPlacement),
+                valueColor = if (comp.avgPlacement <= 3.9) hextechColors.buff else MaterialTheme.colorScheme.primary
+            )
+            StatCell("TOP 4", "${comp.top4Rate}%", valueColor = MaterialTheme.colorScheme.secondary)
+            StatCell("WIN", "${comp.winRate}%", valueColor = MaterialTheme.colorScheme.tertiary)
+            StatCell("PICK", "${comp.pickRate}%")
+            StatCell("STYLE", comp.playstyle, valueColor = MaterialTheme.colorScheme.primary)
         }
 
         if (comp.traits.isNotEmpty()) {
@@ -1137,35 +1153,17 @@ fun CompDetailSheetContent(
             }
         }
 
-        if (comp.hexPlacements.isNotEmpty()) {
-            Text(
-                text = "Board Positioning (4×7 Hex Grid)",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-            TftHexBoard(
-                placements = comp.hexPlacements,
-                environment = comp.environment,
-                onChampionClick = onChampionClick
-            )
-        }
+        CompFullBoardRosterSection(
+            comp = comp,
+            champions = champions,
+            allComps = allComps,
+            onChampionClick = onChampionClick
+        )
 
-        val carryItems = comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
-        if (carryItems.isNotEmpty()) {
-            Text(
-                text = "Carry Best-In-Slot Items (${comp.carryName})",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                carryItems.forEach { item ->
-                    TftItemChip(itemName = item, environment = comp.environment)
-                }
-            }
-        }
+        CompLevelTransitionGuideSection(
+            comp = comp,
+            onChampionClick = onChampionClick
+        )
 
         if (comp.augmentPriorities.isNotEmpty()) {
             Text(
@@ -1179,35 +1177,6 @@ fun CompDetailSheetContent(
             ) {
                 comp.augmentPriorities.forEach { aug ->
                     TftAugmentChip(augmentName = aug)
-                }
-            }
-        }
-
-        val cleanLevelingGuide = remember(comp.levelingGuide, comp.playstyle, comp.setName, comp.patchTag) {
-            sanitizeExternalSourceMentions(comp.levelingGuide)
-                .ifBlank { "${comp.playstyle} • ${comp.setName} (${comp.patchTag})" }
-        }
-        val cleanNotes = remember(comp.notes) {
-            sanitizeExternalSourceMentions(comp.notes)
-        }
-        HextechPanelCard {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = "Leveling & Tempo Guide",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = cleanLevelingGuide,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (cleanNotes.isNotBlank()) {
-                    Text(
-                        text = cleanNotes,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
                 }
             }
         }

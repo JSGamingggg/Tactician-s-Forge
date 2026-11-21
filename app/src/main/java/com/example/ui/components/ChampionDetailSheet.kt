@@ -599,7 +599,7 @@ fun ChampionDetailSheetContent(
             }
         }
 
-        // Optimal Items Section
+        // Optimal Items Section (tft.ninja Recommendations)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -612,7 +612,7 @@ fun ChampionDetailSheetContent(
                     modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = "Optimal Items (Best-In-Slot)",
+                    text = "Recommended Items (tft.ninja)",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold
@@ -626,7 +626,7 @@ fun ChampionDetailSheetContent(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
                     Text(
-                        text = "Flexible trait unit — build utility or frontline items matching your carry.",
+                        text = "No dedicated item build listed for ${profile.name} yet — sync ${profile.environment.label} comps from tft.ninja or flex utility/frontline items.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
@@ -747,7 +747,7 @@ fun ChampionDetailSheetContent(
             }
         }
 
-        // Synergy Compositions Section
+        // Recommended Compositions Section (tft.ninja)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -760,7 +760,7 @@ fun ChampionDetailSheetContent(
                     modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = "Synergy Compositions (${profile.synergyComps.size})",
+                    text = "Recommended Compositions (${profile.synergyComps.size})",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold
@@ -774,7 +774,7 @@ fun ChampionDetailSheetContent(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
                     Text(
-                        text = "No featured meta compositions synced for ${profile.name} in ${profile.environment.label} yet.",
+                        text = "No tft.ninja compositions synced for ${profile.name} in ${profile.environment.label} yet.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
@@ -821,7 +821,7 @@ fun ChampionDetailSheetContent(
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             Text(
-                                                text = "${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)} • Top 4 ${comp.top4Rate}%",
+                                                text = "${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)} • Top 4 ${comp.top4Rate}% • Win ${comp.winRate}%",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 maxLines = 1,
@@ -838,12 +838,8 @@ fun ChampionDetailSheetContent(
                                     }
                                 }
 
-                                // Champion role & equipped items inside this comp
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
+                                // Champion role & recommended items inside this comp
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
                                         color = if (match.isCarry) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
@@ -870,12 +866,19 @@ fun ChampionDetailSheetContent(
                                             )
                                         }
                                     }
-                                    match.equippedItems.take(3).forEach { itemName ->
-                                        TftItemIcon(
-                                            itemName = itemName,
-                                            size = 20.dp,
-                                            environment = comp.environment
-                                        )
+                                    if (match.equippedItems.isNotEmpty()) {
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            match.equippedItems.take(3).forEach { itemName ->
+                                                TftItemChip(
+                                                    itemName = itemName,
+                                                    compact = true,
+                                                    environment = comp.environment
+                                                )
+                                            }
+                                        }
                                     }
                                 }
 
@@ -888,7 +891,7 @@ fun ChampionDetailSheetContent(
                                         val sortedRoster = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
                                             sortCompUnitsByCostAscending(comp)
                                         }
-                                        sortedRoster.take(9).forEach { unitName ->
+                                        sortedRoster.forEach { unitName ->
                                             val unitKey = normalizeChampionLookupKey(unitName)
                                             val unitCost = unitCosts[unitKey]
                                                 ?: resolveCompUnitCost(unitName, comp)

@@ -53,7 +53,7 @@ class ExampleRobolectricTest {
         winRate = 18.1,
         pickRate = 8.4,
         isTrending = true,
-        trendDelta = "TFTAcademy ${environment.label}",
+        trendDelta = "Top Meta",
         traits = listOf("6 Elderwood", "4 Arcanist"),
         coreUnits = listOf("Ornn", "Lillia", carry, "Veigar", "Nami"),
         hexPlacements = listOf(
@@ -62,12 +62,16 @@ class ExampleRobolectricTest {
         ),
         augmentPriorities = listOf("Jeweled Lotus II", "Level Up!"),
         levelingGuide = "Fast 8 on 4-2",
-        notes = "Synced from tftacademy.com/tierlist/comps",
-        sourceUrl = TftAcademyCompsScraper.TFTACADEMY_COMPS_URL
+        notes = "Synced from tft.ninja",
+        sourceUrl = if (environment == TftEnvironment.PBE) {
+            com.example.data.network.TftNinjaCompsScraper.TFTNINJA_PBE_COMPS_URL
+        } else {
+            com.example.data.network.TftNinjaCompsScraper.TFTNINJA_LIVE_COMPS_URL
+        }
     )
 
     @Test
-    fun `offline cache store removes legacy comps and persists tftacademy comps`() {
+    fun `offline cache store removes non-tftninja comps and persists tftninja comps exclusively`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val store = OfflineMetaCacheStore(context)
 
@@ -77,15 +81,14 @@ class ExampleRobolectricTest {
 
         val seeded = store.readOrSeedBundle()
         assertTrue(store.hasPersistedCache())
-        // Preloaded real TFTAcademy Set 18 LIVE (35) & empty cold-start PBE until TFTAcademy Set 19 sync
-        assertEquals(35, seeded.liveComps.size)
-        assertTrue(seeded.liveComps.all { it.sourceUrl == TftAcademyCompsScraper.TFTACADEMY_COMPS_URL })
-        assertTrue(seeded.liveComps.any { it.tier == TierRank.S })
-        assertTrue(seeded.liveComps.any { it.tier == TierRank.X })
-        assertTrue(seeded.liveComps.all { it.traits.isNotEmpty() })
+        // Cold start must contain ZERO third-party/preloaded armies until synced from tft.ninja
+        assertTrue(seeded.liveComps.isEmpty())
         assertTrue(seeded.pbeComps.isEmpty())
-        assertEquals(35, seeded.toCacheStatus(environment = TftEnvironment.LIVE).compsCount)
+        assertEquals(0, seeded.toCacheStatus(environment = TftEnvironment.LIVE).compsCount)
         assertEquals(0, seeded.toCacheStatus(environment = TftEnvironment.PBE).compsCount)
+        // Preloaded champions & augments must not carry stale non-tft.ninja synergy comp titles
+        assertTrue(seeded.liveChampions.all { it.synergyComps.isEmpty() })
+        assertTrue(seeded.liveAugments.all { it.synergyComps.isEmpty() })
 
         // Complete Set 18 LIVE + Set 19 PBE catalogs preloaded cleanly for offline viewing
         assertEquals(74, seeded.liveChampions.size)
@@ -105,28 +108,30 @@ class ExampleRobolectricTest {
         assertTrue(seeded.pbeAugments.all { it.environment == TftEnvironment.PBE && it.description.isNotBlank() })
         assertTrue(seeded.pbeItemIcons.size >= 80)
 
-        val academyLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
-        val academyPbe = sampleTftAcademyComp("tftacademy_pbe_ionic_spark_hitmakers", "Ionic Spark Hitmakers", TftEnvironment.PBE, carry = "Jinx")
-            .copy(sourceUrl = TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL)
-        val legacyComp = academyLive.copy(id = "legacy_comp", sourceUrl = "https://legacy.example/comps")
-        val legacyPbeComp = academyPbe.copy(id = "legacy_tftactics_pbe", sourceUrl = "https://tftactics.gg/tierlist/team-comps/")
+        val ninjaLive = sampleTftAcademyComp("tftninja_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
+        val ninjaPbe = sampleTftAcademyComp("tftninja_pbe_ionic_spark_hitmakers", "Ionic Spark Hitmakers", TftEnvironment.PBE, carry = "Jinx")
+        val customLive = ninjaLive.copy(id = "custom_my_comp", title = "My Custom Comp", sourceUrl = "")
+        val academyLive = ninjaLive.copy(id = "tftacademy_live_ahri", sourceUrl = TftAcademyCompsScraper.TFTACADEMY_COMPS_URL)
+        val legacyComp = ninjaLive.copy(id = "legacy_comp", sourceUrl = "https://legacy.example/comps")
+        val academyPbe = ninjaPbe.copy(id = "tftacademy_pbe_comp", sourceUrl = TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL)
+        val legacyPbeComp = ninjaPbe.copy(id = "legacy_tftactics_pbe", sourceUrl = "https://tftactics.gg/tierlist/team-comps/")
 
         val updated = seeded.copy(
             liveVersionInfo = seeded.liveVersionInfo.copy(
                 livePatchVersion = "18.8",
                 pbePatchVersion = "19.1-PBE"
             ),
-            liveComps = listOf(academyLive, legacyComp),
-            pbeComps = listOf(academyPbe, legacyPbeComp)
+            liveComps = listOf(ninjaLive, customLive, academyLive, legacyComp),
+            pbeComps = listOf(ninjaPbe, academyPbe, legacyPbeComp)
         )
         assertTrue(store.writeBundle(updated))
 
         val reloaded = store.readOrSeedBundle()
         assertEquals("18.8", reloaded.liveVersionInfo.livePatchVersion)
         assertEquals("19.1-PBE", reloaded.liveVersionInfo.pbePatchVersion)
-        // Non-TFTAcademy live & legacy PBE comps are stripped automatically
-        assertEquals(listOf("tftacademy_live_ahri"), reloaded.liveComps.map { it.id })
-        assertEquals(listOf("tftacademy_pbe_ionic_spark_hitmakers"), reloaded.pbeComps.map { it.id })
+        // ALL non-tft.ninja armies (including TFTAcademy, TFTactics, and legacy) are strictly stripped
+        assertEquals(listOf("tftninja_live_ahri", "custom_my_comp"), reloaded.liveComps.map { it.id })
+        assertEquals(listOf("tftninja_pbe_ionic_spark_hitmakers"), reloaded.pbeComps.map { it.id })
     }
 
     @Test
@@ -282,13 +287,12 @@ class ExampleRobolectricTest {
     fun `main viewmodel loads guest mode offline catalog asynchronously with zero firestore access`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val cacheStore = OfflineMetaCacheStore(context)
-        val academyLive = sampleTftAcademyComp("tftacademy_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
-        val academyPbe = sampleTftAcademyComp("tftacademy_pbe_vayne", "Cyber Vayne", TftEnvironment.PBE, carry = "Vayne")
-            .copy(sourceUrl = TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL)
+        val ninjaLive = sampleTftAcademyComp("tftninja_live_ahri", "Elderwood Ahri", TftEnvironment.LIVE)
+        val ninjaPbe = sampleTftAcademyComp("tftninja_pbe_vayne", "Cyber Vayne", TftEnvironment.PBE, carry = "Vayne")
         cacheStore.writeBundle(
             OfflineMetaBundle(
-                liveComps = listOf(academyLive),
-                pbeComps = listOf(academyPbe)
+                liveComps = listOf(ninjaLive),
+                pbeComps = listOf(ninjaPbe)
             )
         )
         val localStore = LocalPreferencesStore(context)
@@ -1028,21 +1032,21 @@ class ExampleRobolectricTest {
         val cacheStore = OfflineMetaCacheStore(context)
         val seeded = cacheStore.readOrSeedBundle()
 
-        // Mutate and persist an updated cached snapshot as if synced online earlier
+        // Mutate and persist an updated cached snapshot as if synced online earlier from tft.ninja
         val syncedComp = sampleTftAcademyComp(
-            id = "tftacademy_live_cached_offline",
+            id = "tftninja_live_cached_offline",
             title = "Cached Offline Live Comp",
             environment = TftEnvironment.LIVE
         )
         val syncedPbeComp = sampleTftAcademyComp(
-            id = "tftacademy_pbe_cached_offline",
+            id = "tftninja_pbe_cached_offline",
             title = "Cached Offline PBE Comp",
             environment = TftEnvironment.PBE,
             carry = "Jinx"
-        ).copy(sourceUrl = TftAcademyCompsScraper.TFTACADEMY_PBE_COMPS_URL)
+        )
 
         val persisted = seeded.copy(
-            liveComps = listOf(syncedComp) + seeded.liveComps.take(5),
+            liveComps = listOf(syncedComp),
             pbeComps = listOf(syncedPbeComp)
         )
         assertTrue(cacheStore.writeBundle(persisted))
@@ -1062,6 +1066,7 @@ class ExampleRobolectricTest {
             cacheStore = OfflineMetaCacheStore(context),
             tftipsScraper = TftipsPatchScraper(offlineClient),
             tftAcademyScraper = TftAcademyCompsScraper(offlineClient),
+            tftNinjaScraper = com.example.data.network.TftNinjaCompsScraper(urlFetcher = { null }, rscFetcher = { null }),
             ddragonApi = offlineDdragonApi,
             publicClient = offlineClient
         )
@@ -1073,8 +1078,8 @@ class ExampleRobolectricTest {
         // Fresh cold-store instance reading solely from local storage must preserve all comps, tier lists, and PBE catalogs
         val reloadedStore = OfflineMetaCacheStore(context)
         val reloaded = reloadedStore.readOrSeedBundle()
-        assertTrue(reloaded.liveComps.any { it.id == "tftacademy_live_cached_offline" })
-        assertTrue(reloaded.pbeComps.any { it.id == "tftacademy_pbe_cached_offline" })
+        assertTrue(reloaded.liveComps.any { it.id == "tftninja_live_cached_offline" })
+        assertTrue(reloaded.pbeComps.any { it.id == "tftninja_pbe_cached_offline" })
         assertEquals(74, reloaded.liveChampions.size)
         assertEquals(94, reloaded.pbeChampions.size)
         assertTrue(reloaded.liveItems.size >= 140)
@@ -2108,7 +2113,12 @@ class ExampleRobolectricTest {
     @Test
     fun `asset prefetch planner prioritizes S-tier carries traits items augments deduplicates and honors scope`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val bundle = OfflineMetaCacheStore(context).readOrSeedBundle()
+        val seededBundle = OfflineMetaCacheStore(context).readOrSeedBundle()
+        val bundle = seededBundle.copy(
+            liveComps = listOf(
+                sampleTftAcademyComp("tftninja_live_prefetch_ahri", "Arcanist Ahri", TftEnvironment.LIVE, tier = TierRank.S, carry = "Ahri")
+            )
+        )
 
         val liveQueue = com.example.prefetch.AssetPrefetchPlanner.buildPrefetchQueue(
             bundle = bundle,
@@ -3592,7 +3602,542 @@ class ExampleRobolectricTest {
         prefs.clearAllLocalData()
         assertEquals(LocalPreferencesStore.DEFAULT_OVERLAY_OPACITY, prefs.readOverlayOpacity(), 0.0001f)
     }
+
+    @Test
+    fun `tftninja scraper targets exact live and pbe urls extracts full comp details and champion recommendations`() = runBlocking {
+        val requestedUrls = mutableListOf<String>()
+
+        val liveRscHtml = """
+            <html><head><title>TFT Ninja Comps</title></head><body>
+            <script>self.__next_f.push([1,"1a:{\"set\":\"TFTSet18\",\"comps\":[{\"slug\":\"arcanist-ahri\",\"title\":\"6 Arcanist Ahri\",\"tier\":\"S\",\"playstyle\":\"Fast 8\",\"avgPlacement\":3.62,\"top4Rate\":64.5,\"winRate\":18.4,\"pickRate\":7.2,\"traits\":[{\"name\":\"Arcanist\",\"num_units\":6},{\"name\":\"Elderwood\",\"num_units\":4}],\"units\":[{\"name\":\"Ahri\",\"cost\":4,\"stars\":2,\"isCarry\":true,\"row\":3,\"col\":6,\"items\":[\"Blue Buff\",\"Jeweled Gauntlet\",\"Nashor's Tooth\"]},{\"name\":\"Ornn\",\"cost\":4,\"stars\":2,\"row\":0,\"col\":3,\"items\":[\"Warmog's Armor\",\"Gargoyle Stoneplate\",\"Dragon's Claw\"]},{\"name\":\"Lillia\",\"cost\":3,\"stars\":2,\"row\":0,\"col\":2,\"items\":[\"Ionic Spark\"]},{\"name\":\"Syndra\",\"cost\":3,\"stars\":2,\"row\":3,\"col\":0,\"items\":[\"Spear of Shojin\"]}],\"augments\":[\"Jeweled Lotus II\",\"Level Up!\"],\"levelingGuide\":\"Level 8 on 4-2 and roll for Ahri 2 and Ornn 2.\",\"notes\":\"Position Ahri opposite enemy assassins.\",\"teamPlannerCode\":\"023b83b93ba3bb000000000000000000TFTSet18\"}]}"])</script>
+            </body></html>
+        """.trimIndent()
+
+        val pbeNextDataHtml = """
+            <html><head><script id="__NEXT_DATA__" type="application/json">
+            {
+              "props": {
+                "pageProps": {
+                  "set": 19,
+                  "comps": [
+                    {
+                      "slug": "prismatic-jinx",
+                      "title": "Prismatic Tour Jinx",
+                      "tier": "S",
+                      "playstyle": "Slow Roll",
+                      "stats": { "avg": 3.48, "top4": 0.672, "win": 0.215, "pick": 0.088, "games": 4120 },
+                      "traits": ["6 Popstar", "4 Sniper"],
+                      "board": [
+                        { "champion": "Jinx", "cost": 3, "threeStar": true, "isCarry": true, "hex": 27, "bestItems": ["Guinsoo's Rageblade", "Infinity Edge", "Last Whisper"] },
+                        { "champion": "Vi", "cost": 3, "stars": 2, "hex": 3, "items": ["Warmog's Armor", "Bramble Vest"] },
+                        { "champion": "Seraphine", "cost": 4, "stars": 2, "hex": 21, "items": ["Morellonomicon"] },
+                        { "champion": "Ekko", "cost": 4, "stars": 2, "hex": 2 }
+                      ],
+                      "augments": ["Two Healthy", "Cybernetic Uplink"],
+                      "earlyGame": "Play 3 Popstar opener with Guinsoo slam.",
+                      "lateGame": "Slow roll at level 7 for Jinx 3-star."
+                    }
+                  ]
+                }
+              }
+            }
+            </script></head><body></body></html>
+        """.trimIndent()
+
+        val liveChampsJson = """
+            {"champions":[{"champion":"Ahri","avg":3.60,"top4":65.0,"tier":"S","bestItems":["Blue Buff","Jeweled Gauntlet","Rabadon's Deathcap"]}]}
+        """.trimIndent()
+
+        val scraper = com.example.data.network.TftNinjaCompsScraper(
+            urlFetcher = { url ->
+                requestedUrls.add(url)
+                when (url) {
+                    "https://tft.ninja/comps" -> liveRscHtml
+                    "https://tft.ninja/comps?e=pbe" -> pbeNextDataHtml
+                    "https://tft.ninja/champions" -> liveChampsJson
+                    else -> null
+                }
+            },
+            rscFetcher = { null }
+        )
+
+        val liveResult = scraper.fetchLiveTeamComps(livePatchVersion = "18.8")
+        val pbeResult = scraper.fetchPbeTeamComps(pbePatchVersion = "19.1-PBE")
+
+        // 1. Exact URLs verified
+        assertTrue(requestedUrls.contains("https://tft.ninja/comps"))
+        assertTrue(requestedUrls.contains("https://tft.ninja/comps?e=pbe"))
+        assertTrue(liveResult.fetchedFromNetwork)
+        assertTrue(pbeResult.fetchedFromNetwork)
+
+        // 2. Full LIVE composition details preserved
+        assertEquals(1, liveResult.comps.size)
+        val liveComp = liveResult.comps.first()
+        assertEquals("6 Arcanist Ahri", liveComp.title)
+        assertEquals(TierRank.S, liveComp.tier)
+        assertEquals("Fast 8", liveComp.playstyle)
+        assertEquals(3.62, liveComp.avgPlacement, 0.001)
+        assertEquals(64.5, liveComp.top4Rate, 0.01)
+        assertEquals(18.4, liveComp.winRate, 0.01)
+        assertEquals(7.2, liveComp.pickRate, 0.01)
+        assertEquals("Ahri", liveComp.carryName)
+        assertTrue(liveComp.traits.contains("6 Arcanist"))
+        assertEquals(listOf("Jeweled Lotus II", "Level Up!"), liveComp.augmentPriorities)
+        assertTrue(liveComp.levelingGuide.contains("Level 8 on 4-2"))
+        assertTrue(liveComp.notes.contains("opposite enemy assassins"))
+        assertEquals("023b83b93ba3bb000000000000000000TFTSet18", liveComp.teamPlannerCode)
+        assertTrue(liveComp.sourceUrl.startsWith("https://tft.ninja/comps"))
+        val ornnPlacement = liveComp.hexPlacements.first { it.unitName == "Ornn" }
+        assertEquals(listOf("Warmog's Armor", "Gargoyle Stoneplate", "Dragon's Claw"), ornnPlacement.items)
+
+        // 3. Full PBE composition details preserved (including hex index 27 -> row 3, col 6 and fraction->% stats)
+        assertEquals(1, pbeResult.comps.size)
+        val pbeComp = pbeResult.comps.first()
+        assertEquals("Prismatic Tour Jinx", pbeComp.title)
+        assertEquals(TftEnvironment.PBE, pbeComp.environment)
+        assertEquals(3.48, pbeComp.avgPlacement, 0.001)
+        assertEquals(67.2, pbeComp.top4Rate, 0.01)
+        assertEquals(21.5, pbeComp.winRate, 0.01)
+        assertEquals(8.8, pbeComp.pickRate, 0.01)
+        assertTrue(pbeComp.sourceUrl.contains("e=pbe"))
+        val jinxPlacement = pbeComp.hexPlacements.first { it.unitName == "Jinx" }
+        assertEquals(3, jinxPlacement.row)
+        assertEquals(6, jinxPlacement.col)
+        assertEquals(3, jinxPlacement.stars)
+        assertEquals(listOf("Guinsoo's Rageblade", "Infinity Edge", "Last Whisper"), jinxPlacement.items)
+
+        // 4. MetaRepository persists ONLY tft.ninja armies & updates champion recommendations
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheStore = OfflineMetaCacheStore(context)
+        val offlineClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { throw java.io.IOException("No external calls in test") }
+            .build()
+        val offlineDdragon = retrofit2.Retrofit.Builder()
+            .baseUrl("https://ddragon.leagueoflegends.com/")
+            .client(offlineClient)
+            .build()
+            .create(com.example.data.network.DDragonApi::class.java)
+
+        val repo = MetaRepository(
+            cacheStore = cacheStore,
+            tftipsScraper = TftipsPatchScraper(offlineClient),
+            tftAcademyScraper = TftAcademyCompsScraper(offlineClient),
+            tftNinjaScraper = scraper,
+            ddragonApi = offlineDdragon,
+            publicClient = offlineClient
+        )
+        val syncResult = repo.refreshAndPersistMeta()
+        assertTrue(syncResult.syncedFromNetwork)
+
+        val bundle = repo.loadOfflineBundle()
+        assertEquals(listOf("6 Arcanist Ahri"), bundle.liveComps.map { it.title })
+        assertEquals(listOf("Prismatic Tour Jinx"), bundle.pbeComps.map { it.title })
+        assertTrue(bundle.liveComps.all { it.sourceUrl.contains("tft.ninja") })
+        assertTrue(bundle.pbeComps.all { it.sourceUrl.contains("tft.ninja") })
+
+        // 5. Clicking any individual champion shows tft.ninja recommended items & tft.ninja compositions only
+        val ahriProfile = com.example.ui.components.resolveChampionDetailProfile(
+            championName = "Ahri",
+            environment = TftEnvironment.LIVE,
+            champions = bundle.liveChampions,
+            comps = bundle.liveComps,
+            items = bundle.liveItems
+        )
+        val ahriItems = ahriProfile.optimalItems.map { it.itemName }
+        assertTrue(ahriItems.contains("Blue Buff"))
+        assertTrue(ahriItems.contains("Jeweled Gauntlet"))
+        assertTrue(ahriItems.contains("Nashor's Tooth"))
+        assertTrue(ahriItems.contains("Rabadon's Deathcap"))
+        assertEquals(listOf("6 Arcanist Ahri"), ahriProfile.synergyComps.map { it.comp.title })
+        assertTrue(ahriProfile.additionalSynergyCompNames.isEmpty())
+
+        val ornnProfile = com.example.ui.components.resolveChampionDetailProfile(
+            championName = "Ornn",
+            environment = TftEnvironment.LIVE,
+            champions = bundle.liveChampions,
+            comps = bundle.liveComps,
+            items = bundle.liveItems
+        )
+        assertTrue(ornnProfile.optimalItems.map { it.itemName }.containsAll(listOf("Warmog's Armor", "Gargoyle Stoneplate", "Dragon's Claw")))
+        assertEquals(listOf("6 Arcanist Ahri"), ornnProfile.synergyComps.map { it.comp.title })
+        assertEquals(listOf("Warmog's Armor", "Gargoyle Stoneplate", "Dragon's Claw"), ornnProfile.synergyComps.first().equippedItems)
+
+        val jinxPbeProfile = com.example.ui.components.resolveChampionDetailProfile(
+            championName = "Jinx",
+            environment = TftEnvironment.PBE,
+            champions = bundle.pbeChampions,
+            comps = bundle.pbeComps,
+            items = bundle.pbeItems
+        )
+        assertTrue(jinxPbeProfile.optimalItems.map { it.itemName }.containsAll(listOf("Guinsoo's Rageblade", "Infinity Edge", "Last Whisper")))
+        assertEquals(listOf("Prismatic Tour Jinx"), jinxPbeProfile.synergyComps.map { it.comp.title })
+        assertTrue(jinxPbeProfile.synergyComps.first().isCarry)
+    }
+
+    @Test
+    fun `full board roster shows all units with comp items and other items plus level transition guide`() {
+        val scraperJson = """
+            {
+              "comps": [
+                {
+                  "id": "fast9_flex",
+                  "title": "Fast 9 Arcanist Cap",
+                  "tier": "S",
+                  "playstyle": "Fast 9",
+                  "avgPlacement": 3.55,
+                  "carry": "Ahri",
+                  "traits": ["6 Arcanist", "3 Vanguard"],
+                  "units": [
+                    {"name": "Ahri", "cost": 4, "isCarry": true, "items": ["Blue Buff", "Jeweled Gauntlet", "Nashor's Tooth", "Rabadon's Deathcap"], "otherItems": ["Spear of Shojin", "Hextech Gunblade"]},
+                    {"name": "Ornn", "cost": 4, "items": ["Warmog's Armor", "Gargoyle Stoneplate"], "flexItems": ["Sunfire Cape", "Dragon's Claw"]},
+                    {"name": "Lillia", "cost": 3},
+                    {"name": "Syndra", "cost": 3},
+                    {"name": "Neeko", "cost": 2},
+                    {"name": "Zoe", "cost": 2},
+                    {"name": "Lux", "cost": 1},
+                    {"name": "Poppy", "cost": 1}
+                  ],
+                  "flexUnits": ["Azir", "Lissandra", "Udyr"],
+                  "earlyBoard": ["Lux", "Poppy", "Neeko", "Zoe"],
+                  "earlyGame": "Play 2 Vanguard 2 Arcanist and hold AP items on Lux.",
+                  "midBoard": ["Lux", "Neeko", "Zoe", "Lillia", "Syndra", "Ornn"],
+                  "midGame": "Level to 7 on 3-5 and stabilize frontline while holding 50g.",
+                  "lateGame": "Push Level 9 on 5-1, move items onto Ahri, and slot Azir & Lissandra."
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val scraper = com.example.data.network.TftNinjaCompsScraper(
+            urlFetcher = { url -> if (url == "https://tft.ninja/comps") scraperJson else null },
+            rscFetcher = { null }
+        )
+        val result = scraper.fetchLiveTeamComps(livePatchVersion = "18.8")
+        assertEquals(1, result.comps.size)
+        val comp = result.comps.first()
+
+        // All 11 champions (8 primary + 3 flex) preserved without truncation
+        assertEquals(11, comp.coreUnits.size)
+        assertTrue(comp.coreUnits.containsAll(listOf("Ahri", "Ornn", "Azir", "Lissandra", "Udyr")))
+
+        // Explicit level guide stages parsed from website
+        val parsedStages = com.example.ui.components.resolveCompLevelGuideStages(comp)
+        assertEquals(3, parsedStages.size)
+        assertTrue(parsedStages[0].units.containsAll(listOf("Lux", "Poppy", "Neeko", "Zoe")))
+        assertTrue(parsedStages[0].actionTip.contains("hold AP items on Lux"))
+        assertTrue(parsedStages[2].actionTip.contains("Push Level 9"))
+
+        // Full board roster resolves all 11 champions + Comp Items + Other Items (without duplicating primary items)
+        val catalogChamps = listOf(
+            com.example.data.model.ChampionTierEntry(
+                id = "live_syndra",
+                name = "Syndra",
+                cost = 3,
+                tier = TierRank.A,
+                environment = TftEnvironment.LIVE,
+                traits = listOf("Arcanist"),
+                role = "Carry",
+                avgPlacement = 4.1,
+                top4Rate = 55.0,
+                bestItems = listOf("Spear of Shojin", "Archangel's Staff"),
+                synergyComps = listOf("Fast 9 Arcanist Cap")
+            )
+        )
+        val roster = com.example.ui.components.resolveFullBoardRosterUnits(
+            comp = comp,
+            champions = catalogChamps,
+            allComps = listOf(comp)
+        )
+        assertEquals(11, roster.size)
+        val ahriRow = roster.first { it.unitName == "Ahri" }
+        assertEquals(listOf("Blue Buff", "Jeweled Gauntlet", "Nashor's Tooth"), ahriRow.items)
+        assertTrue(ahriRow.otherItems.contains("Rabadon's Deathcap"))
+        assertTrue(ahriRow.otherItems.contains("Spear of Shojin"))
+        assertTrue(ahriRow.otherItems.none { it in ahriRow.items })
+
+        val ornnRow = roster.first { it.unitName == "Ornn" }
+        assertEquals(listOf("Warmog's Armor", "Gargoyle Stoneplate"), ornnRow.items)
+        assertTrue(ornnRow.otherItems.containsAll(listOf("Sunfire Cape", "Dragon's Claw")))
+
+        val syndraRow = roster.first { it.unitName == "Syndra" }
+        assertTrue(syndraRow.items.isEmpty())
+        assertTrue(syndraRow.otherItems.isEmpty())
+
+        // Fallback level guide derivation when website omits explicit stage boards
+        val compWithoutExplicitStages = comp.copy(levelGuideStages = emptyList(), playstyle = "Fast 8")
+        val derivedStages = com.example.ui.components.resolveCompLevelGuideStages(compWithoutExplicitStages)
+        assertEquals(3, derivedStages.size)
+        assertTrue(derivedStages.all { it.units.isNotEmpty() && it.actionTip.isNotBlank() })
+        assertTrue(derivedStages.last().levelLabel.contains("Transition"))
+    }
+
+    @Test
+    fun `html dom scraper never adds items as individual units and attaches items under carries only`() {
+        val htmlWithNextJsItemImages = """
+            <html><body>
+              <div class="comp-card">
+                <a href="/comps/arcanist-ahri"><h3>6 Arcanist Ahri</h3></a>
+                <span>S Tier Avg: 3.72 Top 4: 64.5% Win: 18.2%</span>
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Ftraits%2FArcanist.png&w=32&q=75" alt="Arcanist" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Ahri.png&w=64&q=75" alt="Ahri" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fitems%2FTFT18_Item_BlueBuff.png&w=32&q=75" alt="Blue Buff" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fitems%2FTFT18_Item_JeweledGauntlet.png&w=32&q=75" alt="Jeweled Gauntlet" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fitems%2FGuinsoosRageblade.png&w=32&q=75" alt="Guinsoo's Rageblade" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Ornn.png&w=64&q=75" alt="Ornn" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fitems%2FWarmogsArmor.png&w=32&q=75" alt="Warmog's Armor" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Lillia.png&w=64&q=75" alt="Lillia" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Syndra.png&w=64&q=75" alt="Syndra" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Neeko.png&w=64&q=75" alt="Neeko" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Zoe.png&w=64&q=75" alt="Zoe" />
+              </div>
+            </body></html>
+        """.trimIndent()
+
+        val scraper = com.example.data.network.TftNinjaCompsScraper(
+            urlFetcher = { url -> if (url == "https://tft.ninja/comps") htmlWithNextJsItemImages else null },
+            rscFetcher = { null }
+        )
+        val result = scraper.fetchLiveTeamComps(livePatchVersion = "18.8")
+        assertEquals(1, result.comps.size)
+        val comp = result.comps.first()
+
+        // Only the 6 real champions appear as units — ZERO items or traits leaked into coreUnits
+        assertEquals(listOf("Ahri", "Ornn", "Lillia", "Syndra", "Neeko", "Zoe"), comp.coreUnits)
+        assertTrue(comp.coreUnits.none { it.contains("Blue Buff") || it.contains("Rageblade") || it.contains("Warmog") || it.contains("Gauntlet") })
+
+        // Items are attached strictly to their owning carry champions (Ahri and Ornn), NOT non-carries
+        val ahri = comp.hexPlacements.first { it.unitName == "Ahri" }
+        assertTrue(ahri.isCarry)
+        assertEquals(listOf("Blue Buff", "Jeweled Gauntlet", "Guinsoo's Rageblade"), ahri.items)
+
+        val ornn = comp.hexPlacements.first { it.unitName == "Ornn" }
+        assertEquals(listOf("Warmog's Armor"), ornn.items)
+
+        val nonCarries = comp.hexPlacements.filter { it.unitName in listOf("Lillia", "Syndra", "Neeko", "Zoe") }
+        assertEquals(4, nonCarries.size)
+        assertTrue(nonCarries.all { !it.isCarry && it.items.isEmpty() && it.otherItems.isEmpty() })
+
+        // Defensive UI filtering also strips any legacy cached item names out of army card unit lists
+        val dirtyComp = comp.copy(
+            coreUnits = comp.coreUnits + listOf("Guinsoo's Rageblade", "TFT_Item_WarmogsArmor", "Arcanist Emblem")
+        )
+        val sortedCleanUnits = com.example.ui.components.sortCompUnitsByCostAscending(dirtyComp)
+        assertEquals(6, sortedCleanUnits.size)
+        assertTrue(sortedCleanUnits.none { it.contains("Rageblade") || it.contains("Warmog") || it.contains("Emblem") })
+    }
+
+    @Test
+    fun `item and augment labels and icons resolve accurately for riot codenames across live and pbe`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheStore = OfflineMetaCacheStore(context)
+        val bundle = cacheStore.readOrSeedBundle()
+
+        // 1. Riot internal item codenames must map to official modern TFT labels (never swapped RedBuff/Sunfire!)
+        assertEquals("Sunfire Cape", com.example.ui.components.formatRiotAssetLabel("TFT_Item_RedBuff"))
+        assertEquals("Red Buff", com.example.ui.components.formatRiotAssetLabel("TFT_Item_RapidFireCannon"))
+        assertEquals("Nashor's Tooth", com.example.ui.components.formatRiotAssetLabel("TFT_Item_Leviathan"))
+        assertEquals("Nashor's Tooth", com.example.ui.components.formatRiotAssetLabel("Leviathan"))
+        assertEquals("Edge of Night", com.example.ui.components.formatRiotAssetLabel("TFT_Item_GuardianAngel"))
+        assertEquals("Hand of Justice", com.example.ui.components.formatRiotAssetLabel("TFT_Item_UnstableConcoction"))
+        assertEquals("Protector's Vow", com.example.ui.components.formatRiotAssetLabel("TFT_Item_FrozenHeart"))
+        assertEquals("Steadfast Heart", com.example.ui.components.formatRiotAssetLabel("TFT_Item_NightHarvester"))
+        assertEquals("Giant Slayer", com.example.ui.components.formatRiotAssetLabel("TFT_Item_MadredsBloodrazor"))
+        assertEquals("Evenshroud", com.example.ui.components.formatRiotAssetLabel("TFT_Item_SpectralGauntlet"))
+        assertEquals("Striker's Flail", com.example.ui.components.formatRiotAssetLabel("TFT_Item_PowerGauntlet"))
+        assertEquals("Striker's Flail", com.example.ui.components.formatRiotAssetLabel("Guardbreaker"))
+        assertEquals("Void Staff", com.example.ui.components.formatRiotAssetLabel("TFT_Item_StatikkShiv"))
+        assertEquals("Spirit Visage", com.example.ui.components.formatRiotAssetLabel("TFT_Item_Redemption"))
+        assertEquals("Kraken's Fury", com.example.ui.components.formatRiotAssetLabel("TFT_Item_RunaansHurricane"))
+        assertEquals("B.F. Sword", com.example.ui.components.formatRiotAssetLabel("TFT_Item_BFSword"))
+        assertEquals("B.F. Sword", com.example.ui.components.formatRiotAssetLabel("BFSword"))
+        assertEquals("Tactician's Cape", com.example.ui.components.formatRiotAssetLabel("TFT_Item_TacticiansCape"))
+        assertEquals("Tactician's Shield", com.example.ui.components.formatRiotAssetLabel("TFT_Item_TacticiansShield"))
+
+        // 2. Preloaded LIVE and PBE items contain zero raw unformatted TFT_Item_ names
+        assertTrue(bundle.liveItems.none { it.name.startsWith("TFT_Item_", ignoreCase = true) })
+        assertTrue(bundle.pbeItems.none { it.name.startsWith("TFT_Item_", ignoreCase = true) })
+
+        // 3. Sunfire Cape vs Red Buff and Tactician's Cape vs Shield resolve distinct accurate icon URLs
+        val sunfireUrl = com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl("TFT_Item_RedBuff", TftEnvironment.LIVE)
+        val redBuffUrl = com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl("TFT_Item_RapidFireCannon", TftEnvironment.LIVE)
+        val capeUrl = com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl("TFT_Item_TacticiansCape", TftEnvironment.LIVE)
+        val shieldUrl = com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl("TFT_Item_TacticiansShield", TftEnvironment.LIVE)
+        assertNotNull(sunfireUrl)
+        assertNotNull(redBuffUrl)
+        assertNotNull(capeUrl)
+        assertNotNull(shieldUrl)
+        assertTrue("Sunfire Cape and Red Buff must use distinct icons", sunfireUrl != redBuffUrl)
+        assertTrue("Tactician's Cape and Tactician's Shield must use distinct icons", capeUrl != shieldUrl)
+        assertTrue(
+            "Tactician's Cape should resolve to Cape/Ring icon (got $capeUrl)",
+            capeUrl!!.contains("TacticiansRing", ignoreCase = true) || capeUrl.contains("TacticiansCape", ignoreCase = true)
+        )
+        assertTrue(
+            "Tactician's Shield should resolve to Shield/Scepter icon (got $shieldUrl)",
+            shieldUrl!!.contains("TacticiansScepter", ignoreCase = true) || shieldUrl.contains("TacticiansShield", ignoreCase = true)
+        )
+
+        // 4. Augment icons resolve accurately for LIVE and PBE (including + / tier suffixes & DA_ ids)
+        val wandOverflowIcon = com.example.ui.components.TftAssetIconResolver.resolveAugmentIconUrl("Wand Overflow")
+        val advancedLoanPlusIcon = com.example.ui.components.TftAssetIconResolver.resolveAugmentIconUrl("Advanced Loan+")
+        assertNotNull(wandOverflowIcon)
+        assertNotNull(advancedLoanPlusIcon)
+
+        // 5. HTML DOM scraper extracts augments cleanly into augmentPriorities and maps TFT_Item_RedBuff -> Sunfire Cape
+        val domWithAugments = """
+            <html><body>
+              <div class="comp-card">
+                <a href="/comps/elderwood-ahri"><h3>Elderwood Ahri</h3></a>
+                <span>S Tier Avg: 3.80</span>
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Ahri.png" alt="Ahri" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fitems%2FTFT_Item_RedBuff.png" alt="TFT_Item_RedBuff" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fitems%2FTFT_Item_RapidFireCannon.png" alt="TFT_Item_RapidFireCannon" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Ornn.png" alt="Ornn" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Fchampions%2FTFT18_Lillia.png" alt="Lillia" />
+                <img src="/_next/image?url=https%3A%2F%2Fcdn.tft.ninja%2Faugments%2FDA_WandOverflow.png" alt="Wand Overflow" />
+              </div>
+            </body></html>
+        """.trimIndent()
+        val scraper = com.example.data.network.TftNinjaCompsScraper(
+            urlFetcher = { url -> if (url == "https://tft.ninja/comps") domWithAugments else null },
+            rscFetcher = { null }
+        )
+        val scraped = scraper.fetchLiveTeamComps("18.8").comps.first()
+        assertEquals(listOf("Ahri", "Ornn", "Lillia"), scraped.coreUnits)
+        assertEquals(listOf("Sunfire Cape", "Red Buff"), scraped.hexPlacements.first { it.unitName == "Ahri" }.items)
+        assertEquals(listOf("Wand Overflow"), scraped.augmentPriorities)
+    }
+
+    @Test
+    fun `copy code resolves valid v02 team planner codes for both LIVE and PBE tft ninja comps`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        context.filesDir.listFiles()?.filter { it.name.startsWith("tft_teamplanner_") }?.forEach { it.delete() }
+
+        val liveCDragonJson = """
+            {
+              "TFTSet18": [
+                {"character_id": "DA_18_Ahri", "display_name": "Ahri", "team_planner_code": 1001},
+                {"character_id": "DA_18_Ornn", "display_name": "Ornn", "team_planner_code": 1002},
+                {"character_id": "DA_18_Lillia", "display_name": "Lillia", "team_planner_code": 1003},
+                {"character_id": "DA_18_Syndra", "display_name": "Syndra", "team_planner_code": 1004}
+              ]
+            }
+        """.trimIndent()
+        val pbeCDragonJson = """
+            {
+              "TFTSet19": [
+                {"character_id": "TFT19_Ziggs", "display_name": "Ziggs", "team_planner_code": 1200},
+                {"character_id": "TFT19_Kobuko", "display_name": "Kobuko", "team_planner_code": 1201},
+                {"character_id": "TFT19_Lulu", "display_name": "Lulu", "team_planner_code": 1202},
+                {"character_id": "TFT19_Seraphine_Indie", "display_name": "Seraphine", "team_planner_code": 1203}
+              ]
+            }
+        """.trimIndent()
+
+        val client = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val bodyStr = when {
+                    url.contains("/pbe/") && url.contains("tftchampions-teamplanner.json") -> pbeCDragonJson
+                    url.contains("/latest/") && url.contains("tftchampions-teamplanner.json") -> liveCDragonJson
+                    else -> """{}"""
+                }
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, bodyStr))
+                    .build()
+            }
+            .build()
+
+        val liveNinjaComp = MetaComp(
+            id = "tftninja_live_arcanist_ahri",
+            title = "Arcanist Ahri",
+            tier = TierRank.S,
+            environment = TftEnvironment.LIVE,
+            setName = "Set 18",
+            patchTag = "18.8",
+            playstyle = "Fast 8",
+            avgPlacement = 3.75,
+            top4Rate = 64.0,
+            winRate = 18.0,
+            pickRate = 5.0,
+            trendDelta = "+0.2",
+            isTrending = true,
+            carryName = "Ahri",
+            coreUnits = listOf("Ahri", "Ornn", "Lillia", "Syndra"),
+            traits = listOf("4 Arcanist"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Fast 8",
+            notes = "",
+            sourceUrl = "https://tft.ninja/comps/arcanist-ahri"
+        )
+        val pbeNinjaComp = MetaComp(
+            id = "tftninja_pbe_hyperpop_ziggs",
+            title = "Hyperpop Ziggs",
+            tier = TierRank.S,
+            environment = TftEnvironment.PBE,
+            setName = "Set 19",
+            patchTag = "19.1-PBE",
+            playstyle = "Slow Roll",
+            avgPlacement = 3.60,
+            top4Rate = 66.0,
+            winRate = 20.0,
+            pickRate = 4.5,
+            trendDelta = "+0.4",
+            isTrending = true,
+            carryName = "Ziggs",
+            coreUnits = listOf("Ziggs", "Kobuko", "Lulu", "Seraphine"),
+            traits = listOf("4 Hyperpop"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Slow Roll",
+            notes = "",
+            sourceUrl = "https://tft.ninja/comps/hyperpop-ziggs?e=pbe"
+        )
+
+        val liveResolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, liveNinjaComp, client)
+        }
+        assertTrue("LIVE tft.ninja comp should resolve v02 code", liveResolved.isSuccess)
+        assertEquals("TFTSet18", liveResolved.setKey)
+        assertTrue(liveResolved.code.startsWith("02") && liveResolved.code.endsWith("TFTSet18"))
+        assertEquals(4, liveResolved.matchedChampions.size)
+
+        val pbeResolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, pbeNinjaComp, client)
+        }
+        assertTrue("PBE tft.ninja comp should resolve v02 code", pbeResolved.isSuccess)
+        assertEquals("TFTSet19", pbeResolved.setKey)
+        assertTrue(pbeResolved.code.startsWith("02") && pbeResolved.code.endsWith("TFTSet19"))
+        assertEquals(4, pbeResolved.matchedChampions.size)
+
+        // Batch enrichment attaches verified v02 codes to BOTH LIVE and PBE tft.ninja comps
+        val enrichedLive = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                context = context,
+                comps = listOf(liveNinjaComp),
+                environment = TftEnvironment.LIVE,
+                client = client
+            )
+        }
+        val enrichedPbe = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                context = context,
+                comps = listOf(pbeNinjaComp),
+                environment = TftEnvironment.PBE,
+                client = client
+            )
+        }
+        assertEquals(liveResolved.code, enrichedLive.first().teamPlannerCode)
+        assertEquals(pbeResolved.code, enrichedPbe.first().teamPlannerCode)
+    }
 }
+
 
 
 

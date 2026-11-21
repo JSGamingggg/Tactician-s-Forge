@@ -9,6 +9,7 @@ import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.data.network.TftAcademyCatalogTiers
+import com.example.data.network.TftNinjaChampionRecommendation
 import com.example.ui.components.TftAssetIconResolver
 import com.example.ui.components.formatRiotAssetLabel
 import org.json.JSONObject
@@ -36,13 +37,16 @@ object MetaCatalogSyncHelper {
         ddragonChampJson: String?,
         ddragonItemJson: String?,
         ddragonAugmentJson: String?,
-        academyTiers: TftAcademyCatalogTiers?
+        academyTiers: TftAcademyCatalogTiers?,
+        ninjaChampRecommendations: Map<String, TftNinjaChampionRecommendation> = emptyMap()
     ): LiveCatalogRefreshResult {
         val updatedChampions = refreshLiveChampions(
             existing = existingChampions,
             liveComps = liveComps,
             liveSetNumber = liveSetNumber,
-            ddragonChampJson = ddragonChampJson
+            ddragonChampJson = ddragonChampJson,
+            targetEnv = TftEnvironment.LIVE,
+            ninjaChampRecommendations = ninjaChampRecommendations
         )
         val updatedItems = refreshLiveItems(
             existing = existingItems,
@@ -70,9 +74,10 @@ object MetaCatalogSyncHelper {
         existingItems: List<ItemTierEntry>,
         existingAugments: List<AugmentTierEntry>,
         pbeComps: List<MetaComp>,
-        academyTiers: TftAcademyCatalogTiers?
+        academyTiers: TftAcademyCatalogTiers?,
+        ninjaChampRecommendations: Map<String, TftNinjaChampionRecommendation> = emptyMap()
     ): LiveCatalogRefreshResult {
-        if (pbeComps.isEmpty() && academyTiers == null) {
+        if (pbeComps.isEmpty() && academyTiers == null && ninjaChampRecommendations.isEmpty()) {
             return LiveCatalogRefreshResult(existingChampions, existingItems, existingAugments)
         }
         val updatedChampions = refreshLiveChampions(
@@ -80,7 +85,8 @@ object MetaCatalogSyncHelper {
             liveComps = pbeComps,
             liveSetNumber = 19,
             ddragonChampJson = null,
-            targetEnv = TftEnvironment.PBE
+            targetEnv = TftEnvironment.PBE,
+            ninjaChampRecommendations = ninjaChampRecommendations
         )
         val updatedItems = refreshLiveItems(
             existing = existingItems,
@@ -110,53 +116,112 @@ object MetaCatalogSyncHelper {
         liveComps: List<MetaComp>,
         liveSetNumber: Int,
         ddragonChampJson: String?,
-        targetEnv: TftEnvironment = TftEnvironment.LIVE
+        targetEnv: TftEnvironment = TftEnvironment.LIVE,
+        ninjaChampRecommendations: Map<String, TftNinjaChampionRecommendation> = emptyMap()
     ): List<ChampionTierEntry> {
         val compsByUnit = LinkedHashMap<String, MutableList<MetaComp>>()
         val itemFreqByUnit = LinkedHashMap<String, MutableMap<String, Int>>()
+        val costByUnit = LinkedHashMap<String, Int>()
+        val displayNameByUnit = LinkedHashMap<String, String>()
+
+        val normalizedNinjaRecs = LinkedHashMap<String, TftNinjaChampionRecommendation>()
+        ninjaChampRecommendations.forEach { (rawKey, rec) ->
+            val norm = normKey(rec.championName.ifBlank { rawKey })
+            if (norm.isNotBlank()) {
+                normalizedNinjaRecs[norm] = rec
+                displayNameByUnit.putIfAbsent(norm, rec.championName.ifBlank { rawKey })
+            }
+        }
+
         liveComps.forEach { comp ->
             comp.coreUnits.forEach { unit ->
                 val norm = normKey(unit)
-                compsByUnit.getOrPut(norm) { mutableListOf() }.add(comp)
+                if (norm.isNotBlank()) {
+                    displayNameByUnit.putIfAbsent(norm, unit)
+                    compsByUnit.getOrPut(norm) { mutableListOf() }.add(comp)
+                }
             }
             comp.hexPlacements.forEach { p ->
                 val norm = normKey(p.unitName)
-                val counts = itemFreqByUnit.getOrPut(norm) { mutableMapOf() }
-                p.items.forEach { it ->
-                    val label = formatRiotAssetLabel(it)
-                    if (label.isNotBlank()) counts[label] = (counts[label] ?: 0) + 1
+                if (norm.isNotBlank()) {
+                    displayNameByUnit.putIfAbsent(norm, p.unitName)
+                    if (p.cost in 1..5) costByUnit.putIfAbsent(norm, p.cost)
+                    if (compsByUnit[norm]?.none { it.id == comp.id } != false) {
+                        compsByUnit.getOrPut(norm) { mutableListOf() }.add(comp)
+                    }
+                    val counts = itemFreqByUnit.getOrPut(norm) { LinkedHashMap() }
+                    val weight = if (p.isCarry) 2 else 1
+                    p.items.forEach { rawItem ->
+                        val label = formatRiotAssetLabel(rawItem).ifBlank { rawItem.trim() }
+                        if (label.isNotBlank()) counts[label] = (counts[label] ?: 0) + weight
+                    }
                 }
             }
+        }
+
+        val hasSyncedNinjaComps = liveComps.isNotEmpty() || normalizedNinjaRecs.isNotEmpty()
+
+        fun resolveNinjaItemsFor(norm: String, fallback: List<String>): List<String> {
+            val merged = LinkedHashMap<String, Int>()
+            // 1. Direct tft.ninja champion/unit page item recommendations
+            normalizedNinjaRecs[norm]?.recommendedItems.orEmpty().forEachIndexed { idx, rawItem ->
+                val label = formatRiotAssetLabel(rawItem).ifBlank { rawItem.trim() }
+                if (label.isNotBlank()) {
+                    val weight = (12 - idx).coerceAtLeast(3)
+                    merged[label] = (merged[label] ?: 0) + weight
+                }
+            }
+            // 2. Per-unit items from tft.ninja meta comps
+            itemFreqByUnit[norm]?.forEach { (label, freq) ->
+                merged[label] = (merged[label] ?: 0) + freq * 3
+            }
+            val ranked = merged.entries
+                .sortedByDescending { it.value }
+                .map { it.key }
+                .distinct()
+                .take(6)
+            return if (ranked.isNotEmpty()) ranked else fallback
+        }
+
+        fun resolveNinjaCompTitlesFor(norm: String): List<String> {
+            val fromComps = compsByUnit[norm].orEmpty()
+                .sortedWith(compareBy<MetaComp> { it.tier.sortOrder }.thenBy { it.avgPlacement })
+                .map { it.title }
+            val fromSite = normalizedNinjaRecs[norm]?.recommendedCompTitles.orEmpty()
+            return (fromComps + fromSite).distinct().take(6)
         }
 
         val byNormName = LinkedHashMap<String, ChampionTierEntry>()
         existing.forEach { champ ->
             val norm = normKey(champ.name)
             val matchedComps = compsByUnit[norm].orEmpty()
+            val ninjaRec = normalizedNinjaRecs[norm]
             val carryCount = matchedComps.count { normKey(it.carryName) == norm }
-            val topItems = itemFreqByUnit[norm]?.entries
-                ?.sortedByDescending { it.value }
-                ?.take(3)
-                ?.map { it.key }
-                .orEmpty()
-                .ifEmpty { champ.bestItems }
+            val topItems = resolveNinjaItemsFor(norm, fallback = champ.bestItems)
 
-            val updatedTier = when {
+            val updatedTier = ninjaRec?.tier ?: when {
                 carryCount > 0 && matchedComps.any { it.tier == TierRank.S } -> TierRank.S
                 carryCount > 0 -> TierRank.S
                 matchedComps.isNotEmpty() -> matchedComps.minBy { it.tier.sortOrder }.tier
                 else -> champ.tier
             }
-            val updatedAvg = if (matchedComps.isNotEmpty()) {
+            val updatedAvg = ninjaRec?.avgPlacement ?: if (matchedComps.isNotEmpty()) {
                 val base = matchedComps.map { it.avgPlacement }.average() - if (carryCount > 0) 0.12 else 0.0
                 (base.coerceIn(3.15, 4.75) * 100.0).roundToInt() / 100.0
             } else {
                 champ.avgPlacement
             }
-            val updatedTop4 = if (matchedComps.isNotEmpty()) {
+            val updatedTop4 = ninjaRec?.top4Rate ?: if (matchedComps.isNotEmpty()) {
                 ((100.0 - (updatedAvg - 1.5) * 18.0).coerceIn(44.0, 74.0) * 10.0).roundToInt() / 10.0
             } else {
                 champ.top4Rate
+            }
+
+            // Strictly replace synergyComps with tft.ninja comps so non-tft.ninja comp titles never leak in
+            val resolvedSynergies = if (hasSyncedNinjaComps) {
+                resolveNinjaCompTitlesFor(norm)
+            } else {
+                emptyList()
             }
 
             byNormName[norm] = champ.copy(
@@ -164,7 +229,45 @@ object MetaCatalogSyncHelper {
                 avgPlacement = updatedAvg,
                 top4Rate = updatedTop4,
                 bestItems = topItems,
-                synergyComps = matchedComps.map { it.title }.distinct().take(4).ifEmpty { champ.synergyComps }
+                synergyComps = resolvedSynergies
+            )
+        }
+
+        // Ensure every champion referenced in tft.ninja comps or champion recommendations exists in catalog
+        val envPrefix = if (targetEnv == TftEnvironment.PBE) "pbe" else "live"
+        displayNameByUnit.forEach { (norm, displayName) ->
+            if (byNormName.containsKey(norm)) return@forEach
+            val matchedComps = compsByUnit[norm].orEmpty()
+            val ninjaRec = normalizedNinjaRecs[norm]
+            val cost = costByUnit[norm]
+                ?: TftAssetIconResolver.getChampionCost(displayName, targetEnv)
+                ?: 3
+            val traits = TftAssetIconResolver.getChampionTraits(displayName, targetEnv)
+            val isCarry = matchedComps.any { normKey(it.carryName) == norm }
+            val tier = ninjaRec?.tier ?: when {
+                isCarry -> TierRank.S
+                matchedComps.isNotEmpty() -> matchedComps.minBy { it.tier.sortOrder }.tier
+                cost >= 4 -> TierRank.A
+                else -> TierRank.B
+            }
+            val avg = ninjaRec?.avgPlacement ?: if (matchedComps.isNotEmpty()) {
+                (matchedComps.map { it.avgPlacement }.average().coerceIn(3.15, 4.75) * 100.0).roundToInt() / 100.0
+            } else {
+                if (cost >= 4) 3.92 else 4.22
+            }
+            val top4 = ninjaRec?.top4Rate ?: avgToTop4(avg)
+            byNormName[norm] = ChampionTierEntry(
+                id = "${envPrefix}_$norm",
+                name = displayName,
+                cost = cost.coerceIn(1, 5),
+                tier = tier,
+                environment = targetEnv,
+                traits = traits,
+                role = if (isCarry) "Carry" else if (cost >= 4) "Flex Carry" else "Core Unit",
+                avgPlacement = avg,
+                top4Rate = top4,
+                bestItems = resolveNinjaItemsFor(norm, fallback = emptyList()),
+                synergyComps = resolveNinjaCompTitlesFor(norm)
             )
         }
 
@@ -199,8 +302,8 @@ object MetaCatalogSyncHelper {
                         role = if (cost >= 4) "Carry" else "Trait Unit",
                         avgPlacement = if (cost >= 4) 3.92 else 4.22,
                         top4Rate = if (cost >= 4) 56.4 else 51.0,
-                        bestItems = itemFreqByUnit[norm]?.keys?.take(3)?.toList().orEmpty(),
-                        synergyComps = matchedComps.map { it.title }.distinct().take(4)
+                        bestItems = resolveNinjaItemsFor(norm, fallback = emptyList()),
+                        synergyComps = resolveNinjaCompTitlesFor(norm)
                     )
                 }
             }
@@ -351,7 +454,11 @@ object MetaCatalogSyncHelper {
             val newTier = apiTier ?: aug.tier
             val newAvg = if (apiTier != null) tierToAvg(apiTier) else aug.avgPlacement
             val newTop4 = if (apiTier != null) avgToTop4(newAvg) else aug.top4Rate
-            val matchedComps = compsByAugment[norm]?.distinct()?.take(3).orEmpty().ifEmpty { aug.synergyComps }
+            val matchedComps = if (liveComps.isNotEmpty()) {
+                compsByAugment[norm]?.distinct()?.take(4).orEmpty()
+            } else {
+                emptyList()
+            }
             byNormName[norm] = aug.copy(
                 tier = newTier,
                 augmentTier = apiRank ?: aug.augmentTier,

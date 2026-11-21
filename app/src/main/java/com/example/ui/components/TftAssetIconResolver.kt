@@ -321,8 +321,15 @@ object TftAssetIconResolver {
         val raw = rawId.trim()
         if (raw.isEmpty()) return null
         val norm = normalizeLookupKey(raw)
-        apiDisplayNameMap[norm]?.let { return it }
         BUILTIN_DISPLAY_NAME_OVERRIDES[norm]?.let { return it }
+        apiDisplayNameMap[norm]
+            ?.takeIf { candidate ->
+                candidate.isNotBlank() &&
+                    !candidate.contains('_') &&
+                    !candidate.startsWith("TFT", ignoreCase = true) &&
+                    !candidate.startsWith("DA_", ignoreCase = true)
+            }
+            ?.let { return it }
         return null
     }
 
@@ -349,6 +356,101 @@ object TftAssetIconResolver {
             ?: championCostsCatalog[cleanNorm]
             ?: pbeChampionCosts[norm]
             ?: pbeChampionCosts[cleanNorm]
+    }
+
+    fun isKnownChampion(nameOrId: String, environment: TftEnvironment? = null): Boolean {
+        val raw = nameOrId.trim()
+        if (raw.isEmpty()) return false
+        val lower = raw.lowercase()
+        if (lower.contains("_item_") || lower.contains("tft_item") || lower.contains("tft-item") ||
+            lower.contains("_augment_") || lower.contains("tft_augment") || lower.contains("tft-augment") ||
+            lower.contains("_trait_") || lower.contains("tft_trait") || lower.contains("tft-trait") ||
+            lower.contains("da_component")
+        ) {
+            return false
+        }
+        val norm = normalizeLookupKey(raw)
+        val cleanName = formatChampionDisplayName(raw)
+        val cleanNorm = normalizeLookupKey(cleanName)
+        val baseCleanNorm = if (cleanName.contains("(")) {
+            normalizeLookupKey(cleanName.substringBefore("(").trim())
+        } else {
+            cleanNorm
+        }
+        val keys = listOf(norm, cleanNorm, baseCleanNorm).filter { it.isNotEmpty() }
+        return keys.any { k ->
+            championCostsCatalog.containsKey(k) ||
+                pbeChampionCosts.containsKey(k) ||
+                preloadedChampionImages.containsKey(k) ||
+                dynamicChampionImages.containsKey(k) ||
+                pbeChampionImages.containsKey(k) ||
+                championTraitsCatalog.containsKey(k) ||
+                pbeChampionTraits.containsKey(k) ||
+                SET18_SQUARE_PORTRAIT_KEYS.containsKey(k) ||
+                SPECIAL_CHAMPION_KEYS.containsKey(k) ||
+                NON_LOL_CHAMPION_KEYS.contains(k)
+        }
+    }
+
+    fun isKnownItem(nameOrId: String, environment: TftEnvironment? = null): Boolean {
+        val raw = nameOrId.trim()
+        if (raw.isEmpty()) return false
+        val lower = raw.lowercase()
+        if (lower.contains("_item_") || lower.contains("tft_item") || lower.contains("tft-item") ||
+            lower.contains("/item") || lower.contains("da_component") || lower.contains("tft_assist_")
+        ) {
+            return true
+        }
+        if (isKnownChampion(raw, environment)) return false
+        val norm = normalizeLookupKey(raw)
+        val cleanName = formatRiotAssetLabel(raw)
+        val cleanNorm = normalizeLookupKey(cleanName)
+        val keys = listOf(norm, cleanNorm).filter { it.isNotEmpty() }
+        if (keys.any { k ->
+                ITEM_FILENAME_MAP.containsKey(k) ||
+                    preloadedItemImages.containsKey(k) ||
+                    dynamicItemImages.containsKey(k) ||
+                    pbeItemImages.containsKey(k)
+            }
+        ) {
+            return true
+        }
+        val cleanLower = cleanName.lowercase()
+        return KNOWN_ITEM_NAME_KEYWORDS.any { kw -> cleanLower.contains(kw) }
+    }
+
+    fun isKnownNonChampionAsset(nameOrId: String, environment: TftEnvironment? = null): Boolean {
+        val raw = nameOrId.trim()
+        if (raw.isEmpty()) return true
+        val lower = raw.lowercase()
+        if (lower.contains("_item_") || lower.contains("tft_item") || lower.contains("tft-item") ||
+            lower.contains("/item") || lower.contains("da_component") ||
+            lower.contains("_augment_") || lower.contains("tft_augment") || lower.contains("tft-augment") ||
+            lower.contains("/augment") ||
+            lower.contains("_trait_") || lower.contains("tft_trait") || lower.contains("tft-trait") ||
+            lower.contains("/trait")
+        ) {
+            return true
+        }
+        if (isKnownItem(raw, environment)) return true
+        if (isKnownChampion(raw, environment)) return false
+
+        val norm = normalizeLookupKey(raw)
+        val cleanName = formatRiotAssetLabel(raw)
+        val cleanNorm = normalizeLookupKey(cleanName)
+        val strippedAugNorm = normalizeLookupKey(
+            cleanName.replace("+", "").replace(REGEX_AUGMENT_TIER_SUFFIX, "")
+        )
+        val keys = listOf(norm, cleanNorm, strippedAugNorm).filter { it.isNotEmpty() }
+        return keys.any { k ->
+            AUGMENT_FILENAME_MAP.containsKey(k) ||
+                preloadedAugmentImages.containsKey(k) ||
+                dynamicAugmentImages.containsKey(k) ||
+                preloadedTraitImages.containsKey(k) ||
+                dynamicTraitImages.containsKey(k) ||
+                pbeTraitImages.containsKey(k) ||
+                traitDescriptionCatalog.containsKey(k)
+        }
     }
 
     fun resolveTraitDescription(traitNameOrId: String): String? {
@@ -476,25 +578,36 @@ object TftAssetIconResolver {
         val norm = normalizeLookupKey(raw)
         val cleanName = formatRiotAssetLabel(raw)
         val cleanNorm = normalizeLookupKey(cleanName)
-
-        // 0. For PBE items, prefer TFTactics Set 19 SunderArmor item icons
-        if (environment == TftEnvironment.PBE) {
-            val pbeUrl = pbeItemImages[norm] ?: pbeItemImages[cleanNorm]
-            if (!pbeUrl.isNullOrBlank()) {
-                return pbeUrl
+        val candidateKeys = buildList {
+            if (cleanNorm.isNotEmpty()) {
+                add(cleanNorm)
+                add("da$cleanNorm")
+                add("da18$cleanNorm")
+                add("tftitem$cleanNorm")
+            }
+            if (norm.isNotEmpty() && norm != cleanNorm) {
+                add(norm)
             }
         }
 
-        // 1. Check dynamically fetched Riot tft-item.json map
-        val dynamicPath = dynamicItemImages[norm] ?: dynamicItemImages[cleanNorm]
-        if (!dynamicPath.isNullOrBlank()) {
-            return toDdragonImgUrl(dynamicPath)
+        // 0. For PBE items, prefer TFTactics Set 19 SunderArmor item icons
+        if (environment == TftEnvironment.PBE) {
+            for (k in candidateKeys) {
+                val pbeUrl = pbeItemImages[k]
+                if (!pbeUrl.isNullOrBlank()) return pbeUrl
+            }
         }
 
-        // 2. Check preloaded Set 18 exact DDragon/TFTAcademy item icon catalog
-        val preloaded = preloadedItemImages[norm] ?: preloadedItemImages[cleanNorm]
-        if (!preloaded.isNullOrBlank()) {
-            return preloaded
+        // 1. Check dynamically fetched Riot tft-item.json map (prefer resolved official name first)
+        for (k in candidateKeys) {
+            val dynamicPath = dynamicItemImages[k]
+            if (!dynamicPath.isNullOrBlank()) return toDdragonImgUrl(dynamicPath)
+        }
+
+        // 2. Check preloaded Set 18 exact DDragon/TFTAcademy item icon catalog (prefer resolved official name first)
+        for (k in candidateKeys) {
+            val preloaded = preloadedItemImages[k]
+            if (!preloaded.isNullOrBlank()) return preloaded
         }
 
         // 3. Check exact Data Dragon TFT item filename map
@@ -531,29 +644,46 @@ object TftAssetIconResolver {
                 .replace("+", "")
                 .replace(REGEX_AUGMENT_TIER_SUFFIX, "")
         )
+        val strippedPlusNorm = strippedTierNorm
+            .removeSuffix("plusplus")
+            .removeSuffix("plus")
+        val candidateKeys = LinkedHashSet<String>(10).apply {
+            if (norm.isNotEmpty()) add(norm)
+            if (cleanNorm.isNotEmpty()) {
+                add(cleanNorm)
+                add("da$cleanNorm")
+                add("da18$cleanNorm")
+            }
+            if (strippedTierNorm.isNotEmpty()) {
+                add(strippedTierNorm)
+                add("da$strippedTierNorm")
+                add("da18$strippedTierNorm")
+            }
+            if (strippedPlusNorm.isNotEmpty()) {
+                add(strippedPlusNorm)
+                add("da$strippedPlusNorm")
+                add("da18$strippedPlusNorm")
+            }
+        }
 
         // 1. Check dynamically fetched Riot tft-augments.json map (real non-missing icons)
-        val dynamicPath = dynamicAugmentImages[norm]
-            ?: dynamicAugmentImages[cleanNorm]
-            ?: dynamicAugmentImages[strippedTierNorm]
-        if (!dynamicPath.isNullOrBlank()) {
-            return toDdragonImgUrl(dynamicPath)
+        for (k in candidateKeys) {
+            val dynamicPath = dynamicAugmentImages[k]
+            if (!dynamicPath.isNullOrBlank()) return toDdragonImgUrl(dynamicPath)
         }
 
         // 2. Check preloaded Set 18 exact DDragon/TFTAcademy 200-OK augment icon catalog
-        val preloaded = preloadedAugmentImages[norm]
-            ?: preloadedAugmentImages[cleanNorm]
-            ?: preloadedAugmentImages[strippedTierNorm]
-        if (!preloaded.isNullOrBlank()) {
-            return preloaded
+        for (k in candidateKeys) {
+            val preloaded = preloadedAugmentImages[k]
+            if (!preloaded.isNullOrBlank()) return preloaded
         }
 
         // 3. Check evergreen / well-known Data Dragon augment filenames
-        val staticFile = AUGMENT_FILENAME_MAP[norm]
-            ?: AUGMENT_FILENAME_MAP[cleanNorm]
-            ?: AUGMENT_FILENAME_MAP[strippedTierNorm]
-        if (!staticFile.isNullOrBlank()) {
-            return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-augment/$staticFile"
+        for (k in candidateKeys) {
+            val staticFile = AUGMENT_FILENAME_MAP[k]
+            if (!staticFile.isNullOrBlank()) {
+                return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-augment/$staticFile"
+            }
         }
 
         return null
@@ -643,11 +773,13 @@ object TftAssetIconResolver {
     }
 
     private val BUILTIN_DISPLAY_NAME_OVERRIDES: Map<String, String> = mapOf(
+        // Set 18 / 19 champions & augments
         "da18sentry" to "Pebbles",
         "da18emblemslayer" to "Ravager Emblem",
         "da18florafatalisaugment" to "Consuming Flora",
         "da18rivalsaugment" to "Unrivaled",
         "da18riftbeasttraitaugment" to "Omega Riftbeast",
+        "da18riftbeasttraitaugmentstampede" to "Jungle Pathing",
         "da18gnarsmall" to "Gnar",
         "da18luxelderwood" to "Lux (Elderwood)",
         "dabrambleback18" to "Brambleback",
@@ -663,7 +795,61 @@ object TftAssetIconResolver {
         "daelderwood18lifeblossom" to "Lifeblossom",
         "daelderwood18stonebarktree" to "Stonebark Tree",
         "daelderwood18protector" to "Deepwood Protector",
-        "danestingdolls" to "Nesting Dolls"
+        "danestingdolls" to "Nesting Dolls",
+        "danestingdollsplus" to "Nesting Dolls+",
+        "danestingdollsplusplus" to "Nesting Dolls++",
+        // Official Riot internal TFT item codenames -> modern TFT display names
+        "tftitemredbuff" to "Sunfire Cape",
+        "tftitemrapidfirecannon" to "Red Buff",
+        "rapidfirecannon" to "Red Buff",
+        "tftitemleviathan" to "Nashor's Tooth",
+        "leviathan" to "Nashor's Tooth",
+        "tftitemguardianangel" to "Edge of Night",
+        "guardianangel" to "Edge of Night",
+        "tftitemunstableconcoction" to "Hand of Justice",
+        "unstableconcoction" to "Hand of Justice",
+        "tftitemfrozenheart" to "Protector's Vow",
+        "frozenheart" to "Protector's Vow",
+        "tftitemnightharvester" to "Steadfast Heart",
+        "nightharvester" to "Steadfast Heart",
+        "tftitemmadredsbloodrazor" to "Giant Slayer",
+        "madredsbloodrazor" to "Giant Slayer",
+        "tftitemspectralgauntlet" to "Evenshroud",
+        "spectralgauntlet" to "Evenshroud",
+        "tftitempowergauntlet" to "Striker's Flail",
+        "powergauntlet" to "Striker's Flail",
+        "guardbreaker" to "Striker's Flail",
+        "tftitemforceofnature" to "Tactician's Crown",
+        "forceofnature" to "Tactician's Crown",
+        "tftitemstatikkshiv" to "Void Staff",
+        "statikkshiv" to "Void Staff",
+        "tftitemredemption" to "Spirit Visage",
+        "redemption" to "Spirit Visage",
+        "tftitemrunaanshurricane" to "Kraken's Fury",
+        "runaanshurricane" to "Kraken's Fury",
+        "tftitembfsword" to "B.F. Sword",
+        "bfsword" to "B.F. Sword",
+        "tftitemtacticianscape" to "Tactician's Cape",
+        "tacticianscape" to "Tactician's Cape",
+        "tftitemtacticiansring" to "Tactician's Cape",
+        "tacticiansring" to "Tactician's Cape",
+        "tftitemtacticiansshield" to "Tactician's Shield",
+        "tacticiansshield" to "Tactician's Shield",
+        "tftitemtacticiansscepter" to "Tactician's Shield",
+        "tacticiansscepter" to "Tactician's Shield",
+        "tftitemjeweledgauntlet" to "Jeweled Gauntlet",
+        "tftitemwarmogsarmor" to "Warmog's Armor",
+        "tftitemguinsoosrageblade" to "Guinsoo's Rageblade",
+        "tftitemrabadonsdeathcap" to "Rabadon's Deathcap",
+        "tftitemarchangelsstaff" to "Archangel's Staff",
+        "tftitemdragonsclaw" to "Dragon's Claw",
+        "tftitemtitansresolve" to "Titan's Resolve",
+        "tftitemsteraksgage" to "Sterak's Gage",
+        "tftitemthiefsgloves" to "Thief's Gloves",
+        "tftitemgiantsbelt" to "Giant's Belt",
+        "tftitemspatula" to "Spatula",
+        "tftitemfryingpan" to "Frying Pan",
+        "dacomponentfryingpan" to "Frying Pan"
     )
 
     private val NON_LOL_CHAMPION_KEYS: Set<String> = setOf(
@@ -845,8 +1031,10 @@ object TftAssetIconResolver {
         "deathblade" to "TFT_Item_Deathblade.png",
         "thiefsgloves" to "TFT_Item_ThiefsGloves.png",
         "tacticianscrown" to "TFT_Item_ForceOfNature.png",
-        "tacticianscape" to "TFT_Item_ForceOfNature.png",
-        "tacticiansshield" to "TFT_Item_ForceOfNature.png",
+        "tacticianscape" to "TFT_Item_TacticiansRing.png",
+        "tacticiansring" to "TFT_Item_TacticiansRing.png",
+        "tacticiansshield" to "TFT_Item_TacticiansScepter.png",
+        "tacticiansscepter" to "TFT_Item_TacticiansScepter.png",
         "spiritvisage" to "TFT_Item_Redemption.png",
         "krakensfury" to "TFT_Item_RunaansHurricane.png",
         "strikersflail" to "TFT_Item_PowerGauntlet.png",
@@ -888,5 +1076,75 @@ object TftAssetIconResolver {
         "builtdifferent" to "TFT_Augment_BuiltDifferent2.png",
         "balancedbudget" to "TFT_Augment_BalancedBudget2.png",
         "starrynight" to "TFT_Augment_StarryNight.png"
+    )
+
+    private val KNOWN_ITEM_NAME_KEYWORDS: List<String> = listOf(
+        "emblem",
+        "rageblade",
+        "deathcap",
+        "jeweled gauntlet",
+        "stoneplate",
+        "bloodthirster",
+        "gunblade",
+        "warmog",
+        "spear of shojin",
+        "blue buff",
+        "red buff",
+        "infinity edge",
+        "last whisper",
+        "giant slayer",
+        "nashor's tooth",
+        "sunfire cape",
+        "ionic spark",
+        "morellonomicon",
+        "bramble vest",
+        "dragon's claw",
+        "titan's resolve",
+        "sterak's gage",
+        "statikk shiv",
+        "void staff",
+        "adaptive helm",
+        "quicksilver",
+        "deathblade",
+        "thief's gloves",
+        "crownguard",
+        "evenshroud",
+        "steadfast heart",
+        "guardbreaker",
+        "striker's flail",
+        "kraken's fury",
+        "spirit visage",
+        "protector's vow",
+        "hand of justice",
+        "edge of night",
+        "archangel's staff",
+        "runaan's hurricane",
+        "spatula",
+        "frying pan",
+        "b.f. sword",
+        "bf sword",
+        "recurve bow",
+        "needlessly large rod",
+        "tear of the goddess",
+        "chain vest",
+        "negatron cloak",
+        "giant's belt",
+        "sparring gloves",
+        "tactician's",
+        "radiant ",
+        "zhonya",
+        "manazane",
+        "wits end",
+        "wit's end",
+        "lich bane",
+        "snipers focus",
+        "sniper's focus",
+        "fishbones",
+        "hullcrusher",
+        "mogul's mail",
+        "innervating locket",
+        "death's defiance",
+        "gold collector",
+        "trickster's glass"
     )
 }

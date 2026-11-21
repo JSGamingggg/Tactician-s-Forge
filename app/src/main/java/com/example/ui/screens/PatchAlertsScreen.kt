@@ -336,7 +336,7 @@ fun AboutScreen(
                     )
                 }
                 Text(
-                    text = "Shows a draggable TFT's Helper bubble over TFT Mobile that expands into your pinned favorites & 4×7 hex boards.",
+                    text = "Shows a draggable TFT's Helper bubble over TFT Mobile that expands into your pinned favorites, unit items & level guides.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

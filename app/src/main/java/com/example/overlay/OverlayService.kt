@@ -171,6 +171,8 @@ import com.example.data.teamplanner.TftTeamPlannerCodeEncoder
 import com.example.notifications.MetaUpdateNotifier
 import com.example.notifications.TftNotificationHelper
 import com.example.ui.components.ChampionDetailSheetContent
+import com.example.ui.components.CompFullBoardRosterSection
+import com.example.ui.components.CompLevelTransitionGuideSection
 import com.example.ui.components.TftAugmentChip
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftChampionTile
@@ -179,7 +181,6 @@ import com.example.ui.components.TftItemIcon
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
 import com.example.ui.components.championCostColor
-import com.example.ui.components.computeHexAvatarPixelBounds
 import com.example.ui.components.formatRiotAssetLabel
 import com.example.ui.components.resolveChampionDetailProfile
 import com.example.ui.components.resolveCompUnitCost
@@ -206,6 +207,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -703,15 +705,23 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private fun warmTeamPlannerMappings() {
         serviceScope.launch {
             runCatching {
+                val liveSet = allCompsState.value
+                    .firstOrNull { it.environment == TftEnvironment.LIVE }
+                    ?.let { TftTeamPlannerCodeEncoder.extractTargetSetNumber(it) }
+                    ?: 18
+                val pbeSet = allCompsState.value
+                    .firstOrNull { it.environment == TftEnvironment.PBE }
+                    ?.let { TftTeamPlannerCodeEncoder.extractTargetSetNumber(it) }
+                    ?: 19
                 TftTeamPlannerCodeEncoder.ensureMappingLoaded(
                     context = applicationContext,
                     environment = TftEnvironment.LIVE,
-                    requiredSetNumber = 18
+                    requiredSetNumber = liveSet
                 )
                 TftTeamPlannerCodeEncoder.ensureMappingLoaded(
                     context = applicationContext,
                     environment = TftEnvironment.PBE,
-                    requiredSetNumber = 19
+                    requiredSetNumber = pbeSet
                 )
             }
         }
@@ -724,12 +734,25 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         serviceScope.launch {
             val result = TftTeamPlannerCodeEncoder.resolveTeamCode(applicationContext, comp)
             if (result.isSuccess) {
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                clipboard?.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
-                copiedCompIdState.value = comp.id
-                copyBannerIsErrorState.value = false
-                copyBannerMessageState.value =
-                    "Copied ${result.setKey} code (${result.matchedChampions.size} units) • Paste in TFT"
+                val copiedOk = withContext(Dispatchers.Main.immediate) {
+                    runCatching {
+                        val clipboard = applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            ?: return@runCatching false
+                        clipboard.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
+                        true
+                    }.getOrDefault(false)
+                }
+                if (copiedOk) {
+                    copiedCompIdState.value = comp.id
+                    copyBannerIsErrorState.value = false
+                    copyBannerMessageState.value =
+                        "Copied ${comp.environment.label} (${result.setKey}) code (${result.matchedChampions.size} units) • Paste in TFT"
+                } else {
+                    copiedCompIdState.value = null
+                    copyBannerIsErrorState.value = true
+                    copyBannerMessageState.value =
+                        "Could not access clipboard for ${comp.environment.label} code"
+                }
             } else {
                 copiedCompIdState.value = null
                 copyBannerIsErrorState.value = true
@@ -2182,6 +2205,8 @@ private fun OverlayDrawerContent(
                                             comp = selectedComp,
                                             isFavorite = favoriteIds.contains(selectedComp.id),
                                             isCodeCopied = copiedCompId == selectedComp.id,
+                                            champions = allChampions,
+                                            allComps = envAllComps,
                                             initialScrollOffset = sessionState.detailScrollOffset,
                                             onScrollChanged = { sessionState.updateDetailScroll(it) },
                                             onCopyCode = { onCopyCompCode(selectedComp) },
@@ -2194,10 +2219,9 @@ private fun OverlayDrawerContent(
                                                 .weight(leftWeight)
                                                 .then(paneHeightModifier)
                                         )
-                                        OverlayHexBoardRightPane(
+                                        OverlayLevelGuideRightPane(
                                             comp = selectedComp,
                                             fillAvailableHeight = effectiveFixedHeightDp != null,
-                                            maxPaneHeightDp = (drawerDims.maxHeightDp - 84.dp).coerceAtLeast(180.dp),
                                             onChampionClick = { unitName, cost ->
                                                 sessionState.inspectChampion(unitName, cost)
                                             },
@@ -2302,6 +2326,8 @@ private fun OverlayDrawerContent(
                                                                     expanded = false,
                                                                     opensInSidePane = true,
                                                                     useTwoColumnLayout = false,
+                                                                    champions = allChampions,
+                                                                    allComps = envAllComps,
                                                                     onCardClick = { sessionState.selectComp(comp.id) },
                                                                     onChampionClick = { unitName, cost ->
                                                                         sessionState.inspectChampion(unitName, cost)
@@ -2331,6 +2357,8 @@ private fun OverlayDrawerContent(
                                                             expanded = false,
                                                             opensInSidePane = true,
                                                             useTwoColumnLayout = false,
+                                                            champions = allChampions,
+                                                            allComps = envAllComps,
                                                             onCardClick = { sessionState.selectComp(comp.id) },
                                                             onChampionClick = { unitName, cost ->
                                                                 sessionState.inspectChampion(unitName, cost)
@@ -2695,6 +2723,8 @@ private fun OverlayCompLeftDetailPane(
     comp: MetaComp,
     isFavorite: Boolean,
     isCodeCopied: Boolean = false,
+    champions: List<ChampionTierEntry> = emptyList(),
+    allComps: List<MetaComp> = emptyList(),
     initialScrollOffset: Int = 0,
     onScrollChanged: (Int) -> Unit = {},
     onCopyCode: () -> Unit = {},
@@ -2703,15 +2733,6 @@ private fun OverlayCompLeftDetailPane(
     onChampionClick: ((String, Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val unitCosts = remember(comp.hexPlacements) {
-        comp.hexPlacements.associate { it.unitName to it.cost }
-    }
-    val carryBis = remember(comp.hexPlacements) {
-        comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
-    }
-    val secondaryItemized = remember(comp.hexPlacements) {
-        comp.hexPlacements.filter { it.items.isNotEmpty() && !it.isCarry }
-    }
     val scrollState = rememberScrollState(initial = initialScrollOffset)
     LaunchedEffect(scrollState) {
         snapshotFlow { scrollState.value }.collect { offset ->
@@ -2841,53 +2862,44 @@ private fun OverlayCompLeftDetailPane(
                 }
             }
 
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                val sortedUnits = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
-                    sortCompUnitsByCostAscending(comp)
-                }
-                sortedUnits.take(10).forEach { unit ->
-                    val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
-                    val unitCost = resolveCompUnitCost(unit, comp)
-                    TftChampionTile(
-                        name = unit,
-                        cost = unitCost,
-                        isCarry = isCarryUnit,
-                        size = 34.dp,
-                        labelFontSize = 10.sp,
-                        environment = comp.environment,
-                        onClick = onChampionClick?.let { cb -> { cb(unit, unitCost) } }
-                    )
-                }
-            }
-
-            OverlayCompSideBuildDetails(
+            CompFullBoardRosterSection(
                 comp = comp,
-                carryBis = carryBis,
-                secondaryItemized = secondaryItemized,
-                onChampionClick = onChampionClick
+                champions = champions,
+                allComps = allComps,
+                onChampionClick = onChampionClick,
+                compact = true
             )
-            if (comp.notes.isNotBlank()) {
-                Text(
-                    text = comp.notes,
-                    fontSize = 10.sp,
-                    color = Color(0xFF9FB0CC)
-                )
+
+            if (comp.augmentPriorities.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Recommended Augments",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = BrightGold
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        comp.augmentPriorities.forEach { aug ->
+                            TftAugmentChip(augmentName = aug, compact = true)
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun OverlayHexBoardRightPane(
+private fun OverlayLevelGuideRightPane(
     comp: MetaComp,
     fillAvailableHeight: Boolean,
-    maxPaneHeightDp: Dp,
     onChampionClick: ((String, Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val scrollState = rememberScrollState()
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = DeepSlate,
@@ -2895,148 +2907,22 @@ private fun OverlayHexBoardRightPane(
             width = 1.4.dp,
             brush = Brush.linearGradient(listOf(ArcaneCyan, BrightGold))
         ),
-        modifier = modifier.testTag("overlay_right_hex_board_pane")
+        modifier = modifier.testTag("overlay_right_level_guide_pane")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (fillAvailableHeight) Modifier.fillMaxHeight() else Modifier)
+                .verticalScroll(scrollState)
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "4×7 Hex Board",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = ArcaneCyan,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Carry: ${comp.carryName}",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = BrightGold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (comp.hexPlacements.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(120.dp)
-                        .background(ObsidianVoid.copy(alpha = 0.6f), RoundedCornerShape(10.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "No hex placements listed for this composition.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF93A1B8)
-                    )
-                }
-            } else {
-                val boardModifier = if (fillAvailableHeight) {
-                    Modifier.fillMaxWidth().weight(1f)
-                } else {
-                    Modifier.fillMaxWidth()
-                }
-                BoxWithConstraints(modifier = boardModifier) {
-                    val computedGridHeight = if (constraints.hasBoundedHeight) {
-                        (maxHeight - 28.dp).coerceIn(168.dp, 260.dp)
-                    } else {
-                        (maxPaneHeightDp - 72.dp).coerceIn(168.dp, 230.dp)
-                    }
-                    MiniOverlayHexGrid(
-                        placements = comp.hexPlacements,
-                        environment = comp.environment,
-                        gridHeight = computedGridHeight,
-                        onChampionClick = onChampionClick
-                    )
-                }
-            }
+            CompLevelTransitionGuideSection(
+                comp = comp,
+                onChampionClick = onChampionClick,
+                compact = true
+            )
         }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun OverlayCompSideBuildDetails(
-    comp: MetaComp,
-    carryBis: List<String>,
-    secondaryItemized: List<HexUnitPlacement>,
-    onChampionClick: ((String, Int) -> Unit)? = null
-) {
-    if (carryBis.isNotEmpty()) {
-        Text(
-            text = "Carry BIS (${comp.carryName})",
-            fontSize = 10.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = BrightGold
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            carryBis.forEach { itemName ->
-                TftItemChip(itemName = itemName, compact = true)
-            }
-        }
-    }
-    if (secondaryItemized.isNotEmpty()) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            secondaryItemized.take(4).forEach { unit ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    TftChampionAvatar(
-                        name = unit.unitName,
-                        cost = unit.cost,
-                        isCarry = false,
-                        stars = unit.stars,
-                        size = 18.dp,
-                        environment = comp.environment,
-                        onClick = onChampionClick?.let { cb -> { cb(unit.unitName, unit.cost) } }
-                    )
-                    Text(
-                        text = "${unit.unitName}:",
-                        fontSize = 10.sp,
-                        color = Color(0xFFB7C4D8),
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    unit.items.take(3).forEach { item ->
-                        TftItemIcon(itemName = item, size = 16.dp)
-                    }
-                }
-            }
-        }
-    }
-    if (comp.augmentPriorities.isNotEmpty()) {
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            comp.augmentPriorities.take(3).forEach { aug ->
-                TftAugmentChip(augmentName = aug, compact = true)
-            }
-        }
-    }
-    val cleanLeveling = remember(comp.levelingGuide) {
-        sanitizeExternalSourceMentions(comp.levelingGuide)
-    }
-    if (cleanLeveling.isNotBlank()) {
-        Text(
-            text = cleanLeveling,
-            fontSize = 10.sp,
-            color = Color(0xFFB7C4D8)
-        )
     }
 }
 
@@ -3050,15 +2936,14 @@ private fun OverlayCompCard(
     expanded: Boolean,
     opensInSidePane: Boolean = false,
     useTwoColumnLayout: Boolean = false,
+    champions: List<ChampionTierEntry> = emptyList(),
+    allComps: List<MetaComp> = emptyList(),
     onCardClick: () -> Unit,
     onChampionClick: ((String, Int) -> Unit)? = null,
     onCopyCode: () -> Unit = {},
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val unitCosts = remember(comp.hexPlacements) {
-        comp.hexPlacements.associate { it.unitName to it.cost }
-    }
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = if (selected) SlateElevated else DeepSlate,
@@ -3124,37 +3009,14 @@ private fun OverlayCompCard(
                 }
             }
 
-            val carryBis = remember(comp.hexPlacements) {
-                comp.hexPlacements.firstOrNull { it.isCarry }?.items.orEmpty()
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "Carry: ${comp.carryName} • ${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = BrightGold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                if (carryBis.isNotEmpty()) {
-                    Spacer(Modifier.width(6.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        carryBis.take(3).forEach { itemName ->
-                            TftItemIcon(
-                                itemName = itemName,
-                                size = 18.dp
-                            )
-                        }
-                    }
-                }
-            }
+            Text(
+                text = "Carry: ${comp.carryName} • ${comp.playstyle} • Avg ${String.format(Locale.US, "%.2f", comp.avgPlacement)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = BrightGold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
 
             if (comp.traits.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
@@ -3168,43 +3030,34 @@ private fun OverlayCompCard(
                 }
             }
 
-            Spacer(Modifier.height(5.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                val sortedUnits = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
-                    sortCompUnitsByCostAscending(comp)
-                }
-                sortedUnits.take(10).forEach { unit ->
-                    val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
-                    val unitCost = resolveCompUnitCost(unit, comp)
-                    TftChampionTile(
-                        name = unit,
-                        cost = unitCost,
-                        isCarry = isCarryUnit,
-                        size = 34.dp,
-                        labelFontSize = 10.sp,
-                        environment = comp.environment,
-                        onClick = onChampionClick?.let { cb -> { cb(unit, unitCost) } }
-                    )
+            if (!expanded) {
+                Spacer(Modifier.height(5.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val sortedUnits = remember(comp.coreUnits, comp.hexPlacements, comp.environment) {
+                        sortCompUnitsByCostAscending(comp)
+                    }
+                    sortedUnits.forEach { unit ->
+                        val isCarryUnit = unit.equals(comp.carryName, ignoreCase = true)
+                        val unitCost = resolveCompUnitCost(unit, comp)
+                        TftChampionTile(
+                            name = unit,
+                            cost = unitCost,
+                            isCarry = isCarryUnit,
+                            size = 34.dp,
+                            labelFontSize = 10.sp,
+                            environment = comp.environment,
+                            onClick = onChampionClick?.let { cb -> { cb(unit, unitCost) } }
+                        )
+                    }
                 }
             }
 
             if (expanded) {
-                val itemizedUnits = remember(comp.hexPlacements) {
-                    comp.hexPlacements.filter { it.items.isNotEmpty() }
-                }
-                val secondaryItemized = remember(itemizedUnits) {
-                    itemizedUnits.filterNot { it.isCarry }
-                }
-                val hasLeftDetails = carryBis.isNotEmpty() ||
-                    secondaryItemized.isNotEmpty() ||
-                    comp.augmentPriorities.isNotEmpty() ||
-                    comp.levelingGuide.isNotBlank()
-
-                if (useTwoColumnLayout && comp.hexPlacements.isNotEmpty() && hasLeftDetails) {
-                    Spacer(Modifier.height(7.dp))
+                Spacer(Modifier.height(8.dp))
+                if (useTwoColumnLayout) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -3212,48 +3065,15 @@ private fun OverlayCompCard(
                     ) {
                         Column(
                             modifier = Modifier.weight(1.05f),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            if (carryBis.isNotEmpty()) {
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    carryBis.forEach { itemName ->
-                                        TftItemChip(itemName = itemName, compact = true)
-                                    }
-                                }
-                            }
-                            if (secondaryItemized.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    secondaryItemized.take(3).forEach { unit ->
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                        ) {
-                                            TftChampionAvatar(
-                                                name = unit.unitName,
-                                                cost = unit.cost,
-                                                isCarry = false,
-                                                stars = unit.stars,
-                                                size = 18.dp,
-                                                environment = comp.environment
-                                            )
-                                            Text(
-                                                text = "${unit.unitName}:",
-                                                fontSize = 10.sp,
-                                                color = Color(0xFFB7C4D8),
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            unit.items.take(3).forEach { item ->
-                                                TftItemIcon(itemName = item, size = 16.dp)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            CompFullBoardRosterSection(
+                                comp = comp,
+                                champions = champions,
+                                allComps = allComps,
+                                onChampionClick = onChampionClick,
+                                compact = true
+                            )
                             if (comp.augmentPriorities.isNotEmpty()) {
                                 FlowRow(
                                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -3264,99 +3084,46 @@ private fun OverlayCompCard(
                                     }
                                 }
                             }
-                            val cleanLeveling = remember(comp.levelingGuide) {
-                                sanitizeExternalSourceMentions(comp.levelingGuide)
-                            }
-                            if (cleanLeveling.isNotBlank()) {
-                                Text(
-                                    text = cleanLeveling,
-                                    fontSize = 10.sp,
-                                    color = Color(0xFFB7C4D8)
-                                )
-                            }
                         }
-                        Box(modifier = Modifier.weight(0.95f)) {
-                            MiniOverlayHexGrid(
-                                placements = comp.hexPlacements,
-                                environment = comp.environment,
-                                gridHeight = 168.dp
-                            )
-                        }
+                        CompLevelTransitionGuideSection(
+                            comp = comp,
+                            onChampionClick = onChampionClick,
+                            compact = true,
+                            modifier = Modifier.weight(0.95f)
+                        )
                     }
                 } else {
-                    if (carryBis.isNotEmpty()) {
-                        Spacer(Modifier.height(7.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            carryBis.forEach { itemName ->
-                                TftItemChip(itemName = itemName, compact = true)
-                            }
-                        }
-                    }
-                    if (secondaryItemized.isNotEmpty()) {
-                        Spacer(Modifier.height(5.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            secondaryItemized.take(3).forEach { unit ->
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    TftChampionAvatar(
-                                        name = unit.unitName,
-                                        cost = unit.cost,
-                                        isCarry = false,
-                                        stars = unit.stars,
-                                        size = 18.dp,
-                                        environment = comp.environment
-                                    )
-                                    Text(
-                                        text = "${unit.unitName}:",
-                                        fontSize = 10.sp,
-                                        color = Color(0xFFB7C4D8),
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    unit.items.take(3).forEach { item ->
-                                        TftItemIcon(itemName = item, size = 16.dp)
-                                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CompFullBoardRosterSection(
+                            comp = comp,
+                            champions = champions,
+                            allComps = allComps,
+                            onChampionClick = onChampionClick,
+                            compact = true
+                        )
+                        CompLevelTransitionGuideSection(
+                            comp = comp,
+                            onChampionClick = onChampionClick,
+                            compact = true
+                        )
+                        if (comp.augmentPriorities.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                comp.augmentPriorities.take(3).forEach { aug ->
+                                    TftAugmentChip(augmentName = aug, compact = true)
                                 }
                             }
                         }
-                    }
-                    if (comp.hexPlacements.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        MiniOverlayHexGrid(comp.hexPlacements, environment = comp.environment)
-                    }
-                    if (comp.augmentPriorities.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            comp.augmentPriorities.take(3).forEach { aug ->
-                                TftAugmentChip(augmentName = aug, compact = true)
-                            }
-                        }
-                    }
-                    val cleanLeveling = remember(comp.levelingGuide) {
-                        sanitizeExternalSourceMentions(comp.levelingGuide)
-                    }
-                    if (cleanLeveling.isNotBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = cleanLeveling,
-                            fontSize = 10.sp,
-                            color = Color(0xFFB7C4D8)
-                        )
                     }
                 }
             } else {
                 Text(
                     text = if (opensInSidePane) {
-                        "Tap card for Comp (Left) & Hex Board (Right) →"
+                        "Tap card for Unit Items (Left) & Level Guide (Right) →"
                     } else {
-                        "Tap card for BIS items, 4×7 hex board & augments"
+                        "Tap card for Full Board Roster, Unit Items & Level Guide"
                     },
                     fontSize = 9.sp,
                     color = Color(0xFF7D8DA6),
@@ -3446,147 +3213,6 @@ private fun OverlayEnvChip(
     }
 }
 
-@Composable
-private fun MiniOverlayHexGrid(
-    placements: List<HexUnitPlacement>,
-    environment: TftEnvironment? = null,
-    gridHeight: Dp = 184.dp,
-    onChampionClick: ((String, Int) -> Unit)? = null
-) {
-    val density = LocalDensity.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                Brush.verticalGradient(listOf(ObsidianVoid, DeepSlate)),
-                RoundedCornerShape(8.dp)
-            )
-            .padding(6.dp)
-    ) {
-        Text(
-            text = "Board (R1 Front -> R4 Back) • Gold = Carry",
-            fontSize = 9.sp,
-            color = Color(0xFF93A1B8)
-        )
-        Spacer(Modifier.height(3.dp))
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(gridHeight)
-        ) {
-            val cols = 7
-            val rows = 4
-            val widthPx = with(density) { maxWidth.toPx() }
-            val heightPx = with(density) { maxHeight.toPx() }
-            val bottomLabelReservePx = with(density) { 14.dp.toPx() }
-            val rByWidth = widthPx / ((cols - 1) * 1.88f + 0.94f + 2.25f)
-            val rByHeight = (heightPx - bottomLabelReservePx) / ((rows - 1) * 2.48f + 2.0f)
-            val radius = minOf(rByWidth, rByHeight).coerceAtLeast(8f)
-            val dx = radius * 1.88f
-            val dy = radius * 2.48f
-            val totalGridWidth = (cols - 1) * dx + dx * 0.5f + radius * 2f
-            val totalGridHeight = (rows - 1) * dy + radius * 2f + bottomLabelReservePx
-            val startX = (widthPx - totalGridWidth) / 2f + radius
-            val startY = (heightPx - totalGridHeight) / 2f + radius
-            val hexR = radius * 0.94f
-            val occupied = placements.associateBy { it.row to it.col }
-
-            Canvas(modifier = Modifier.matchParentSize()) {
-                for (r in 0 until rows) {
-                    for (c in 0 until cols) {
-                        val xOffset = if (r % 2 == 1) dx * 0.5f else 0f
-                        val cx = startX + c * dx + xOffset
-                        val cy = startY + r * dy
-                        val unit = occupied[r to c]
-                        val path = Path().apply {
-                            for (i in 0 until 6) {
-                                val angle = Math.toRadians((60 * i - 30).toDouble())
-                                val px = cx + hexR * cos(angle).toFloat()
-                                val py = cy + hexR * sin(angle).toFloat()
-                                if (i == 0) moveTo(px, py) else lineTo(px, py)
-                            }
-                            close()
-                        }
-                        when {
-                            unit?.isCarry == true -> {
-                                drawPath(path, color = BrightGold.copy(alpha = 0.28f))
-                                drawPath(path, color = BrightGold, style = Stroke(width = 2.4f))
-                            }
-                            unit != null -> {
-                                val costTint = championCostColor(unit.cost)
-                                drawPath(path, color = costTint.copy(alpha = 0.22f))
-                                drawPath(path, color = costTint, style = Stroke(width = 1.9f))
-                            }
-                            else -> {
-                                drawPath(path, color = SlateOutline.copy(alpha = 0.75f), style = Stroke(width = 1.1f))
-                            }
-                        }
-                    }
-                }
-            }
-
-            val (hexWpx, hexHpx) = computeHexAvatarPixelBounds(hexR, minWidthPx = 18, minHeightPx = 20)
-            val hexWDp = with(density) { hexWpx.toDp() }
-            val hexHDp = with(density) { hexHpx.toDp() }
-            val labelMaxWpx = (dx * 1.32f).roundToInt().coerceAtLeast(hexWpx + 10)
-            val labelMaxWDp = with(density) { labelMaxWpx.toDp() }
-            val labelTopGapPx = with(density) { 1.dp.toPx() }
-
-            placements.forEach { unit ->
-                val xOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
-                val cx = startX + unit.col * dx + xOffset
-                val cy = startY + unit.row * dy
-                val leftPx = (cx - hexWpx / 2f).roundToInt()
-                val topPx = (cy - hexHpx / 2f).roundToInt()
-                val cleanLabel = formatRiotAssetLabel(unit.unitName)
-
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(leftPx, topPx) }
-                        .size(width = hexWDp, height = hexHDp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    TftChampionAvatar(
-                        name = unit.unitName,
-                        cost = unit.cost,
-                        isCarry = unit.isCarry,
-                        stars = unit.stars,
-                        size = hexWDp,
-                        height = hexHDp,
-                        environment = environment,
-                        exactSize = true,
-                        useHexShape = true,
-                        showBadge = false,
-                        onClick = onChampionClick?.let { cb -> { cb(unit.unitName, unit.cost) } }
-                    )
-                }
-
-                val labelLeftPx = (cx - labelMaxWpx / 2f).roundToInt()
-                val labelTopPx = (cy + hexHpx / 2f + labelTopGapPx).roundToInt()
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(labelLeftPx, labelTopPx) }
-                        .width(labelMaxWDp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = cleanLabel,
-                        fontSize = 8.5.sp,
-                        lineHeight = 9.sp,
-                        fontWeight = if (unit.isCarry) FontWeight.Bold else FontWeight.SemiBold,
-                        color = if (unit.isCarry) BrightGold else Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .background(Color(0xEB070B12), RoundedCornerShape(3.dp))
-                            .padding(horizontal = 3.dp, vertical = 1.dp)
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun OverlayOpacityControlBar(

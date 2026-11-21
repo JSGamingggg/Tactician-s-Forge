@@ -14,7 +14,6 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +25,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -47,27 +48,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.model.ChampionTierEntry
 import com.example.data.model.DeltaType
 import com.example.data.model.HexUnitPlacement
+import com.example.data.model.LevelTransitionStage
+import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.ui.theme.LocalHextechColors
-import kotlin.math.cos
-import kotlin.math.roundToInt
-import kotlin.math.sin
+import java.util.Locale
 
 fun environmentSlideTransitionSpec(): AnimatedContentTransitionScope<TftEnvironment>.() -> ContentTransform = {
     fadeIn(tween(90)) togetherWith fadeOut(tween(60))
@@ -302,339 +300,734 @@ fun HextechPanelCard(
     }
 }
 
+/**
+ * Resolves EVERY champion in a composition (combining all [MetaComp.hexPlacements],
+ * [MetaComp.coreUnits], and [MetaComp.carryName] without truncation, while filtering out any
+ * stray non-champion/item names) along with:
+ * - `items`: website composition items ONLY on the composition's carries
+ * - `otherItems`: additional viable/alternative items ONLY on the composition's carries
+ * Non-carry champions are always returned as champions with empty `items` and `otherItems`.
+ */
+fun resolveFullBoardRosterUnits(
+    comp: MetaComp,
+    champions: List<ChampionTierEntry> = emptyList(),
+    allComps: List<MetaComp> = emptyList()
+): List<HexUnitPlacement> {
+    fun normKey(raw: String): String =
+        formatRiotAssetLabel(raw).lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")
+
+    fun cleanItemList(raw: List<String>): List<String> = raw
+        .map { formatRiotAssetLabel(it).ifBlank { it.trim() } }
+        .filter { it.isNotBlank() }
+        .distinctBy { normKey(it) }
+
+    val champBestItemsByKey = LinkedHashMap<String, List<String>>()
+    champions.forEach { entry ->
+        val k = normKey(entry.name)
+        if (k.isBlank() || entry.bestItems.isEmpty()) return@forEach
+        val cleaned = cleanItemList(entry.bestItems)
+        if (cleaned.isNotEmpty() && (!champBestItemsByKey.containsKey(k) || entry.environment == comp.environment)) {
+            champBestItemsByKey[k] = cleaned
+        }
+    }
+
+    val crossCompItemsByKey = LinkedHashMap<String, MutableMap<String, Pair<String, Int>>>()
+    allComps.forEach { otherComp ->
+        if (otherComp.id == comp.id) return@forEach
+        otherComp.hexPlacements.forEach { p ->
+            val uKey = normKey(p.unitName)
+            if (uKey.isBlank()) return@forEach
+            val bucket = crossCompItemsByKey.getOrPut(uKey) { LinkedHashMap() }
+            (p.items + p.otherItems).forEach { rawItem ->
+                val clean = formatRiotAssetLabel(rawItem).ifBlank { rawItem.trim() }
+                val iKey = normKey(clean)
+                if (iKey.isNotBlank()) {
+                    val prev = bucket[iKey]
+                    bucket[iKey] = (prev?.first ?: clean) to ((prev?.second ?: 0) + 1)
+                }
+            }
+        }
+    }
+
+    val carryKey = if (TftAssetIconResolver.isKnownNonChampionAsset(comp.carryName, comp.environment)) {
+        ""
+    } else {
+        normKey(comp.carryName)
+    }
+    val byKey = LinkedHashMap<String, HexUnitPlacement>()
+
+    comp.hexPlacements.forEach { placement ->
+        if (TftAssetIconResolver.isKnownNonChampionAsset(placement.unitName, comp.environment)) return@forEach
+        val cleanName = formatChampionDisplayName(placement.unitName).ifBlank { placement.unitName.trim() }
+        val key = normKey(cleanName)
+        if (key.isBlank() || TftAssetIconResolver.isKnownNonChampionAsset(cleanName, comp.environment)) return@forEach
+        val isCarry = placement.isCarry || (carryKey.isNotBlank() && key == carryKey)
+        val cost = placement.cost.takeIf { it in 1..5 }
+            ?: resolveCompUnitCost(cleanName, comp)
+        val cleanPrimary = cleanItemList(placement.items)
+        val cleanOther = cleanItemList(placement.otherItems)
+        val existing = byKey[key]
+        if (existing == null) {
+            byKey[key] = placement.copy(
+                unitName = cleanName,
+                cost = cost,
+                isCarry = isCarry,
+                items = cleanPrimary,
+                otherItems = cleanOther
+            )
+        } else {
+            val mergedPrimary = cleanItemList(existing.items + cleanPrimary)
+            val mergedOther = cleanItemList(existing.otherItems + cleanOther)
+            byKey[key] = existing.copy(
+                cost = existing.cost.takeIf { it in 1..5 } ?: cost,
+                stars = maxOf(existing.stars, placement.stars),
+                isCarry = existing.isCarry || isCarry,
+                items = mergedPrimary,
+                otherItems = mergedOther
+            )
+        }
+    }
+
+    comp.coreUnits.forEach { rawUnit ->
+        if (TftAssetIconResolver.isKnownNonChampionAsset(rawUnit, comp.environment)) return@forEach
+        val cleanName = formatChampionDisplayName(rawUnit).ifBlank { rawUnit.trim() }
+        val key = normKey(cleanName)
+        if (key.isBlank() || byKey.containsKey(key) || TftAssetIconResolver.isKnownNonChampionAsset(cleanName, comp.environment)) return@forEach
+        val isCarry = carryKey.isNotBlank() && key == carryKey
+        val cost = resolveCompUnitCost(cleanName, comp)
+        byKey[key] = HexUnitPlacement(
+            unitName = cleanName,
+            row = 0,
+            col = 0,
+            cost = cost,
+            stars = if (isCarry && comp.playstyle.contains("reroll", ignoreCase = true)) 3 else 2,
+            isCarry = isCarry,
+            items = emptyList(),
+            otherItems = emptyList()
+        )
+    }
+
+    if (carryKey.isNotBlank() && !byKey.containsKey(carryKey)) {
+        val cleanCarry = formatChampionDisplayName(comp.carryName).ifBlank { comp.carryName.trim() }
+        byKey[carryKey] = HexUnitPlacement(
+            unitName = cleanCarry,
+            row = 0,
+            col = 0,
+            cost = resolveCompUnitCost(cleanCarry, comp),
+            stars = if (comp.playstyle.contains("reroll", ignoreCase = true)) 3 else 2,
+            isCarry = true,
+            items = emptyList(),
+            otherItems = emptyList()
+        )
+    }
+
+    // Identify ONLY the composition's carries (main carry + up to 2 itemized secondary/frontline carries)
+    val prioritizedCarryKeys = byKey.entries
+        .filter { (key, unit) ->
+            unit.isCarry || (carryKey.isNotBlank() && key == carryKey) || unit.items.isNotEmpty()
+        }
+        .sortedWith(
+            compareByDescending<Map.Entry<String, HexUnitPlacement>> { it.key == carryKey }
+                .thenByDescending { it.value.isCarry }
+                .thenByDescending { it.value.items.size }
+                .thenByDescending { it.value.cost }
+        )
+        .take(3)
+        .map { it.key }
+        .toSet()
+
+    // Finalize items & Other Items STRICTLY for composition carries; non-carry units stay item-free
+    val finalized = byKey.entries.map { (key, unit) ->
+        if (key !in prioritizedCarryKeys) {
+            unit.copy(isCarry = false, items = emptyList(), otherItems = emptyList())
+        } else {
+            val primaryItems = unit.items.take(3)
+            val primaryKeys = primaryItems.map { normKey(it) }.toSet()
+            val fromChampCatalog = champBestItemsByKey[key].orEmpty()
+            val fromOtherComps = crossCompItemsByKey[key]?.values
+                ?.sortedByDescending { it.second }
+                ?.map { it.first }
+                .orEmpty()
+            val resolvedOthers = cleanItemList(unit.otherItems + fromChampCatalog + fromOtherComps)
+                .filter { normKey(it) !in primaryKeys }
+                .take(4)
+            unit.copy(
+                items = primaryItems,
+                otherItems = resolvedOthers
+            )
+        }
+    }
+
+    return finalized.sortedWith(
+        compareByDescending<HexUnitPlacement> { it.isCarry }
+            .thenByDescending { it.items.isNotEmpty() }
+            .thenByDescending { it.items.size }
+            .thenByDescending { it.otherItems.isNotEmpty() }
+            .thenByDescending { it.cost }
+            .thenBy { it.unitName }
+    )
+}
+
+/**
+ * Resolves a structured stage-by-stage Level & Transition Guide (what to play and when to transition)
+ * for a composition, using explicit website stage boards when present or deriving an accurate
+ * gameplan from the composition's playstyle, roster costs, carry, and leveling notes.
+ */
+fun resolveCompLevelGuideStages(comp: MetaComp): List<LevelTransitionStage> {
+    if (comp.levelGuideStages.isNotEmpty()) {
+        return comp.levelGuideStages.map { stage ->
+            stage.copy(
+                units = stage.units.filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
+            )
+        }
+    }
+
+    val roster = resolveFullBoardRosterUnits(comp)
+    val sortedByCost = roster.sortedWith(compareBy<HexUnitPlacement> { it.cost }.thenByDescending { it.isCarry })
+    val allNames = sortedByCost.map { it.unitName }
+
+    val lowCostUnits = sortedByCost.filter { it.cost <= 2 }.map { it.unitName }
+    val midCostUnits = sortedByCost.filter { it.cost <= 3 }.map { it.unitName }
+    val highCostUnits = sortedByCost.filter { it.cost >= 4 }.map { it.unitName }
+
+    val earlyUnits = when {
+        lowCostUnits.size >= 3 -> lowCostUnits.take(5)
+        midCostUnits.isNotEmpty() -> midCostUnits.take(4)
+        else -> allNames.take(4)
+    }
+    val midUnits = when {
+        midCostUnits.size >= 4 -> midCostUnits.take(7)
+        else -> allNames.take(6)
+    }
+    val lateUnits = if (highCostUnits.isNotEmpty()) {
+        (highCostUnits + allNames).distinct()
+    } else {
+        allNames
+    }
+
+    val carry = comp.carryName.ifBlank { roster.firstOrNull { it.isCarry }?.unitName ?: "Main Carry" }
+    val carryCost = resolveCompUnitCost(carry, comp)
+    val styleLower = comp.playstyle.lowercase(Locale.US)
+    val primaryTrait = comp.traits.firstOrNull()?.replace(Regex("""^\d+\s+"""), "")?.trim().orEmpty()
+    val traitHint = if (primaryTrait.isNotBlank()) "$primaryTrait opener" else "strongest early opener"
+
+    return when {
+        styleLower.contains("slow roll") || styleLower.contains("hyper") ||
+            (styleLower.contains("reroll") && carryCost <= 2) -> {
+            val rollLevel = if (carryCost <= 1) "Level 5" else "Level 6"
+            listOf(
+                LevelTransitionStage(
+                    levelLabel = "Level 4–5 • Early",
+                    stageTiming = "Stage 2-1 → 3-1",
+                    units = earlyUnits,
+                    actionTip = "Avoid buying XP early. Play $traitHint, collect $carry copies, and build 50g interest."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "$rollLevel • Transition & Roll",
+                    stageTiming = "Stage 3-2 → 4-1",
+                    units = midUnits,
+                    actionTip = "Transition onto core synergies and slow-roll above 50g at $rollLevel until $carry hits 3★."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "Level 7–8 • Cap Board",
+                    stageTiming = "Stage 4-5+",
+                    units = lateUnits,
+                    actionTip = "Once $carry is 3★, push levels to slot remaining high-cost units and finish trait breakpoints."
+                )
+            )
+        }
+        styleLower.contains("7") || (styleLower.contains("reroll") && carryCost == 3) -> {
+            listOf(
+                LevelTransitionStage(
+                    levelLabel = "Level 4–5 • Early",
+                    stageTiming = "Stage 2-1 → 2-6",
+                    units = earlyUnits,
+                    actionTip = "Level to 4 on 2-1, play $traitHint, and slam carry items on a temporary holder to save HP."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "Level 6–7 • Transition & Roll",
+                    stageTiming = "Stage 3-2 → 4-1",
+                    units = midUnits,
+                    actionTip = "Push Level 7 on 3-5 / 4-1, roll to stabilize 2★ board & move items onto $carry, then slow-roll above 50g for 3★."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "Level 8–9 • Cap Board",
+                    stageTiming = "Stage 5-1+",
+                    units = lateUnits,
+                    actionTip = "After hitting 3★ $carry, push Level 8/9 to add late-game frontline and trait finishers."
+                )
+            )
+        }
+        styleLower.contains("fast 9") || styleLower.contains("fast9") || carryCost >= 5 -> {
+            listOf(
+                LevelTransitionStage(
+                    levelLabel = "Level 4–6 • Early Tempo",
+                    stageTiming = "Stage 2-1 → 3-5",
+                    units = earlyUnits,
+                    actionTip = "Level aggressively on 2-1 / 2-5 / 3-2 with $traitHint. Slam flexible items on an early item holder to preserve HP."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "Level 7–8 • Stabilize",
+                    stageTiming = "Stage 4-1 → 4-5",
+                    units = midUnits,
+                    actionTip = "Roll lightly at Level 8 only if below 50 HP; keep economy healthy to push Level 9 cleanly."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "Level 9 • Full Transition",
+                    stageTiming = "Stage 5-1+",
+                    units = lateUnits,
+                    actionTip = "Transition at Level 9: sell your item holder, transfer BIS items onto $carry, and cap with 5-cost units."
+                )
+            )
+        }
+        else -> {
+            listOf(
+                LevelTransitionStage(
+                    levelLabel = "Level 4–5 • Early",
+                    stageTiming = "Stage 2-1 → 2-6",
+                    units = earlyUnits,
+                    actionTip = "Level to 4 on 2-1 and 5 on 2-5. Play $traitHint and use an early item holder for $carry's items."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "Level 6–7 • Mid Game",
+                    stageTiming = "Stage 3-2 → 3-5",
+                    units = midUnits,
+                    actionTip = "Level to 6 on 3-2 and 7 on 3-5. Hold 50g econ and add mid-game synergies without over-rolling."
+                ),
+                LevelTransitionStage(
+                    levelLabel = "Level 8–9 • Transition",
+                    stageTiming = "Stage 4-1 / 4-2",
+                    units = lateUnits,
+                    actionTip = "Push Level 8 on 4-1/4-2 and roll down to hit 2★ $carry & frontline; sell item holder and cap at Level 9."
+                )
+            )
+        }
+    }
+}
+
+/**
+ * Displays a clear, actionable Leveling & Transition Guide (what to play at each level and
+ * when to transition / roll), replacing the old hex board in both the App and Live Overlay.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TftHexBoard(
-    placements: List<HexUnitPlacement>,
-    environment: TftEnvironment? = null,
+fun CompLevelTransitionGuideSection(
+    comp: MetaComp,
     onChampionClick: ((String, Int) -> Unit)? = null,
+    compact: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
     val outline = MaterialTheme.colorScheme.outline
-    val surfaceBg = MaterialTheme.colorScheme.surfaceVariant
-    val occupied = remember(placements) { placements.associateBy { it.row to it.col } }
-    val sortedPlacements = remember(placements) {
-        placements.sortedWith(compareByDescending<HexUnitPlacement> { it.isCarry }.thenBy { it.row }.thenBy { it.col })
+    val stages = remember(comp.id, comp.levelGuideStages, comp.playstyle, comp.coreUnits, comp.hexPlacements, comp.carryName) {
+        resolveCompLevelGuideStages(comp)
     }
-    val density = LocalDensity.current
+    val cleanSiteGuide = remember(comp.levelingGuide) {
+        sanitizeExternalSourceMentions(comp.levelingGuide).trim()
+    }
+    val cleanSiteNotes = remember(comp.notes) {
+        sanitizeExternalSourceMentions(comp.notes).trim()
+    }
+    val showSiteGuideBanner = cleanSiteGuide.isNotBlank() &&
+        !cleanSiteGuide.equals("${comp.playstyle} • ${comp.setName} (${comp.patchTag})", ignoreCase = true)
 
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        MaterialTheme.colorScheme.background,
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                    )
-                )
-            )
-            .border(1.dp, outline, RoundedCornerShape(14.dp))
-            .padding(10.dp)
+            .testTag("level_transition_guide_${comp.id}"),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)
     ) {
-        // Board Legend & Orientation Labels
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Frontline (Row 1) ↓ Backline (Row 4)",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = "Level Guide & Transitions",
+                style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleSmall,
+                color = secondary,
+                fontWeight = FontWeight.Bold
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                LegendDot("Carry", primary)
-                LegendDot("Ally", secondary)
+            Surface(
+                shape = RoundedCornerShape(7.dp),
+                color = primary.copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, primary.copy(alpha = 0.65f))
+            ) {
+                Text(
+                    text = comp.playstyle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = primary,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                )
             }
         }
-        Spacer(Modifier.height(6.dp))
 
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(244.dp)
-        ) {
-            val cols = 7
-            val rows = 4
-            val widthPx = with(density) { maxWidth.toPx() }
-            val heightPx = with(density) { maxHeight.toPx() }
-            val bottomLabelReservePx = with(density) { 16.dp.toPx() }
-            val rByWidth = widthPx / ((cols - 1) * 1.88f + 0.94f + 2.25f)
-            val rByHeight = (heightPx - bottomLabelReservePx) / ((rows - 1) * 2.48f + 2.0f)
-            val rPx = minOf(rByWidth, rByHeight).coerceAtLeast(10f)
-            val dx = rPx * 1.88f
-            val dy = rPx * 2.48f
-            val totalGridWidth = (cols - 1) * dx + dx * 0.5f + rPx * 2f
-            val totalGridHeight = (rows - 1) * dy + rPx * 2f + bottomLabelReservePx
-            val startX = (widthPx - totalGridWidth) / 2f + rPx
-            val startY = (heightPx - totalGridHeight) / 2f + rPx
-            val hexR = rPx * 0.94f
-
-            val hexCells = remember(widthPx, heightPx, rPx) {
-                buildList(rows * cols) {
-                    for (r in 0 until rows) {
-                        for (c in 0 until cols) {
-                            val rowOffset = if (r % 2 == 1) dx * 0.5f else 0f
-                            val cx = startX + c * dx + rowOffset
-                            val cy = startY + r * dy
-                            val path = Path().apply {
-                                for (i in 0 until 6) {
-                                    val angle = Math.toRadians((60 * i - 30).toDouble())
-                                    val px = cx + hexR * cos(angle).toFloat()
-                                    val py = cy + hexR * sin(angle).toFloat()
-                                    if (i == 0) moveTo(px, py) else lineTo(px, py)
-                                }
-                                close()
-                            }
-                            add(Triple(r, c, path))
-                        }
-                    }
+        Column(verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
+            stages.forEachIndexed { idx, stage ->
+                val isTransitionStep = idx == stages.lastIndex ||
+                    stage.levelLabel.contains("Transition", ignoreCase = true) ||
+                    stage.levelLabel.contains("Roll", ignoreCase = true)
+                val stepAccent = when {
+                    idx == 0 -> secondary
+                    isTransitionStep -> primary
+                    else -> MaterialTheme.colorScheme.tertiary
                 }
-            }
-
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                for ((r, c, path) in hexCells) {
-                    val unit = occupied[r to c]
-                    when {
-                        unit?.isCarry == true -> {
-                            drawPath(path, color = primary.copy(alpha = 0.25f))
-                            drawPath(path, color = primary, style = Stroke(width = 3.5f))
-                        }
-                        unit != null -> {
-                            val costTint = championCostColor(unit.cost)
-                            drawPath(path, color = costTint.copy(alpha = 0.20f))
-                            drawPath(path, color = costTint, style = Stroke(width = 2.5f))
-                        }
-                        else -> {
-                            drawPath(path, color = surfaceBg.copy(alpha = 0.45f))
-                            drawPath(path, color = outline.copy(alpha = 0.7f), style = Stroke(width = 1.5f))
-                        }
-                    }
-                }
-            }
-
-            // Champion portrait icons filling each pointed hexagon cell + clear name below each cell
-            val (hexWpx, hexHpx) = computeHexAvatarPixelBounds(hexR, minWidthPx = 22, minHeightPx = 26)
-            val hexWDp = with(density) { hexWpx.toDp() }
-            val hexHDp = with(density) { hexHpx.toDp() }
-            val labelMaxWpx = (dx * 1.32f).roundToInt().coerceAtLeast(hexWpx + 12)
-            val labelMaxWDp = with(density) { labelMaxWpx.toDp() }
-            val labelTopGapPx = with(density) { 1.dp.toPx() }
-
-            placements.forEach { unit ->
-                val rowOffset = if (unit.row % 2 == 1) dx * 0.5f else 0f
-                val cx = startX + unit.col * dx + rowOffset
-                val cy = startY + unit.row * dy
-                val leftPx = (cx - hexWpx / 2f).roundToInt()
-                val topPx = (cy - hexHpx / 2f).roundToInt()
-                val cleanLabel = formatRiotAssetLabel(unit.unitName)
-
-                Box(
+                Surface(
+                    shape = RoundedCornerShape(if (compact) 10.dp else 12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isTransitionStep) 0.68f else 0.48f),
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (isTransitionStep) stepAccent.copy(alpha = 0.72f) else outline.copy(alpha = 0.7f)
+                    ),
                     modifier = Modifier
-                        .offset { IntOffset(leftPx, topPx) }
-                        .size(width = hexWDp, height = hexHDp),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .testTag("level_guide_stage_${comp.id}_$idx")
                 ) {
-                    TftChampionAvatar(
-                        name = unit.unitName,
-                        cost = unit.cost,
-                        isCarry = unit.isCarry,
-                        stars = unit.stars,
-                        size = hexWDp,
-                        height = hexHDp,
-                        environment = environment,
-                        exactSize = true,
-                        useHexShape = true,
-                        showBadge = true,
-                        onClick = onChampionClick?.let { cb -> { cb(unit.unitName, unit.cost) } }
-                    )
-                }
-
-                val labelLeftPx = (cx - labelMaxWpx / 2f).roundToInt()
-                val labelTopPx = (cy + hexHpx / 2f + labelTopGapPx).roundToInt()
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(labelLeftPx, labelTopPx) }
-                        .width(labelMaxWDp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = cleanLabel,
-                        fontSize = 9.5.sp,
-                        lineHeight = 10.sp,
-                        fontWeight = if (unit.isCarry) FontWeight.Bold else FontWeight.SemiBold,
-                        color = if (unit.isCarry) Color(0xFFFFD700) else Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
+                    Column(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(Color(0xEB070B12), RoundedCornerShape(4.dp))
-                            .then(
-                                if (onChampionClick != null) {
-                                    Modifier.clickable { onChampionClick(unit.unitName, unit.cost) }
-                                } else {
-                                    Modifier
+                            .fillMaxWidth()
+                            .padding(if (compact) 8.dp else 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(if (compact) 18.dp else 20.dp)
+                                        .clip(CircleShape)
+                                        .background(stepAccent.copy(alpha = 0.24f))
+                                        .border(1.dp, stepAccent.copy(alpha = 0.85f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "${idx + 1}",
+                                        fontSize = if (compact) 10.sp else 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = stepAccent
+                                    )
                                 }
+                                Text(
+                                    text = stage.levelLabel,
+                                    style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (stage.stageTiming.isNotBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = stepAccent.copy(alpha = 0.16f)
+                                ) {
+                                    Text(
+                                        text = stage.stageTiming,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = stepAccent,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (stage.actionTip.isNotBlank()) {
+                            Text(
+                                text = stage.actionTip,
+                                style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = if (compact) 11.sp else 13.sp,
+                                lineHeight = if (compact) 15.sp else 18.sp
                             )
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
-                    )
+                        }
+
+                        if (stage.units.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "What to Play:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = stepAccent,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp),
+                                    verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
+                                ) {
+                                    stage.units.forEach { unitName ->
+                                        val cost = resolveCompUnitCost(unitName, comp)
+                                        val isCarry = unitName.equals(comp.carryName, ignoreCase = true)
+                                        TftChampionTile(
+                                            name = unitName,
+                                            cost = cost,
+                                            isCarry = isCarry,
+                                            size = if (compact) 28.dp else 34.dp,
+                                            labelFontSize = if (compact) 9.sp else 10.sp,
+                                            environment = comp.environment,
+                                            onClick = onChampionClick?.let { cb -> { cb(unitName, cost) } }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        if (placements.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Full Board Roster & Unit Items (${placements.size} Units)",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.height(6.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                sortedPlacements.forEach { unit ->
-                    if (onChampionClick != null) {
-                        Surface(
-                            onClick = { onChampionClick(unit.unitName, unit.cost) },
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (unit.isCarry) primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, if (unit.isCarry) primary else outline),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        TftChampionAvatar(
-                                            name = unit.unitName,
-                                            cost = unit.cost,
-                                            isCarry = unit.isCarry,
-                                            stars = unit.stars,
-                                            size = 28.dp,
-                                            environment = environment
-                                        )
-                                        Column {
-                                            Text(
-                                                text = unit.unitName + if (unit.isCarry) " (Carry)" else "",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = if (unit.isCarry) primary else MaterialTheme.colorScheme.onSurface,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            Text(
-                                                text = "Row ${unit.row + 1} • Col ${unit.col + 1} • ${unit.cost}-Cost",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = "★".repeat(unit.stars.coerceIn(1, 3)),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (unit.stars >= 3 || unit.isCarry) primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (unit.items.isNotEmpty()) {
-                                    Spacer(Modifier.height(5.dp))
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        unit.items.forEach { itemName ->
-                                            TftItemChip(itemName = itemName, compact = true)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (unit.isCarry) primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, if (unit.isCarry) primary else outline),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        TftChampionAvatar(
-                                            name = unit.unitName,
-                                            cost = unit.cost,
-                                            isCarry = unit.isCarry,
-                                            stars = unit.stars,
-                                            size = 28.dp,
-                                            environment = environment
-                                        )
-                                        Column {
-                                            Text(
-                                                text = unit.unitName + if (unit.isCarry) " (Carry)" else "",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = if (unit.isCarry) primary else MaterialTheme.colorScheme.onSurface,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            Text(
-                                                text = "Row ${unit.row + 1} • Col ${unit.col + 1} • ${unit.cost}-Cost",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = "★".repeat(unit.stars.coerceIn(1, 3)),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (unit.stars >= 3 || unit.isCarry) primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (unit.items.isNotEmpty()) {
-                                    Spacer(Modifier.height(5.dp))
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        unit.items.forEach { itemName ->
-                                            TftItemChip(itemName = itemName, compact = true)
-                                        }
-                                    }
-                                }
-                            }
-                        }
+        if (showSiteGuideBanner || cleanSiteNotes.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                border = BorderStroke(1.dp, outline.copy(alpha = 0.6f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(if (compact) 8.dp else 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    if (showSiteGuideBanner) {
+                        Text(
+                            text = cleanSiteGuide,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = if (compact) 10.5.sp else 12.sp
+                        )
                     }
+                    if (cleanSiteNotes.isNotBlank()) {
+                        Text(
+                            text = cleanSiteNotes,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = secondary,
+                            fontSize = if (compact) 10.sp else 11.5.sp
+                        )
                     }
+                }
             }
         }
     }
 }
 
+/**
+ * Displays ALL champions in a clicked composition under the sub-header
+ * "Full Board Roster & Unit Items":
+ * - Every champion in the composition is displayed as a champion tile, with website composition
+ *   item icons tucked directly UNDER the champion's icon ONLY for the composition's carries.
+ * - Below the board roster, ONLY the composition's carries show their itemized build details
+ *   (Comp Items + side-by-side "Other Items"). Non-carry champions show zero items.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LegendDot(label: String, color: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Box(
+fun CompFullBoardRosterSection(
+    comp: MetaComp,
+    champions: List<ChampionTierEntry> = emptyList(),
+    allComps: List<MetaComp> = emptyList(),
+    onChampionClick: ((String, Int) -> Unit)? = null,
+    compact: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = MaterialTheme.colorScheme.secondary
+    val outline = MaterialTheme.colorScheme.outline
+    val rosterUnits = remember(comp.id, comp.coreUnits, comp.hexPlacements, comp.carryName, comp.environment, champions, allComps) {
+        resolveFullBoardRosterUnits(comp = comp, champions = champions, allComps = allComps)
+    }
+    if (rosterUnits.isEmpty()) return
+
+    val carryUnitsWithItems = remember(rosterUnits) {
+        rosterUnits.filter { it.items.isNotEmpty() || it.otherItems.isNotEmpty() }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("full_board_roster_section_${comp.id}"),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 10.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = "Full Board Roster & Unit Items (${rosterUnits.size} Units)",
+                style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleSmall,
+                color = primary,
+                fontWeight = FontWeight.Bold
+            )
+            if (onChampionClick != null) {
+                Text(
+                    text = "Carry items under champion icon • Other Items on the side • Tap unit for details",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // 1. Carry Item Builds + side-by-side "Other Items" at the top (ONLY shown for the composition's carries)
+        if (carryUnitsWithItems.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)) {
+                Text(
+                    text = "Carry Items & Other Items",
+                    style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+                    color = secondary,
+                    fontWeight = FontWeight.Bold
+                )
+                carryUnitsWithItems.forEach { unit ->
+                    val slug = unit.unitName.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "_")
+                    val hasCompItems = unit.items.isNotEmpty()
+                    val hasOtherItems = unit.otherItems.isNotEmpty()
+                    Surface(
+                        onClick = { onChampionClick?.invoke(unit.unitName, unit.cost) },
+                        enabled = onChampionClick != null,
+                        shape = RoundedCornerShape(if (compact) 10.dp else 12.dp),
+                        color = primary.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, primary.copy(alpha = 0.72f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = if (compact) 52.dp else 60.dp)
+                            .testTag("roster_unit_row_$slug")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    horizontal = if (compact) 8.dp else 10.dp,
+                                    vertical = if (compact) 7.dp else 9.dp
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+                        ) {
+                            // Carry Champion Icon with its Comp Items tucked directly underneath
+                            TftChampionTile(
+                                name = unit.unitName,
+                                cost = unit.cost,
+                                isCarry = true,
+                                stars = unit.stars,
+                                size = if (compact) 34.dp else 40.dp,
+                                labelFontSize = if (compact) 9.5.sp else 10.5.sp,
+                                environment = comp.environment,
+                                equippedItems = unit.items,
+                                itemIconSize = if (compact) 12.dp else 14.dp
+                            )
+
+                            // Comp Items + side-by-side "Other Items" strictly for this carry
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                if (hasCompItems) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Text(
+                                            text = "Comp Items",
+                                            fontSize = if (compact) 9.sp else 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = primary,
+                                            maxLines = 1
+                                        )
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            unit.items.forEach { itemName ->
+                                                TftItemChip(
+                                                    itemName = itemName,
+                                                    compact = true,
+                                                    environment = comp.environment
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (hasOtherItems) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = secondary.copy(alpha = 0.08f),
+                                        border = BorderStroke(1.dp, secondary.copy(alpha = 0.35f)),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("roster_other_items_$slug")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(
+                                                horizontal = if (compact) 5.dp else 7.dp,
+                                                vertical = if (compact) 4.dp else 5.dp
+                                            ),
+                                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                                        ) {
+                                            Text(
+                                                text = "Other Items",
+                                                fontSize = if (compact) 9.sp else 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = secondary,
+                                                maxLines = 1
+                                            )
+                                            FlowRow(
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                unit.otherItems.forEach { altItem ->
+                                                    TftItemChip(
+                                                        itemName = altItem,
+                                                        compact = true,
+                                                        environment = comp.environment
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Full Board Champions grid: ONLY carries show their composition items right under their champion icon
+        Surface(
+            shape = RoundedCornerShape(if (compact) 10.dp else 12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            border = BorderStroke(1.dp, outline.copy(alpha = 0.7f)),
             modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+                .fillMaxWidth()
+                .testTag("full_board_champions_grid_${comp.id}")
+        ) {
+            FlowRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 8.dp else 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 10.dp),
+                verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 10.dp)
+            ) {
+                rosterUnits.forEach { unit ->
+                    val slug = unit.unitName.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "_")
+                    TftChampionTile(
+                        name = unit.unitName,
+                        cost = unit.cost,
+                        isCarry = unit.isCarry || unit.items.isNotEmpty(),
+                        stars = unit.stars,
+                        size = if (compact) 34.dp else 42.dp,
+                        labelFontSize = if (compact) 9.5.sp else 11.sp,
+                        environment = comp.environment,
+                        equippedItems = unit.items,
+                        itemIconSize = if (compact) 12.dp else 14.dp,
+                        onClick = onChampionClick?.let { cb -> { cb(unit.unitName, unit.cost) } },
+                        modifier = Modifier.testTag("roster_champ_tile_$slug")
+                    )
+                }
+            }
+        }
     }
 }
 

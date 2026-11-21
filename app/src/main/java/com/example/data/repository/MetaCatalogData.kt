@@ -16,7 +16,8 @@ object MetaCatalogData {
 
     /**
      * All legacy pre-seeded compositions have been removed.
-     * Team compositions are fetched exclusively from https://tftacademy.com/tierlist/comps.
+     * Team compositions are fetched exclusively from https://tft.ninja/comps (LIVE)
+     * and https://tft.ninja/comps?e=pbe (PBE).
      */
     val liveComps: List<MetaComp> = emptyList()
 

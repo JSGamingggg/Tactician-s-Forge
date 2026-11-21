@@ -268,7 +268,7 @@ private fun AuthFeaturesCard() {
                 icon = Icons.Default.AutoAwesome,
                 tint = MaterialTheme.colorScheme.primary,
                 title = "LIVE & PBE Meta Snapshots",
-                subtitle = "LIVE & PBE meta compositions, 4×7 hex boards, carry BIS items, and real-time patch alerts."
+                subtitle = "LIVE & PBE meta compositions, level & transition guides, unit items, and real-time patch alerts."
             )
             FeatureRow(
                 icon = Icons.Default.MilitaryTech,

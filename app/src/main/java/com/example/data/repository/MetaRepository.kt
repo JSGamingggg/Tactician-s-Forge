@@ -12,6 +12,7 @@ import com.example.data.model.TftEnvironment
 import com.example.data.network.DDragonApi
 import com.example.data.network.RiotApiClientFactory
 import com.example.data.network.TftAcademyCompsScraper
+import com.example.data.network.TftNinjaCompsScraper
 import com.example.data.network.TftipsPatchScraper
 import com.example.data.teamplanner.TftTeamPlannerCodeEncoder
 import com.example.ui.components.TftAssetIconResolver
@@ -39,6 +40,7 @@ class MetaRepository(
     private val cacheStore: OfflineMetaCacheStore,
     private val tftipsScraper: TftipsPatchScraper = TftipsPatchScraper(),
     private val tftAcademyScraper: TftAcademyCompsScraper = TftAcademyCompsScraper(),
+    private val tftNinjaScraper: TftNinjaCompsScraper = TftNinjaCompsScraper(),
     private val ddragonApi: DDragonApi = RiotApiClientFactory.ddragonApi,
     private val publicClient: OkHttpClient = RiotApiClientFactory.publicOkHttp,
     private val appContext: Context? = null
@@ -86,8 +88,8 @@ class MetaRepository(
 
     /**
      * Fetches LIVE & PBE patch updates from https://tftips.app/en/patches,
-     * LIVE team compositions from https://tftacademy.com/tierlist/comps, and
-     * PBE Set 19 team compositions exclusively from https://tftacademy.com/tierlist/comps/set19,
+     * LIVE team compositions exclusively from https://tft.ninja/comps, and
+     * PBE team compositions exclusively from https://tft.ninja/comps?e=pbe,
      * then persists updates offline.
      */
     suspend fun refreshAndPersistMeta(): MetaSyncResult = withContext(Dispatchers.IO) {
@@ -115,31 +117,34 @@ class MetaRepository(
             var pbeVersion = tftipsResult?.pbePatchVersion ?: prevPbeVer
             var syncedFromNetwork = tftipsResult?.fetchedFromNetwork == true
 
-            val tftAcademyDeferred = async {
-                runCatching {
-                    tftAcademyScraper.fetchLiveTeamComps(livePatchVersion = liveVersion)
-                }.getOrNull()
-            }
             val liveSetHint = Regex("""Set\s*(\d+)""", RegexOption.IGNORE_CASE)
                 .find(currentBundle.liveVersionInfo.liveSetName)
                 ?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: 18
-            val tftAcademyCatalogDeferred = async {
-                runCatching {
-                    tftAcademyScraper.fetchLiveItemsAndAugmentsTierlist(setNumber = liveSetHint)
-                }.getOrNull()
-            }
             val pbeSetHint = Regex("""Set\s*(\d+)""", RegexOption.IGNORE_CASE)
                 .find(currentBundle.liveVersionInfo.pbeSetName)
                 ?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?.coerceAtLeast(19)
                 ?: 19
-            val tftAcademyPbeDeferred = async {
+
+            // Exclusively scrape LIVE armies from https://tft.ninja/comps
+            val tftNinjaLiveDeferred = async {
                 runCatching {
-                    tftAcademyScraper.fetchPbeTeamComps(
+                    tftNinjaScraper.fetchLiveTeamComps(livePatchVersion = liveVersion)
+                }.getOrNull()
+            }
+            // Exclusively scrape PBE armies from https://tft.ninja/comps?e=pbe
+            val tftNinjaPbeDeferred = async {
+                runCatching {
+                    tftNinjaScraper.fetchPbeTeamComps(
                         pbePatchVersion = pbeVersion,
                         defaultPbeSetNumber = pbeSetHint
                     )
+                }.getOrNull()
+            }
+            val tftAcademyCatalogDeferred = async {
+                runCatching {
+                    tftAcademyScraper.fetchLiveItemsAndAugmentsTierlist(setNumber = liveSetHint)
                 }.getOrNull()
             }
             val tftAcademyPbeCatalogDeferred = async {
@@ -198,28 +203,28 @@ class MetaRepository(
                 // Keep offline cache silently
             }
 
-            val tftAcademyResult = tftAcademyDeferred.await()
+            val tftNinjaLiveResult = tftNinjaLiveDeferred.await()
             val tftAcademyCatalog = tftAcademyCatalogDeferred.await()
-            val tftAcademyPbeResult = tftAcademyPbeDeferred.await()
+            val tftNinjaPbeResult = tftNinjaPbeDeferred.await()
             val tftAcademyPbeCatalog = tftAcademyPbeCatalogDeferred.await()
             teamPlannerDeferred?.await()
-            if (tftAcademyResult?.fetchedFromNetwork == true ||
+            if (tftNinjaLiveResult?.fetchedFromNetwork == true ||
                 tftAcademyCatalog?.fetchedFromNetwork == true ||
-                tftAcademyPbeResult?.fetchedFromNetwork == true ||
+                tftNinjaPbeResult?.fetchedFromNetwork == true ||
                 tftAcademyPbeCatalog?.fetchedFromNetwork == true
             ) {
                 syncedFromNetwork = true
             }
 
-            val liveSetName = tftAcademyResult?.detectedLiveSet
+            val liveSetName = tftNinjaLiveResult?.detectedSet?.let { "Set $it" }
                 ?: currentBundle.liveVersionInfo.liveSetName
-            val pbeSetName = tftAcademyPbeResult?.detectedPbeSet
+            val pbeSetName = tftNinjaPbeResult?.detectedSet?.let { "Set $it (PBE)" }
                 ?: currentBundle.liveVersionInfo.pbeSetName
 
             val sourceLabel = if (syncedFromNetwork) {
-                "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftacademy.com/tierlist/comps/set19"
+                "Patches: tftips.app/en/patches • LIVE: tft.ninja/comps • PBE: tft.ninja/comps?e=pbe"
             } else {
-                "Offline Cache (tftips.app & tftacademy.com)"
+                "Offline Cache (tftips.app & tft.ninja)"
             }
 
             val now = System.currentTimeMillis()
@@ -232,19 +237,28 @@ class MetaRepository(
                 existing = currentBundle.pbePatches
             )
 
-            val incomingLiveComps = tftAcademyResult?.liveComps.orEmpty()
-            val incomingPbeComps = tftAcademyPbeResult?.pbeComps.orEmpty()
+            val incomingLiveComps = tftNinjaLiveResult?.comps.orEmpty()
+                .filter { it.sourceUrl.contains("tft.ninja", ignoreCase = true) }
+            val incomingPbeComps = tftNinjaPbeResult?.comps.orEmpty()
+                .filter { it.sourceUrl.contains("tft.ninja", ignoreCase = true) }
 
-            // Mirror TFTAcademy (LIVE & PBE Set 19) authoritatively whenever network comps arrive
-            val rawLiveComps = if (tftAcademyResult?.fetchedFromNetwork == true && incomingLiveComps.isNotEmpty()) {
-                incomingLiveComps
+            val customLiveComps = currentBundle.liveComps.filter { it.id.startsWith("custom_") }
+            val customPbeComps = currentBundle.pbeComps.filter { it.id.startsWith("custom_") }
+
+            // Mirror tft.ninja (LIVE & PBE) authoritatively whenever network comps arrive (preserving user custom comps)
+            val rawLiveComps = if (tftNinjaLiveResult?.fetchedFromNetwork == true && incomingLiveComps.isNotEmpty()) {
+                incomingLiveComps + customLiveComps
             } else {
-                currentBundle.liveComps
+                currentBundle.liveComps.filter {
+                    it.sourceUrl.contains("tft.ninja", ignoreCase = true) || it.id.startsWith("custom_")
+                }
             }
-            val rawPbeComps = if (tftAcademyPbeResult?.fetchedFromNetwork == true && incomingPbeComps.isNotEmpty()) {
-                incomingPbeComps
+            val rawPbeComps = if (tftNinjaPbeResult?.fetchedFromNetwork == true && incomingPbeComps.isNotEmpty()) {
+                incomingPbeComps + customPbeComps
             } else {
-                currentBundle.pbeComps
+                currentBundle.pbeComps.filter {
+                    it.sourceUrl.contains("tft.ninja", ignoreCase = true) || it.id.startsWith("custom_")
+                }
             }
             // Automatically attach verified v02 Riot Team Planner copy codes to all added/updated comps
             val resolvedLiveComps = appContext?.let { ctx ->
@@ -273,11 +287,12 @@ class MetaRepository(
                     existingItems = currentBundle.liveItems,
                     existingAugments = currentBundle.liveAugments,
                     liveComps = resolvedLiveComps,
-                    liveSetNumber = liveSetHint,
+                    liveSetNumber = tftNinjaLiveResult?.detectedSet ?: liveSetHint,
                     ddragonChampJson = ddragonChampJson,
                     ddragonItemJson = ddragonItemJson,
                     ddragonAugmentJson = ddragonAugmentJson,
-                    academyTiers = tftAcademyCatalog
+                    academyTiers = tftAcademyCatalog,
+                    ninjaChampRecommendations = tftNinjaLiveResult?.championRecommendations.orEmpty()
                 )
             } else {
                 null
@@ -288,7 +303,8 @@ class MetaRepository(
                     existingItems = currentBundle.pbeItems,
                     existingAugments = currentBundle.pbeAugments,
                     pbeComps = resolvedPbeComps,
-                    academyTiers = tftAcademyPbeCatalog
+                    academyTiers = tftAcademyPbeCatalog,
+                    ninjaChampRecommendations = tftNinjaPbeResult?.championRecommendations.orEmpty()
                 )
             } else {
                 null
@@ -302,7 +318,7 @@ class MetaRepository(
             val resolvedPbeChampCosts = currentBundle.pbeChampionCosts
             val resolvedPbeChampTraits = currentBundle.pbeChampionTraits
 
-            val newSignature = TftAcademyCompsScraper.computeCompsSignature(resolvedLiveComps, resolvedPbeComps)
+            val newSignature = TftNinjaCompsScraper.computeCompsSignature(resolvedLiveComps, resolvedPbeComps)
             val compsUpdated = currentBundle.compsSignature.isNotBlank() &&
                 newSignature != currentBundle.compsSignature &&
                 (resolvedLiveComps.isNotEmpty() || resolvedPbeComps.isNotEmpty())
@@ -374,9 +390,9 @@ class MetaRepository(
                 resolvedLiveComps != currentBundle.liveComps ||
                 resolvedPbeComps != currentBundle.pbeComps ||
                 (resolvedLiveCatalog != null && (
-                    resolvedLiveCatalog.champions.size != currentBundle.liveChampions.size ||
-                        resolvedLiveCatalog.items.size != currentBundle.liveItems.size ||
-                        resolvedLiveCatalog.augments.size != currentBundle.liveAugments.size
+                    resolvedLiveCatalog.champions != currentBundle.liveChampions ||
+                        resolvedLiveCatalog.items != currentBundle.liveItems ||
+                        resolvedLiveCatalog.augments != currentBundle.liveAugments
                     )) ||
                 resolvedPbeChampions != currentBundle.pbeChampions ||
                 resolvedPbeItems != currentBundle.pbeItems ||
@@ -440,12 +456,12 @@ class MetaRepository(
             liveVersionInfo = current.liveVersionInfo.copy(
                 livePatchVersion = liveVer,
                 pbePatchVersion = pbeVer,
-                source = "Patches: tftips.app/en/patches • LIVE: tftacademy.com • PBE: tftacademy.com/tierlist/comps/set19",
+                source = "Patches: tftips.app/en/patches • LIVE: tft.ninja/comps • PBE: tft.ninja/comps?e=pbe",
                 checkedAtMillis = now
             ),
             liveComps = updatedLiveComps,
             pbeComps = updatedPbeComps,
-            compsSignature = TftAcademyCompsScraper.computeCompsSignature(updatedLiveComps, updatedPbeComps),
+            compsSignature = TftNinjaCompsScraper.computeCompsSignature(updatedLiveComps, updatedPbeComps),
             livePatches = updatedLivePatches,
             pbePatches = updatedPbePatches
         )

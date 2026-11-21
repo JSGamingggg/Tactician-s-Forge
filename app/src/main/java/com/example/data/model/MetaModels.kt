@@ -6,6 +6,7 @@ data class HexUnitPlacement(
     val col: Int, // 0 .. 6
     val cost: Int,
     val items: List<String> = emptyList(),
+    val otherItems: List<String> = emptyList(),
     val isCarry: Boolean = false,
     val stars: Int = 2
 ) {
@@ -34,6 +35,13 @@ data class HexUnitPlacement(
     }
 }
 
+data class LevelTransitionStage(
+    val levelLabel: String,
+    val stageTiming: String,
+    val units: List<String> = emptyList(),
+    val actionTip: String = ""
+)
+
 data class MetaComp(
     val id: String,
     val environment: TftEnvironment,
@@ -55,8 +63,9 @@ data class MetaComp(
     val levelingGuide: String,
     val notes: String,
     val setName: String = environment.setName,
-    val sourceUrl: String = "https://tftacademy.com/tierlist/comps",
-    val teamPlannerCode: String = ""
+    val sourceUrl: String = "https://tft.ninja/comps",
+    val teamPlannerCode: String = "",
+    val levelGuideStages: List<LevelTransitionStage> = emptyList()
 )
 
 data class ChampionTierEntry(

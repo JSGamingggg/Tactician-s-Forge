@@ -137,10 +137,6 @@ private var formattedLabelCacheRevision: Int = -1
 fun formatRiotAssetLabel(rawId: String): String {
     val trimmed = rawId.trim()
     if (trimmed.isEmpty()) return ""
-    // Fast path for ordinary human-readable names like "Jeweled Gauntlet" or "Ahri"
-    if (!trimmed.contains('_') && !trimmed.startsWith("DA") && !trimmed.startsWith("TFT") && !trimmed.startsWith("Set")) {
-        return trimmed
-    }
     val rev = TftAssetIconResolver.catalogRevision
     if (formattedLabelCacheRevision != rev) {
         formattedLabelCache.clear()
@@ -149,9 +145,22 @@ fun formatRiotAssetLabel(rawId: String): String {
         formattedLabelCache[trimmed]?.let { return it }
     }
 
+    // Always resolve exact Riot internal codenames first (e.g. TFT_Item_RedBuff -> Sunfire Cape,
+    // TFT_Item_RapidFireCannon -> Red Buff, Leviathan -> Nashor's Tooth, BFSword -> B.F. Sword)
     TftAssetIconResolver.resolveDisplayName(trimmed)?.let { resolved ->
         if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = resolved
         return resolved
+    }
+
+    // Fast path for ordinary human-readable names like "Jeweled Gauntlet" or "Ahri"
+    val startsWithRiotPrefix = trimmed.startsWith("DA", ignoreCase = false) ||
+        trimmed.startsWith("TFT", ignoreCase = false) ||
+        trimmed.startsWith("Set", ignoreCase = false)
+    if (!trimmed.contains('_') && !startsWithRiotPrefix) {
+        if (trimmed.any { it == ' ' } || !REGEX_CAMEL.containsMatchIn(trimmed)) {
+            if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = trimmed
+            return trimmed
+        }
     }
     if (!trimmed.contains("_") && trimmed.any { it == ' ' }) {
         if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = trimmed
@@ -175,6 +184,8 @@ fun formatRiotAssetLabel(rawId: String): String {
         .replace(REGEX_CAMEL, "$1 $2")
         .replace(REGEX_ALPHA_DIGIT, "$1 $2")
         .replace(REGEX_ROMAN, " $1")
+        .replace("B F Sword", "B.F. Sword")
+        .replace("BFSword", "B.F. Sword")
         .replace("Guinsoos", "Guinsoo's")
         .replace("Dragons", "Dragon's")
         .replace("Thiefs", "Thief's")
@@ -190,6 +201,13 @@ fun formatRiotAssetLabel(rawId: String): String {
         .replace("Rabadons", "Rabadon's")
         .replace("Giants", "Giant's")
         .replace("Tacticians", "Tactician's")
+        .replace("Pandoras", "Pandora's")
+        .replace("Snipers", "Sniper's")
+        .replace("Wits", "Wit's")
+        .replace("Deaths", "Death's")
+        .replace("Moguls", "Mogul's")
+        .replace("Tricksters", "Trickster's")
+        .replace("Zhonyas", "Zhonya's")
         .replace("Kha Zix", "Kha'Zix")
         .replace("Vel Koz", "Vel'Koz")
         .replace("Cho Gath", "Cho'Gath")
@@ -248,8 +266,11 @@ fun resolveCompUnitCost(unitName: String, comp: MetaComp): Int {
  * preserving original order among units of the same gold cost.
  */
 fun sortCompUnitsByCostAscending(comp: MetaComp): List<String> {
-    if (comp.coreUnits.size <= 1) return comp.coreUnits
-    return comp.coreUnits
+    val cleanUnits = comp.coreUnits
+        .filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
+        .distinctBy { formatChampionDisplayName(it).lowercase() }
+    if (cleanUnits.size <= 1) return cleanUnits
+    return cleanUnits
         .withIndex()
         .sortedWith(
             compareBy<IndexedValue<String>> { indexed ->
@@ -482,14 +503,25 @@ fun TftChampionTile(
     labelFontSize: TextUnit = 10.5.sp,
     useHexShape: Boolean = false,
     environment: TftEnvironment? = null,
+    equippedItems: List<String> = emptyList(),
+    itemIconSize: Dp = 14.dp,
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val cleanName = remember(name) { formatChampionDisplayName(name) }
+    val shownItems = remember(equippedItems) { equippedItems.filter { it.isNotBlank() }.take(3) }
+    val itemRowMinWidth = if (shownItems.isNotEmpty()) {
+        (itemIconSize * shownItems.size) + (2.dp * (shownItems.size - 1)) + 8.dp
+    } else {
+        0.dp
+    }
+    val tileMinWidth = maxOf(size + 12.dp, itemRowMinWidth)
+    val tileMaxWidth = maxOf(size + 28.dp, itemRowMinWidth + 14.dp)
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
-            .widthIn(min = size + 12.dp, max = size + 28.dp)
+            .widthIn(min = tileMinWidth, max = tileMaxWidth)
             .clip(RoundedCornerShape(10.dp))
             .then(
                 if (onClick != null) {
@@ -514,7 +546,26 @@ fun TftChampionTile(
             useHexShape = useHexShape,
             environment = environment
         )
-        Spacer(Modifier.height(3.dp))
+        if (shownItems.isNotEmpty()) {
+            Spacer(Modifier.height(3.dp))
+            val slug = remember(cleanName) {
+                cleanName.lowercase().replace(Regex("[^a-z0-9]"), "_")
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.testTag("champion_under_items_$slug")
+            ) {
+                shownItems.forEach { itemName ->
+                    TftItemIcon(
+                        itemName = itemName,
+                        size = itemIconSize,
+                        environment = environment
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(if (shownItems.isNotEmpty()) 2.dp else 3.dp))
         Text(
             text = cleanName,
             fontSize = labelFontSize,
@@ -578,17 +629,20 @@ fun TftTraitIcon(
         TftAssetIconResolver.resolveTraitIconUrl(cleanName, environment)
     }
     val targetPx = with(LocalDensity.current) { (size + 4.dp).roundToPx().coerceAtLeast(20) }
+    var imageLoaded by remember(iconUrl) { mutableStateOf(false) }
 
     Box(
         modifier = modifier.size(size),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = fallbackIcon,
-            contentDescription = "$cleanName trait icon",
-            tint = tint,
-            modifier = Modifier.size((size * 0.875f).coerceAtLeast(12.dp))
-        )
+        if (!imageLoaded) {
+            Icon(
+                imageVector = fallbackIcon,
+                contentDescription = "$cleanName trait icon",
+                tint = tint,
+                modifier = Modifier.size((size * 0.875f).coerceAtLeast(12.dp))
+            )
+        }
         if (iconUrl != null) {
             val request = remember(iconUrl, targetPx, context) {
                 ImageRequest.Builder(context)
@@ -601,6 +655,8 @@ fun TftTraitIcon(
                 model = request,
                 contentDescription = "$cleanName trait icon",
                 contentScale = ContentScale.Fit,
+                onSuccess = { imageLoaded = true },
+                onError = { imageLoaded = false },
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -750,6 +806,7 @@ fun TftItemIcon(
         TftAssetIconResolver.resolveItemIconUrl(itemName, environment)
     }
     val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(36) }
+    var imageLoaded by remember(iconUrl) { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -759,12 +816,14 @@ fun TftItemIcon(
             .border(0.8.dp, tint.copy(alpha = 0.55f), RoundedCornerShape(4.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = fallbackIcon,
-            contentDescription = "$cleanName item icon",
-            tint = tint,
-            modifier = Modifier.size(size * 0.72f)
-        )
+        if (!imageLoaded) {
+            Icon(
+                imageVector = fallbackIcon,
+                contentDescription = "$cleanName item icon",
+                tint = tint,
+                modifier = Modifier.size(size * 0.72f)
+            )
+        }
         if (iconUrl != null) {
             val request = remember(iconUrl, targetPx, context) {
                 ImageRequest.Builder(context)
@@ -777,6 +836,8 @@ fun TftItemIcon(
                 model = request,
                 contentDescription = "$cleanName item icon",
                 contentScale = ContentScale.Crop,
+                onSuccess = { imageLoaded = true },
+                onError = { imageLoaded = false },
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(RoundedCornerShape(4.dp))
@@ -901,6 +962,7 @@ fun TftAugmentIcon(
         TftAssetIconResolver.resolveAugmentIconUrl(augmentName)
     }
     val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(36) }
+    var imageLoaded by remember(iconUrl) { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -910,12 +972,14 @@ fun TftAugmentIcon(
             .border(0.9.dp, tint.copy(alpha = 0.70f), RoundedCornerShape(5.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = fallbackIcon,
-            contentDescription = "$cleanName (${augTier.label} augment)",
-            tint = tint,
-            modifier = Modifier.size(size * 0.72f)
-        )
+        if (!imageLoaded) {
+            Icon(
+                imageVector = fallbackIcon,
+                contentDescription = "$cleanName (${augTier.label} augment)",
+                tint = tint,
+                modifier = Modifier.size(size * 0.72f)
+            )
+        }
         if (iconUrl != null) {
             val request = remember(iconUrl, targetPx, context) {
                 ImageRequest.Builder(context)
@@ -928,6 +992,8 @@ fun TftAugmentIcon(
                 model = request,
                 contentDescription = "$cleanName (${augTier.label} augment)",
                 contentScale = ContentScale.Crop,
+                onSuccess = { imageLoaded = true },
+                onError = { imageLoaded = false },
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(RoundedCornerShape(5.dp))

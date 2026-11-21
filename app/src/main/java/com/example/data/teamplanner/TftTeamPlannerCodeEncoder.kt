@@ -4,6 +4,8 @@ import android.content.Context
 import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.network.RiotApiClientFactory
+import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.formatChampionDisplayName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.CacheControl
@@ -382,46 +384,47 @@ object TftTeamPlannerCodeEncoder {
         val requiredSetNum = comps.firstNotNullOfOrNull { extractTargetSetNumber(it) } ?: defaultSetNum
         val extraNames = loadPreloadApiToDisplayMap(context)
 
-        // For PBE (which patches daily), verify & sync against Riot's live PBE tftchampions-teamplanner.json FIRST
-        // so both champion hex IDs and the exact set suffix (e.g. TFTSet19 vs None) always match the updated PBE client.
-        if (environment == TftEnvironment.PBE) {
-            val pbeCatalog = ensureMappingLoaded(
-                context = context,
-                environment = TftEnvironment.PBE,
-                client = client,
-                requiredSetNumber = requiredSetNum
-            )
-            val pbeSetMapping = pbeCatalog?.let { selectStrictSetMapping(it, requiredSetNum, emptyList()) }
-            if (pbeCatalog != null && pbeSetMapping != null) {
-                return@withContext comps.map { comp ->
-                    val targetSetNum = extractTargetSetNumber(comp)
-                    val existing = comp.teamPlannerCode.trim()
-                    if (isValidTeamPlannerCode(existing, expectedSetNumber = targetSetNum) &&
-                        isCodeCompatibleWithSetMapping(existing, pbeSetMapping)
-                    ) {
+        // Prioritize Riot's official CommunityDragon / MetaTFT catalog FIRST for BOTH LIVE and PBE
+        // so all tft.ninja compositions receive authoritative v02 codes matching the live/PBE game client
+        // without blocking on unrelated TFTAcademy site scrapes.
+        val officialCatalog = ensureMappingLoaded(
+            context = context,
+            environment = environment,
+            client = client,
+            requiredSetNumber = requiredSetNum
+        )
+        val officialSetMapping = officialCatalog?.let { selectStrictSetMapping(it, requiredSetNum, emptyList()) }
+        if (officialCatalog != null && officialSetMapping != null) {
+            return@withContext comps.map { comp ->
+                val targetSetNum = extractTargetSetNumber(comp)
+                val existing = comp.teamPlannerCode.trim()
+                if (isValidTeamPlannerCode(existing, expectedSetNumber = targetSetNum) &&
+                    isCodeCompatibleWithSetMapping(existing, officialSetMapping)
+                ) {
+                    val synced = normalizeCodeForTarget(
+                        rawCode = existing,
+                        environment = environment,
+                        targetSetNum = targetSetNum,
+                        authoritativeSetKey = officialSetMapping.setKey
+                    )
+                    directCompCodeCache[comp.id] = synced
+                    if (synced == comp.teamPlannerCode) comp else comp.copy(teamPlannerCode = synced)
+                } else {
+                    val encoded = encodeCompWithCatalog(comp, officialCatalog)
+                    if (encoded.isSuccess && isValidTeamPlannerCode(encoded.code, expectedSetNumber = targetSetNum)) {
+                        directCompCodeCache[comp.id] = encoded.code
+                        comp.copy(teamPlannerCode = encoded.code)
+                    } else if (isValidTeamPlannerCode(existing, expectedSetNumber = targetSetNum)) {
                         val synced = normalizeCodeForTarget(
                             rawCode = existing,
-                            environment = TftEnvironment.PBE,
+                            environment = environment,
                             targetSetNum = targetSetNum,
-                            authoritativeSetKey = pbeSetMapping.setKey
+                            authoritativeSetKey = officialSetMapping.setKey
                         )
-                        if (synced == comp.teamPlannerCode) comp else comp.copy(teamPlannerCode = synced)
+                        directCompCodeCache[comp.id] = synced
+                        comp.copy(teamPlannerCode = synced)
                     } else {
-                        val encoded = encodeCompWithCatalog(comp, pbeCatalog)
-                        if (encoded.isSuccess && isValidTeamPlannerCode(encoded.code, expectedSetNumber = targetSetNum)) {
-                            comp.copy(teamPlannerCode = encoded.code)
-                        } else if (isValidTeamPlannerCode(existing, expectedSetNumber = targetSetNum)) {
-                            comp.copy(
-                                teamPlannerCode = normalizeCodeForTarget(
-                                    rawCode = existing,
-                                    environment = TftEnvironment.PBE,
-                                    targetSetNum = targetSetNum,
-                                    authoritativeSetKey = pbeSetMapping.setKey
-                                )
-                            )
-                        } else {
-                            comp
-                        }
+                        comp
                     }
                 }
             }
@@ -435,11 +438,12 @@ object TftTeamPlannerCodeEncoder {
             return@withContext comps.map { comp ->
                 val targetSetNum = extractTargetSetNumber(comp)
                 val normalized = normalizeCodeForTarget(comp.teamPlannerCode, comp.environment, targetSetNum)
+                directCompCodeCache[comp.id] = normalized
                 if (normalized == comp.teamPlannerCode) comp else comp.copy(teamPlannerCode = normalized)
             }
         }
 
-        // 1. Pull exact site copy codes & site champion mapping directly from TFTAcademy
+        // Fallback: check TFTAcademy site bundle if CommunityDragon & MetaTFT do not have this set yet
         val pageUrl = if (environment == TftEnvironment.PBE) {
             "$TFTACADEMY_ORIGIN/tierlist/comps/set$requiredSetNum"
         } else {
@@ -457,10 +461,11 @@ object TftTeamPlannerCodeEncoder {
         }.getOrNull()
         siteBundle?.siteCatalog?.let { cacheVerifiedCatalogFromSite(environment, it) }
 
-        val afterSitePass = comps.map { comp ->
+        comps.map { comp ->
             val targetSetNum = extractTargetSetNumber(comp)
             if (isValidTeamPlannerCode(comp.teamPlannerCode, expectedSetNumber = targetSetNum)) {
                 val normalized = normalizeCodeForTarget(comp.teamPlannerCode, comp.environment, targetSetNum)
+                directCompCodeCache[comp.id] = normalized
                 if (normalized == comp.teamPlannerCode) comp else comp.copy(teamPlannerCode = normalized)
             } else {
                 val slugFromUrl = comp.sourceUrl.substringAfterLast('/').takeIf {
@@ -481,37 +486,11 @@ object TftTeamPlannerCodeEncoder {
                         isValidTeamPlannerCode(encodedFromSite.code, expectedSetNumber = targetSetNum)
                     ) {
                         val norm = normalizeCodeForTarget(encodedFromSite.code, comp.environment, targetSetNum)
+                        directCompCodeCache[comp.id] = norm
                         comp.copy(teamPlannerCode = norm)
                     } else {
                         comp
                     }
-                }
-            }
-        }
-
-        val stillMissing = afterSitePass.any { comp ->
-            !isValidTeamPlannerCode(comp.teamPlannerCode, expectedSetNumber = extractTargetSetNumber(comp))
-        }
-        if (!stillMissing) return@withContext afterSitePass
-
-        // 2. Fallback to Riot CommunityDragon / MetaTFT verified v02 catalog for any remaining comps
-        val catalog = ensureMappingLoaded(
-            context = context,
-            environment = environment,
-            client = client,
-            requiredSetNumber = requiredSetNum
-        ) ?: return@withContext afterSitePass
-
-        afterSitePass.map { comp ->
-            val targetSetNum = extractTargetSetNumber(comp)
-            if (isValidTeamPlannerCode(comp.teamPlannerCode, expectedSetNumber = targetSetNum)) {
-                comp
-            } else {
-                val encoded = encodeCompWithCatalog(comp, catalog)
-                if (encoded.isSuccess && isValidTeamPlannerCode(encoded.code, expectedSetNumber = targetSetNum)) {
-                    comp.copy(teamPlannerCode = encoded.code)
-                } else {
-                    comp
                 }
             }
         }
@@ -661,6 +640,7 @@ object TftTeamPlannerCodeEncoder {
                     // Otherwise encode fresh from Riot's live PBE build (handles renumbered champion IDs after game updates!)
                     val encoded = encodeCompWithCatalog(comp, pbeCatalog)
                     if (encoded.isSuccess) {
+                        directCompCodeCache[comp.id] = encoded.code
                         return@withContext encoded
                     }
                     if (!encoded.errorMessage.isNullOrBlank()) {
@@ -669,17 +649,23 @@ object TftTeamPlannerCodeEncoder {
                 }
             }
 
-            // Fallback when CDragon PBE does not yet publish this set (or offline): use direct site code / TFTAcademy live
+            // Fallback when CDragon PBE does not yet publish this set (or offline): use direct site code / tft.ninja page / TFTAcademy
             if (directCandidate != null) {
                 val normalized = normalizeCodeForTarget(directCandidate, comp.environment, targetSetNum)
                 val codeSetKey = extractSetKeyFromCode(normalized)
+                directCompCodeCache[comp.id] = normalized
                 return@withContext TeamPlannerCodeResult(
                     code = normalized,
                     setKey = codeSetKey ?: expectedSetKey,
-                    matchedChampions = comp.coreUnits.distinct().take(MAX_PLANNER_SLOTS),
+                    matchedChampions = unitCandidates.take(MAX_PLANNER_SLOTS),
                     skippedUnits = emptyList(),
                     isVerifiedRiotMapping = true
                 )
+            }
+
+            extractCodeFromCompSourceUrl(comp, targetSetNum, expectedSetKey, unitCandidates, client)?.let { ninjaRes ->
+                directCompCodeCache[comp.id] = ninjaRes.code
+                return@withContext ninjaRes
             }
 
             val academyResult = resolveFromTftAcademyLive(
@@ -692,37 +678,26 @@ object TftTeamPlannerCodeEncoder {
                 diagnostics = diagnostics
             )
             if (academyResult != null && academyResult.isSuccess) {
+                directCompCodeCache[comp.id] = academyResult.code
                 return@withContext academyResult
             }
         } else {
-            // LIVE: 1. Direct valid v02 teamPlannerCode passthrough (or cached TFTAcademy code) matching targetSetNum
+            // LIVE: 1. Direct valid v02 teamPlannerCode passthrough (or cached code) matching targetSetNum
             if (directCandidate != null) {
                 val normalized = normalizeCodeForTarget(directCandidate, comp.environment, targetSetNum)
                 val codeSetKey = extractSetKeyFromCode(normalized)
+                directCompCodeCache[comp.id] = normalized
                 return@withContext TeamPlannerCodeResult(
                     code = normalized,
                     setKey = codeSetKey ?: expectedSetKey,
-                    matchedChampions = comp.coreUnits.distinct().take(MAX_PLANNER_SLOTS),
+                    matchedChampions = unitCandidates.take(MAX_PLANNER_SLOTS),
                     skippedUnits = emptyList(),
                     isVerifiedRiotMapping = true
                 )
             }
 
-            // LIVE: 2. Prioritize TFTAcademy's own site copy code / SvelteKit data
-            val academyResult = resolveFromTftAcademyLive(
-                context = context,
-                comp = comp,
-                targetSetNum = targetSetNum,
-                expectedSetKey = expectedSetKey,
-                client = client,
-                extraDisplayNames = extraDisplayNames,
-                diagnostics = diagnostics
-            )
-            if (academyResult != null && academyResult.isSuccess) {
-                return@withContext academyResult
-            }
-
-            // LIVE: 3. Fallback to verified v02 CommunityDragon / MetaTFT mapping
+            // LIVE: 2. Prioritize Riot's official CommunityDragon / MetaTFT verified v02 mapping FIRST
+            // (fast, authoritative, works for every tft.ninja LIVE composition without slow TFTAcademy scrapes)
             val primaryOutcome = ensureMappingLoadedWithDiagnostics(
                 context = context,
                 environment = comp.environment,
@@ -734,11 +709,33 @@ object TftTeamPlannerCodeEncoder {
             primaryOutcome.catalog?.let { primaryCatalog ->
                 val encoded = encodeCompWithCatalog(comp, primaryCatalog)
                 if (encoded.isSuccess) {
+                    directCompCodeCache[comp.id] = encoded.code
                     return@withContext encoded
                 }
                 if (!encoded.errorMessage.isNullOrBlank()) {
                     diagnostics.add(encoded.errorMessage)
                 }
+            }
+
+            // LIVE: 3. Check comp's own tft.ninja sourceUrl if it is a dedicated comp detail page
+            extractCodeFromCompSourceUrl(comp, targetSetNum, expectedSetKey, unitCandidates, client)?.let { ninjaRes ->
+                directCompCodeCache[comp.id] = ninjaRes.code
+                return@withContext ninjaRes
+            }
+
+            // LIVE: 4. Final site fallback to TFTAcademy if Riot/MetaTFT don't have this set yet
+            val academyResult = resolveFromTftAcademyLive(
+                context = context,
+                comp = comp,
+                targetSetNum = targetSetNum,
+                expectedSetKey = expectedSetKey,
+                client = client,
+                extraDisplayNames = extraDisplayNames,
+                diagnostics = diagnostics
+            )
+            if (academyResult != null && academyResult.isSuccess) {
+                directCompCodeCache[comp.id] = academyResult.code
+                return@withContext academyResult
             }
         }
 
@@ -754,6 +751,7 @@ object TftTeamPlannerCodeEncoder {
         altOutcome.catalog?.let { altCatalog ->
             val encodedAlt = encodeCompWithCatalog(comp, altCatalog)
             if (encodedAlt.isSuccess) {
+                directCompCodeCache[comp.id] = encodedAlt.code
                 return@withContext encodedAlt
             }
         }
@@ -1482,27 +1480,70 @@ object TftTeamPlannerCodeEncoder {
 
     private fun buildOrderedUnitCandidates(comp: MetaComp): List<String> {
         val ordered = LinkedHashSet<String>()
-        if (comp.carryName.isNotBlank()) {
-            ordered.add(comp.carryName.trim())
+        val seenNorm = HashSet<String>()
+        fun addIfChampion(raw: String) {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return
+            if (TftAssetIconResolver.isKnownNonChampionAsset(trimmed, comp.environment)) return
+            val clean = formatChampionDisplayName(trimmed).ifBlank { trimmed }
+            val norm = normalizeKey(clean)
+            if (norm.isNotEmpty() && seenNorm.add(norm)) {
+                ordered.add(clean)
+            }
         }
-        // Prioritize carry, itemized units, and higher-cost units from hex placements
+        if (comp.carryName.isNotBlank()) {
+            addIfChampion(comp.carryName)
+        }
+        // Prioritize carry, itemized units, and higher-cost units from placements
         comp.hexPlacements
             .sortedWith(
                 compareByDescending<com.example.data.model.HexUnitPlacement> { it.isCarry }
                     .thenByDescending { it.items.size }
                     .thenByDescending { it.cost }
             )
-            .forEach { placement ->
-                if (placement.unitName.isNotBlank()) {
-                    ordered.add(placement.unitName.trim())
-                }
-            }
-        comp.coreUnits.forEach { unit ->
-            if (unit.isNotBlank()) {
-                ordered.add(unit.trim())
-            }
-        }
+            .forEach { placement -> addIfChampion(placement.unitName) }
+        comp.coreUnits.forEach { unit -> addIfChampion(unit) }
         return ordered.toList()
+    }
+
+    /**
+     * Checks a dedicated comp detail URL (such as `https://tft.ninja/comps/<slug>` or
+     * `https://tft.ninja/comps/<slug>?e=pbe`) for an embedded v02 Team Planner code.
+     */
+    private fun extractCodeFromCompSourceUrl(
+        comp: MetaComp,
+        targetSetNum: Int,
+        expectedSetKey: String,
+        unitCandidates: List<String>,
+        client: OkHttpClient
+    ): TeamPlannerCodeResult? {
+        val url = comp.sourceUrl.trim()
+        if (!url.startsWith("https://tft.ninja/comps/", ignoreCase = true)) return null
+        val httpClient = client.newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+        val body = runCatching {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", BROWSER_USER_AGENT)
+                .header("Accept", "text/html,application/json,*/*")
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) resp.body?.string()?.takeIf { it.isNotBlank() } else null
+            }
+        }.getOrNull() ?: return null
+        val found = extractFirstValidV02Code(body, expectedSetNumber = targetSetNum) ?: return null
+        val normalized = normalizeCodeForTarget(found, comp.environment, targetSetNum)
+        return TeamPlannerCodeResult(
+            code = normalized,
+            setKey = extractSetKeyFromCode(normalized) ?: expectedSetKey,
+            matchedChampions = unitCandidates.take(MAX_PLANNER_SLOTS),
+            skippedUnits = emptyList(),
+            isVerifiedRiotMapping = true
+        )
     }
 
     private data class CandidateEndpoint(
@@ -1666,6 +1707,8 @@ object TftTeamPlannerCodeEncoder {
         }.getOrNull()
 
         val rawSlug = comp.id
+            .removePrefix("tftninja_pbe_")
+            .removePrefix("tftninja_live_")
             .removePrefix("tftacademy_pbe_")
             .removePrefix("tftacademy_live_")
             .replace('_', '-')

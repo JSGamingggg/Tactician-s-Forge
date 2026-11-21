@@ -35,6 +35,7 @@ import com.example.update.GitHubReleaseInfo
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -774,20 +775,34 @@ class MainViewModel(
             return
         }
         copiedCompClearJob?.cancel()
+        if (comp.teamPlannerCode.isBlank()) {
+            _snackbarMessage.value = "Preparing ${comp.environment.label} Team Planner code for ${comp.title}…"
+        }
         viewModelScope.launch {
             val result = TftTeamPlannerCodeEncoder.resolveTeamCode(ctx, comp)
             if (result.isSuccess) {
-                val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                clipboard?.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
-                _copiedCompId.value = comp.id
-                _snackbarMessage.value =
-                    "Copied ${result.setKey} code (${result.matchedChampions.size} units) • Paste in TFT"
-                copiedCompClearJob?.cancel()
-                copiedCompClearJob = viewModelScope.launch {
-                    delay(3000L)
-                    if (_copiedCompId.value == comp.id) {
-                        _copiedCompId.value = null
+                val copiedOk = withContext(Dispatchers.Main.immediate) {
+                    runCatching {
+                        val clipboard = ctx.applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            ?: return@runCatching false
+                        clipboard.setPrimaryClip(ClipData.newPlainText("TFT Team Planner Code", result.code))
+                        true
+                    }.getOrDefault(false)
+                }
+                if (copiedOk) {
+                    _copiedCompId.value = comp.id
+                    _snackbarMessage.value =
+                        "Copied ${comp.environment.label} (${result.setKey}) code • ${result.matchedChampions.size} units • Paste in TFT"
+                    copiedCompClearJob?.cancel()
+                    copiedCompClearJob = viewModelScope.launch {
+                        delay(3000L)
+                        if (_copiedCompId.value == comp.id) {
+                            _copiedCompId.value = null
+                        }
                     }
+                } else {
+                    _copiedCompId.value = null
+                    _snackbarMessage.value = "Could not write ${comp.environment.label} code to clipboard"
                 }
             } else {
                 _copiedCompId.value = null

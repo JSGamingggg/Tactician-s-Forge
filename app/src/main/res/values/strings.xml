@@ -19,7 +19,7 @@
     <string name="channel_overlay_name">Live Match Overlay</string>
     <string name="channel_overlay_desc">Persistent control notification while the in-game favorites overlay bubble is active.</string>
     <string name="channel_app_updates_name">App Releases &amp; Updates</string>
-    <string name="channel_app_updates_desc">Notifications when a new TFT\'s Helper APK release is published to GitHub for in-app updating.</string>
+    <string name="channel_app_updates_desc">Notifications when a new version of TFT\'s Helper is available to update.</string>
     <string name="overlay_action_stop">Close Overlay</string>
     <string name="overlay_empty_pins">Star a composition and tap the pin icon to display it here during live matches.</string>
     <string name="overlay_opacity_label">Opacity</string>
@@ -27,7 +27,7 @@
     <string name="overlay_opacity_slider_desc">Overlay transparency slider</string>
     <string name="overlay_opacity_reset_desc">Reset overlay opacity to default</string>
     <string name="made_by_credits">Made By JS96 + MK</string>
-    <string name="auto_sync_cadence_summary">Background Alerts: 15m Worker &amp; Alarm • Manual Comp &amp; App Update Checks</string>
+    <string name="auto_sync_cadence_summary">Background Alerts: 15m Worker &amp; Alarm • Auto App Update on Open • Manual Comp Sync</string>
     <string name="check_for_updates">Check for Updates</string>
     <string name="checking_for_updates">Checking for Updates…</string>
     <string name="check_for_comp_updates">Check for Comp Updates</string>
@@ -37,4 +37,10 @@
     <string name="riot_legal_disclaimer">TFT\'s Helper isn\'t endorsed by Riot Games and doesn\'t reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</string>
     <string name="riot_tos_fair_play_title">Riot Terms of Service &amp; Fair Play</string>
     <string name="riot_tos_fair_play_summary">Read-only reference companion built strictly under Riot Games Legal Jibber Jabber and TFT Third-Party Policies: zero memory reading, zero game hooks, zero screen scraping, zero input automation, and no banned augment win-rate overlays. Team codes use standard manual clipboard paste into Riot\'s built-in Team Planner.</string>
+    <string name="privacy_data_title">Privacy &amp; Account Data</string>
+    <string name="privacy_data_summary">No ads, no third-party ad tracking, and optional Google Sign-In solely to sync your favorite compositions and preferences across devices.</string>
+    <string name="privacy_policy_details">Data We Collect:\n• Optional Google Account ID (only if you sign in) to store your favorited compositions and alert preferences in Firebase Firestore.\n• Local-only preferences (theme, overlay opacity, cached meta snapshots) stored on your device.\n\nData We Never Collect:\n• No advertising identifiers, no behavioral ad tracking, no location data, and no reading of other apps or game memory.\n\nYour Controls:\n• You may use the app entirely in Guest Mode without creating an account.\n• You can clear local app data or permanently delete your cloud account and synced Firestore records at any time from this screen.</string>
+    <string name="view_privacy_policy">View Privacy Policy</string>
+    <string name="clear_local_data">Clear Local Data</string>
+    <string name="delete_account_data">Delete Account &amp; Cloud Data</string>
 </resources>

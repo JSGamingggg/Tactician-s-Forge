@@ -12,10 +12,12 @@
 #   public *;
 #}
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Preserve source file and line numbers for Google Play Console crash symbolication
+-keepattributes SourceFile,LineNumberTable
+-keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Keep Firestore and Moshi data models intact in minified release AAB builds
+-keep class com.example.data.model.** { *; }
+-keep class com.example.data.repository.OverlayPinSnapshot { *; }
+-keep class com.example.data.repository.LocalFavoriteRecord { *; }
+-keep class com.example.update.** { *; }

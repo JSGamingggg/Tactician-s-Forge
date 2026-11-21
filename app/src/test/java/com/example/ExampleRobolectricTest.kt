@@ -3461,9 +3461,9 @@ class ExampleRobolectricTest {
         val prefs = LocalPreferencesStore(context)
         kotlinx.coroutines.runBlocking { prefs.clearAllForTests() }
 
-        // 1. Visual bauble size is compact (34dp) while outer touch target remains 48dp for accessibility
+        // 1. Visual bauble size is compact (37dp, +10% from 34dp) while outer touch target remains 48dp for accessibility
         assertEquals(48, com.example.overlay.OVERLAY_BAUBLE_TOUCH_TARGET_DP)
-        assertEquals(34, com.example.overlay.OVERLAY_BAUBLE_VISUAL_SIZE_DP)
+        assertEquals(37, com.example.overlay.OVERLAY_BAUBLE_VISUAL_SIZE_DP)
         assertTrue(com.example.overlay.OVERLAY_BAUBLE_VISUAL_SIZE_DP < com.example.overlay.OVERLAY_BAUBLE_TOUCH_TARGET_DP)
 
         // 2. Opacity clamping enforces safe 25%..100% bounds and handles NaN
@@ -3495,7 +3495,70 @@ class ExampleRobolectricTest {
         // 6. Opacity string resources exist
         assertEquals("Opacity", context.getString(R.string.overlay_opacity_label))
     }
+
+    @Test
+    fun `auto app update runs on open while comp updates stay manual and app complies with google play policies`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.update.AppUpdateCoordinator.resetAutoCheckThrottleForTests()
+
+        // 1. MainViewModel defaults: App update auto-checks on open, Comp sync requires manual press
+        val viewModel = MainViewModel(
+            currentUserId = null,
+            metaRepository = MetaRepository(context),
+            localStore = LocalPreferencesStore(context),
+            firestoreRepo = FirestoreUserRepository(context),
+            appContext = null
+        )
+        assertFalse(viewModel.autoSyncCompsOnInitEnabled)
+        assertTrue(viewModel.autoCheckAppUpdateOnInitEnabled)
+        assertFalse(viewModel.isRefreshingVersions.value)
+
+        // 2. AndroidManifest must NOT request prohibited REQUEST_INSTALL_PACKAGES permission
+        val pkgInfo = context.packageManager.getPackageInfo(
+            context.packageName,
+            android.content.pm.PackageManager.GET_PERMISSIONS
+        )
+        val requestedPerms = pkgInfo.requestedPermissions?.toList().orEmpty()
+        assertFalse(requestedPerms.contains(android.Manifest.permission.REQUEST_INSTALL_PACKAGES))
+        assertFalse(requestedPerms.contains(android.Manifest.permission.READ_EXTERNAL_STORAGE))
+        assertFalse(requestedPerms.contains(android.Manifest.permission.WRITE_EXTERNAL_STORAGE))
+
+        // 3. Play-compliant update intent uses ACTION_VIEW to market:// or https:// (never APK installer MIME type)
+        val marketIntent = com.example.update.AppUpdateCoordinator.buildPlayStoreUpdateIntent(
+            context = context,
+            release = null,
+            preferWebFallback = false
+        )
+        assertEquals(android.content.Intent.ACTION_VIEW, marketIntent.action)
+        assertEquals("market://details?id=${context.packageName}", marketIntent.dataString)
+        assertNotEquals("application/vnd.android.package-archive", marketIntent.type)
+
+        val webIntent = com.example.update.AppUpdateCoordinator.buildPlayStoreUpdateIntent(
+            context = context,
+            release = null,
+            preferWebFallback = true
+        )
+        assertEquals(android.content.Intent.ACTION_VIEW, webIntent.action)
+        assertEquals("https://play.google.com/store/apps/details?id=${context.packageName}", webIntent.dataString)
+
+        // 4. App metadata & privacy / account deletion resources comply with store policies
+        val appTitle = context.getString(R.string.app_name)
+        assertTrue(appTitle.length <= 30)
+        assertFalse(appTitle.uppercase() == appTitle)
+        assertTrue(context.getString(R.string.privacy_data_title).isNotBlank())
+        assertTrue(context.getString(R.string.privacy_policy_details).contains("Guest Mode"))
+        assertTrue(context.getString(R.string.delete_account_data).contains("Delete"))
+        assertTrue(context.getString(R.string.clear_local_data).contains("Clear"))
+
+        // 5. Local data clearing removes saved user settings & favorites cleanly
+        val prefs = LocalPreferencesStore(context)
+        prefs.saveOverlayOpacity(0.50f)
+        prefs.setGuestModeChoice(true)
+        prefs.clearAllLocalData()
+        assertEquals(LocalPreferencesStore.DEFAULT_OVERLAY_OPACITY, prefs.readOverlayOpacity(), 0.0001f)
+    }
 }
+
 
 
 

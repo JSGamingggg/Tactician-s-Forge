@@ -4,9 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
-import android.os.Build
-import android.provider.Settings
-import androidx.core.content.FileProvider
 import com.example.BuildConfig
 import com.example.data.network.RiotApiClientFactory
 import com.example.data.repository.LocalPreferencesStore
@@ -24,8 +21,6 @@ import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
-import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -434,12 +429,16 @@ object GitHubReleaseParser {
 
 object AppUpdateCoordinator {
     private val checkMutex = Mutex()
-    private val downloadMutex = Mutex()
 
     private val _uiState = MutableStateFlow(AppUpdateUiState())
     val uiState: StateFlow<AppUpdateUiState> = _uiState.asStateFlow()
 
     private var lastAutoCheckMillis = 0L
+
+    internal fun resetAutoCheckThrottleForTests() {
+        lastAutoCheckMillis = 0L
+        _uiState.value = AppUpdateUiState()
+    }
 
     fun currentInstalledInfo(context: Context): InstalledAppVersionInfo {
         val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -808,326 +807,55 @@ object AppUpdateCoordinator {
         }
     }
 
-    fun canRequestPackageInstalls(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.packageManager.canRequestPackageInstalls()
-        } else {
-            true
-        }
-    }
-
-    fun buildInstallPermissionSettingsIntent(context: Context): Intent {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}")
-            )
-        } else {
-            Intent(Settings.ACTION_SECURITY_SETTINGS)
-        }
-    }
-
-    suspend fun downloadAndInstallUpdate(
+    /**
+     * Builds a Google Play-compliant [Intent.ACTION_VIEW] pointing to the app's Google Play Store listing
+     * (`market://` with HTTPS Play Store / release page fallback). Never downloads or installs external APKs.
+     */
+    fun buildPlayStoreUpdateIntent(
         context: Context,
-        release: GitHubReleaseInfo,
-        httpClient: OkHttpClient = RiotApiClientFactory.publicOkHttp
-    ) = downloadMutex.withLock {
-        val appContext = context.applicationContext
-        val prefsStore = LocalPreferencesStore(appContext)
-        val repoSlug = resolveConfiguredRepo(prefsStore)
-        val githubToken = resolveConfiguredToken(prefsStore)
-
-        _uiState.update {
-            it.copy(
-                status = AppUpdateStatus.Downloading(
-                    release = release,
-                    progress = 0f,
-                    bytesDownloaded = 0L,
-                    totalBytes = release.apkSizeBytes
-                ),
-                showPromptModal = true
-            )
+        release: GitHubReleaseInfo? = null,
+        preferWebFallback: Boolean = false
+    ): Intent {
+        val packageName = context.packageName
+        val uriString = if (!preferWebFallback) {
+            "market://details?id=$packageName"
+        } else {
+            release?.htmlUrl?.takeIf { it.startsWith("https://", ignoreCase = true) }
+                ?: "https://play.google.com/store/apps/details?id=$packageName"
         }
-
-        val downloadResult = withContext(Dispatchers.IO) {
-            runCatching {
-                val updatesDir = appContext.cacheDir.resolve("updates").apply { mkdirs() }
-                updatesDir.listFiles()?.forEach { existing ->
-                    if (existing.isFile) existing.delete()
-                }
-                val partFile = updatesDir.resolve("tacticians-forge-${release.apkAssetId}.apk.part")
-                val finalApk = updatesDir.resolve("tacticians-forge-${release.apkAssetId}.apk")
-
-                // Private GitHub repositories require downloading release assets via the GitHub API asset URL
-                // with Accept: application/octet-stream and Authorization: Bearer <token>.
-                val apiAssetEndpoint = release.apkApiAssetUrl.ifBlank {
-                    if (!repoSlug.isNullOrBlank() && release.apkAssetId > 0L) {
-                        "https://api.github.com/repos/$repoSlug/releases/assets/${release.apkAssetId}"
-                    } else ""
-                }
-
-                val useApiAssetStream = (!githubToken.isNullOrBlank() && apiAssetEndpoint.isNotBlank()) ||
-                    release.apkDownloadUrl.contains("api.github.com/repos/", ignoreCase = true)
-
-                val primaryUrl = if (useApiAssetStream && apiAssetEndpoint.isNotBlank()) {
-                    apiAssetEndpoint
-                } else {
-                    release.apkDownloadUrl
-                }
-
-                val reqBuilder = Request.Builder()
-                    .url(primaryUrl)
-                    .header("User-Agent", "TacticiansForge-Android/${BuildConfig.VERSION_NAME}")
-                    .get()
-
-                if (useApiAssetStream) {
-                    reqBuilder.header("Accept", "application/octet-stream")
-                    reqBuilder.header("X-GitHub-Api-Version", "2022-11-28")
-                    if (!githubToken.isNullOrBlank()) {
-                        reqBuilder.header("Authorization", "Bearer $githubToken")
-                    }
-                }
-
-                httpClient.newCall(reqBuilder.build()).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        throw IllegalStateException("Download failed with HTTP ${response.code}")
-                    }
-                    val body = response.body ?: throw IllegalStateException("Empty APK download stream")
-                    val total = body.contentLength().takeIf { it > 0L } ?: release.apkSizeBytes
-                    var downloaded = 0L
-                    var lastEmitMs = 0L
-
-                    body.byteStream().use { input ->
-                        FileOutputStream(partFile).use { output ->
-                            val buffer = ByteArray(16 * 1024)
-                            while (true) {
-                                val read = input.read(buffer)
-                                if (read == -1) break
-                                output.write(buffer, 0, read)
-                                downloaded += read
-                                val now = System.currentTimeMillis()
-                                if (now - lastEmitMs >= 80L || (total > 0L && downloaded >= total)) {
-                                    lastEmitMs = now
-                                    val progress = if (total > 0L) {
-                                        (downloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-                                    } else {
-                                        0f
-                                    }
-                                    _uiState.update { state ->
-                                        state.copy(
-                                            status = AppUpdateStatus.Downloading(
-                                                release = release,
-                                                progress = progress,
-                                                bytesDownloaded = downloaded,
-                                                totalBytes = total
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                            output.fd.sync()
-                        }
-                    }
-                }
-
-                if (!isValidApkZipHeader(partFile)) {
-                    partFile.delete()
-                    throw IllegalStateException("Downloaded file is not a valid Android APK package.")
-                }
-                if (finalApk.exists()) finalApk.delete()
-                if (!partFile.renameTo(finalApk)) {
-                    partFile.copyTo(finalApk, overwrite = true)
-                    partFile.delete()
-                }
-                finalApk
-            }
-        }
-
-        val apkFile = downloadResult.getOrElse { err ->
-            _uiState.update {
-                it.copy(
-                    status = AppUpdateStatus.Error(
-                        message = err.localizedMessage ?: "Failed to download update APK",
-                        release = release
-                    )
-                )
-            }
-            return@withLock
-        }
-
-        val hasInstallPerm = canRequestPackageInstalls(appContext)
-        val sigMismatch = withContext(Dispatchers.IO) {
-            hasSigningCertificateMismatch(appContext, apkFile)
-        }
-        val exportedFileName = withContext(Dispatchers.IO) {
-            exportApkToPublicDownloads(appContext, apkFile, release)
-        }
-        _uiState.update {
-            it.copy(
-                status = AppUpdateStatus.ReadyToInstall(
-                    release = release,
-                    apkFilePath = apkFile.absolutePath,
-                    needsInstallPermission = !hasInstallPerm,
-                    signatureMismatchDetected = sigMismatch,
-                    savedDownloadsFileName = exportedFileName
-                ),
-                pendingAutoInstallAfterPermission = !hasInstallPerm && !sigMismatch
-            )
-        }
-
-        if (hasInstallPerm && !sigMismatch) {
-            launchPackageInstaller(appContext, apkFile, release)
-        }
-    }
-
-    suspend fun resumePendingInstallIfPermitted(context: Context): Boolean {
-        val status = _uiState.value.status as? AppUpdateStatus.ReadyToInstall ?: return false
-        val apkFile = File(status.apkFilePath)
-        if (!apkFile.exists()) {
-            _uiState.update {
-                it.copy(
-                    status = AppUpdateStatus.UpdateAvailable(status.release),
-                    pendingAutoInstallAfterPermission = false
-                )
-            }
-            return false
-        }
-        val canInstall = canRequestPackageInstalls(context)
-        if (!canInstall) return false
-
-        _uiState.update {
-            it.copy(
-                status = status.copy(needsInstallPermission = false),
-                pendingAutoInstallAfterPermission = false
-            )
-        }
-        return launchPackageInstaller(context, apkFile, status.release)
-    }
-
-    @Suppress("DEPRECATION")
-    suspend fun launchPackageInstaller(
-        context: Context,
-        apkFile: File,
-        release: GitHubReleaseInfo
-    ): Boolean {
-        if (!apkFile.exists()) return false
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            apkFile
-        )
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
-            putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, context.packageName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        return runCatching {
-            context.startActivity(installIntent)
-            true
-        }.onFailure { err ->
-            _uiState.update {
-                it.copy(
-                    status = AppUpdateStatus.Error(
-                        message = err.localizedMessage ?: "Unable to open Android package installer.",
-                        release = release
-                    )
-                )
-            }
-        }.getOrDefault(false)
-    }
-
-    fun launchUninstallCurrentPackage(context: Context) {
-        val uninstallIntent = Intent(
-            Intent.ACTION_DELETE,
-            Uri.parse("package:${context.packageName}")
-        ).apply {
+        return Intent(Intent.ACTION_VIEW, Uri.parse(uriString)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        runCatching { context.startActivity(uninstallIntent) }
     }
 
-    @Suppress("DEPRECATION")
-    internal fun hasSigningCertificateMismatch(context: Context, apkFile: File): Boolean {
-        return runCatching {
-            val pm = context.packageManager
-            val installedBytes: ByteArray? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val info = pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
-                info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
-                    ?: info.signingInfo?.signingCertificateHistory?.firstOrNull()?.toByteArray()
-            } else {
-                val info = pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNATURES)
-                info.signatures?.firstOrNull()?.toByteArray()
-            }
-
-            val archiveBytes: ByteArray? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val info = pm.getPackageArchiveInfo(apkFile.absolutePath, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
-                info?.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
-                    ?: info?.signingInfo?.signingCertificateHistory?.firstOrNull()?.toByteArray()
-            } else {
-                val info = pm.getPackageArchiveInfo(apkFile.absolutePath, android.content.pm.PackageManager.GET_SIGNATURES)
-                info?.signatures?.firstOrNull()?.toByteArray()
-            }
-
-            if (installedBytes == null || archiveBytes == null) {
-                false
-            } else {
-                !installedBytes.contentEquals(archiveBytes)
-            }
-        }.getOrDefault(false)
-    }
-
-    internal fun exportApkToPublicDownloads(
+    /**
+     * Opens Google Play Store (or HTTPS store/release fallback) via standard [Intent.ACTION_VIEW]
+     * in full compliance with Google Play Developer Program policies (no `REQUEST_INSTALL_PACKAGES`
+     * and no runtime `.apk` downloading or sideloading).
+     */
+    fun openStoreOrReleaseUpdate(
         context: Context,
-        apkFile: File,
-        release: GitHubReleaseInfo
-    ): String? {
-        if (!apkFile.exists()) return null
-        val versionPart = (release.parsedVersionName ?: release.tagName.ifBlank { "latest" })
-            .replace(Regex("[^A-Za-z0-9._-]"), "_")
-        val fileName = "TacticiansForge-v$versionPart.apk"
-        return runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val resolver = context.contentResolver
-                val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
-                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
-                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-                val itemUri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: return@runCatching null
-                resolver.openOutputStream(itemUri)?.use { out ->
-                    apkFile.inputStream().use { input -> input.copyTo(out) }
-                }
-                val doneValues = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
-                }
-                resolver.update(itemUri, doneValues, null, null)
-                fileName
-            } else {
-                null
-            }
-        }.getOrNull()
-    }
-
-    internal fun isValidApkZipHeader(file: File): Boolean {
-        if (!file.exists() || file.length() < 1024L) return false
-        return runCatching {
-            val hasMagic = file.inputStream().use { stream ->
-                val header = ByteArray(2)
-                stream.read(header) == 2 && header[0] == 0x50.toByte() && header[1] == 0x4B.toByte()
-            }
-            if (!hasMagic) return@runCatching false
-            // If file is a real full-size APK (> 64 KB), also verify its ZIP central directory has AndroidManifest.xml
-            if (file.length() > 65_536L) {
-                java.util.zip.ZipFile(file).use { zip ->
-                    zip.getEntry("AndroidManifest.xml") != null
-                }
-            } else {
-                true
-            }
+        release: GitHubReleaseInfo? = null
+    ): Boolean {
+        val appContext = context.applicationContext
+        val marketIntent = buildPlayStoreUpdateIntent(appContext, release, preferWebFallback = false)
+        val launchedPlay = runCatching {
+            appContext.startActivity(marketIntent)
+            true
         }.getOrDefault(false)
+        if (launchedPlay) {
+            _uiState.update { it.copy(showPromptModal = false) }
+            return true
+        }
+        val webIntent = buildPlayStoreUpdateIntent(appContext, release, preferWebFallback = true)
+        val launchedWeb = runCatching {
+            appContext.startActivity(webIntent)
+            true
+        }.getOrDefault(false)
+        if (launchedWeb) {
+            _uiState.update { it.copy(showPromptModal = false) }
+        }
+        return launchedWeb
     }
 
     fun formatMegabytes(bytes: Long): String {

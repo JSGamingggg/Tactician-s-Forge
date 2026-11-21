@@ -349,9 +349,7 @@ private fun AuthenticatedOrGuestWorkspace(
     val copiedCompId by mainViewModel.copiedCompId.collectAsStateWithLifecycle()
     val appUpdateState by mainViewModel.appUpdateState.collectAsStateWithLifecycle()
 
-    val hasPendingAppUpdate = appUpdateState.status is AppUpdateStatus.UpdateAvailable ||
-        appUpdateState.status is AppUpdateStatus.Downloading ||
-        appUpdateState.status is AppUpdateStatus.ReadyToInstall
+    val hasPendingAppUpdate = appUpdateState.status is AppUpdateStatus.UpdateAvailable
 
     val isOverlayRunning by OverlayController.isRunning.collectAsStateWithLifecycle()
 
@@ -360,7 +358,7 @@ private fun AuthenticatedOrGuestWorkspace(
     }
 
 
-    // Automatically check for newly released patches & team comps when returning to the app,
+    // Automatically check for App Updates when opening/returning to the app while keeping Comp Updates manual,
     // and ensure background monitoring is scheduled whenever the app moves to the background.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, mainViewModel) {
@@ -539,8 +537,7 @@ private fun AuthenticatedOrGuestWorkspace(
                         AppUpdateInAppBanner(
                             updateState = appUpdateState,
                             onOpenDetails = mainViewModel::openAppUpdateDialog,
-                            onStartUpdate = mainViewModel::downloadAndInstallAppUpdate,
-                            onInstallReadyApk = mainViewModel::installReadyAppUpdate,
+                            onOpenStoreUpdate = mainViewModel::openAppUpdateDestination,
                             modifier = Modifier.fillMaxWidth()
                         )
                         Box(
@@ -639,40 +636,45 @@ private fun AuthenticatedOrGuestWorkspace(
                                         isOverlayRunning = isOverlayRunning,
                                         currentUser = currentUser,
                                         appUpdateState = appUpdateState,
-                                        onCheckAppUpdate = { mainViewModel.checkForAppUpdate(userInitiated = true) },
-                                        onSaveGithubRepo = mainViewModel::saveGithubRepo,
-                                        onToggleAppUpdateAlerts = mainViewModel::setAppUpdateAlertsEnabled,
-                                        onStartAppUpdate = mainViewModel::downloadAndInstallAppUpdate,
-                                        onOpenAppUpdateDialog = mainViewModel::openAppUpdateDialog,
-                                        onUpdateAlertSettings = mainViewModel::updateAlertSettings,
-                                        onSetThemeMode = mainViewModel::setThemeMode,
-                                        onToggleOverlay = toggleOverlayAction,
-                                        onShowMessage = mainViewModel::showMessage,
-                                        onAuthSuccess = {
-                                            scope.launch { localStore.setGuestModeChoice(false) }
-                                            mainViewModel.showMessage("Signed in with Google! Syncing favorites to Firestore.")
-                                        },
-                                        onAuthError = { msg -> mainViewModel.showMessage(msg) },
-                                        onSignedOut = {
-                                            scope.launch { localStore.setGuestModeChoice(false) }
-                                            mainViewModel.showMessage("Signed out — choose Explore as Guest or Sign in.")
-                                        },
-                                        modifier = contentModifier
-                                    )
-                                }
-                            }
-                        }
-                        }
-                    }
-                }
-            }
-        }
+                                         onCheckAppUpdate = { mainViewModel.checkForAppUpdate(userInitiated = true) },
+                                         onSaveGithubRepo = mainViewModel::saveGithubRepo,
+                                         onToggleAppUpdateAlerts = mainViewModel::setAppUpdateAlertsEnabled,
+                                         onStartAppUpdate = mainViewModel::openAppUpdateDestination,
+                                         onOpenAppUpdateDialog = mainViewModel::openAppUpdateDialog,
+                                         onUpdateAlertSettings = mainViewModel::updateAlertSettings,
+                                         onSetThemeMode = mainViewModel::setThemeMode,
+                                         onToggleOverlay = toggleOverlayAction,
+                                         onShowMessage = mainViewModel::showMessage,
+                                         onAuthSuccess = {
+                                             scope.launch { localStore.setGuestModeChoice(false) }
+                                             mainViewModel.showMessage("Signed in with Google! Syncing favorites to Firestore.")
+                                         },
+                                         onAuthError = { msg -> mainViewModel.showMessage(msg) },
+                                         onSignedOut = {
+                                             scope.launch { localStore.setGuestModeChoice(false) }
+                                             mainViewModel.showMessage("Signed out — choose Explore as Guest or Sign in.")
+                                         },
+                                         onClearLocalData = mainViewModel::clearLocalAppData,
+                                         onDeleteAccountData = {
+                                             mainViewModel.deleteCloudAccountAndData {
+                                                 scope.launch { localStore.setGuestModeChoice(true) }
+                                             }
+                                         },
+                                         modifier = contentModifier
+                                     )
+                                 }
+                             }
+                         }
+                         }
+                     }
+                 }
+             }
+         }
 
-        AppUpdatePromptDialog(
-            updateState = appUpdateState,
-            onDismissLater = { mainViewModel.dismissAppUpdateDialog(suppressThisReleaseOnLaunch = true) },
-            onDownloadAndInstall = mainViewModel::downloadAndInstallAppUpdate,
-            onInstallReadyApk = mainViewModel::installReadyAppUpdate
-        )
-    }
-}
+         AppUpdatePromptDialog(
+             updateState = appUpdateState,
+             onDismissLater = { mainViewModel.dismissAppUpdateDialog(suppressThisReleaseOnLaunch = true) },
+             onOpenStoreUpdate = mainViewModel::openAppUpdateDestination
+         )
+     }
+ }

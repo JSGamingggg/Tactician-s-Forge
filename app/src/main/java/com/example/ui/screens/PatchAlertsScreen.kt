@@ -26,11 +26,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +42,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -97,12 +102,17 @@ fun AboutScreen(
     onAuthSuccess: () -> Unit,
     onAuthError: (String) -> Unit,
     onSignedOut: () -> Unit,
+    onClearLocalData: () -> Unit = {},
+    onDeleteAccountData: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasNotifPerm by remember { mutableStateOf(TftNotificationHelper.hasNotificationPermission(context)) }
     var deniedPromptOnce by rememberSaveable { mutableStateOf(false) }
+    var showPrivacyDialog by rememberSaveable { mutableStateOf(false) }
+    var showClearLocalDialog by rememberSaveable { mutableStateOf(false) }
+    var showDeleteAccountDialog by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
@@ -456,7 +466,7 @@ fun AboutScreen(
                             onCheckForUpdate = onCheckAppUpdate,
                             onSaveGithubRepo = onSaveGithubRepo,
                             onToggleUpdateAlerts = onToggleAppUpdateAlerts,
-                            onStartUpdate = onStartAppUpdate,
+                            onOpenStoreUpdate = onStartAppUpdate,
                             onOpenUpdateDialog = onOpenAppUpdateDialog,
                             modifier = Modifier.weight(1f)
                         )
@@ -470,7 +480,7 @@ fun AboutScreen(
                         onCheckForUpdate = onCheckAppUpdate,
                         onSaveGithubRepo = onSaveGithubRepo,
                         onToggleUpdateAlerts = onToggleAppUpdateAlerts,
-                        onStartUpdate = onStartAppUpdate,
+                        onOpenStoreUpdate = onStartAppUpdate,
                         onOpenUpdateDialog = onOpenAppUpdateDialog
                     )
                 }
@@ -509,6 +519,79 @@ fun AboutScreen(
                         onAuthError = onAuthError,
                         onSignedOut = onSignedOut
                     )
+                }
+            }
+
+            // Privacy & Account Data Controls (Google Play & App Store Data Safety / Account Deletion)
+            item {
+                HextechPanelCard(
+                    modifier = Modifier.testTag("privacy_data_card")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Policy,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = stringResource(R.string.privacy_data_title),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Text(
+                            text = stringResource(R.string.privacy_data_summary),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedButton(
+                            onClick = { showPrivacyDialog = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("view_privacy_policy_button")
+                        ) {
+                            Text(stringResource(R.string.view_privacy_policy))
+                        }
+                        OutlinedButton(
+                            onClick = { showClearLocalDialog = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("clear_local_data_button")
+                        ) {
+                            Text(stringResource(R.string.clear_local_data))
+                        }
+                        if (currentUser != null) {
+                            OutlinedButton(
+                                onClick = { showDeleteAccountDialog = true },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("delete_account_data_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteForever,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(stringResource(R.string.delete_account_data))
+                            }
+                        }
+                    }
                 }
             }
 
@@ -575,6 +658,99 @@ fun AboutScreen(
 
             item { Spacer(Modifier.height(24.dp)) }
         }
+    }
+
+    if (showPrivacyDialog) {
+        AlertDialog(
+            onDismissRequest = { showPrivacyDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Policy,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = { Text(stringResource(R.string.privacy_data_title)) },
+            text = {
+                Text(
+                    text = stringResource(R.string.privacy_policy_details),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showPrivacyDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    if (showClearLocalDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearLocalDialog = false },
+            title = { Text("Clear Local Data?") },
+            text = {
+                Text(
+                    text = "This resets local theme, overlay opacity, and guest favorites stored on this device. Cloud-synced favorites are unaffected.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearLocalDialog = false
+                        onClearLocalData()
+                    }
+                ) {
+                    Text("Clear Local Data")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearLocalDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAccountDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteForever,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
+            title = { Text("Delete Account & Cloud Data?") },
+            text = {
+                Text(
+                    text = "This permanently deletes your Firebase account, all cloud-synced favorite compositions, and saved cloud preferences. This action cannot be undone.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteAccountDialog = false
+                        onDeleteAccountData()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Delete Permanently")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAccountDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

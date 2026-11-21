@@ -230,12 +230,7 @@ object TftNotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val sizeLabel = com.example.update.AppUpdateCoordinator.formatMegabytes(release.apkSizeBytes)
-        val shortSummary = buildString {
-            append("${release.displayVersionLabel} is ready on GitHub")
-            if (sizeLabel.isNotBlank()) append(" ($sizeLabel)")
-            append(". Tap to update in-app without reinstalling.")
-        }
+        val shortSummary = "${release.displayVersionLabel} is available. Tap to view release details and update."
         val expandedSummary = buildString {
             append(shortSummary)
             val cleanNotes = release.body.lineSequence()

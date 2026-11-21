@@ -33,7 +33,6 @@ import com.example.update.AppUpdateCoordinator
 import com.example.update.AppUpdateUiState
 import com.example.update.GitHubReleaseInfo
 import com.google.firebase.firestore.FirebaseFirestoreException
-import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -72,8 +71,12 @@ class MainViewModel(
     private val localStore: LocalPreferencesStore,
     private val firestoreRepo: FirestoreUserRepository,
     autoSyncOnInit: Boolean = false,
+    private val autoCheckAppUpdateOnInit: Boolean = true,
     private val appContext: Context? = null
 ) : ViewModel() {
+
+    internal val autoSyncCompsOnInitEnabled: Boolean = autoSyncOnInit
+    internal val autoCheckAppUpdateOnInitEnabled: Boolean = autoCheckAppUpdateOnInit
 
     private var activeSyncJob: Job? = null
     private var envPersistJob: Job? = null
@@ -304,6 +307,8 @@ class MainViewModel(
                 onlyNotifyOnChanges = true,
                 triggerPushAlerts = false
             )
+        }
+        if (autoCheckAppUpdateOnInit && appContext != null) {
             checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
         }
         if (!currentUserId.isNullOrBlank()) {
@@ -312,10 +317,10 @@ class MainViewModel(
     }
 
     fun onAppResumed() {
-        appContext?.let { ctx ->
-            viewModelScope.launch {
-                AppUpdateCoordinator.resumePendingInstallIfPermitted(ctx)
-            }
+        // Auto-check for App Updates when opening/returning to the app (throttled in coordinator),
+        // while keeping Comp Updates strictly manual via user button press.
+        if (autoCheckAppUpdateOnInit && appContext != null) {
+            checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
         }
     }
 
@@ -332,11 +337,11 @@ class MainViewModel(
                 dispatchOsNotification = dispatchOsNotification
             )
             if (outcome.updateAvailable && outcome.release != null && (userInitiated || outcome.inAppNotificationTriggered)) {
-                _snackbarMessage.value = "App update available: ${outcome.release.displayVersionLabel} — tap Update to install in-app."
+                _snackbarMessage.value = "App update available: ${outcome.release.displayVersionLabel} — tap Update to view the latest release."
             } else if (!outcome.updateAvailable && userInitiated) {
                 val repo = AppUpdateCoordinator.uiState.value.configuredRepo
                 if (repo != null && AppUpdateCoordinator.uiState.value.status !is com.example.update.AppUpdateStatus.Error) {
-                    _snackbarMessage.value = "TFT's Helper is up to date with github.com/$repo."
+                    _snackbarMessage.value = "TFT's Helper is up to date."
                 }
             }
         }
@@ -362,17 +367,34 @@ class MainViewModel(
         }
     }
 
-    fun downloadAndInstallAppUpdate(release: GitHubReleaseInfo) {
+    fun openAppUpdateDestination(release: GitHubReleaseInfo? = null) {
         val ctx = appContext ?: return
-        viewModelScope.launch {
-            AppUpdateCoordinator.downloadAndInstallUpdate(ctx, release)
+        val opened = AppUpdateCoordinator.openStoreOrReleaseUpdate(ctx, release)
+        if (!opened) {
+            _snackbarMessage.value = "Unable to open Google Play or browser for this update."
         }
     }
 
-    fun installReadyAppUpdate(apkFile: File, release: GitHubReleaseInfo) {
-        val ctx = appContext ?: return
+    fun clearLocalAppData() {
         viewModelScope.launch {
-            AppUpdateCoordinator.launchPackageInstaller(ctx, apkFile, release)
+            localStore.clearAllLocalData()
+            _themeMode.value = ThemeMode.DARK
+            _snackbarMessage.value = "Cleared local preferences, favorites, and overlay settings."
+        }
+    }
+
+    fun deleteCloudAccountAndData(onDeleted: () -> Unit) {
+        viewModelScope.launch {
+            val result = firestoreRepo.deleteAllUserDataAndAccount()
+            if (result.isSuccess) {
+                localStore.clearAllLocalData()
+                _themeMode.value = ThemeMode.DARK
+                _snackbarMessage.value = "Account and cloud favorites permanently deleted."
+                onDeleted()
+            } else {
+                _snackbarMessage.value = result.exceptionOrNull()?.localizedMessage
+                    ?: "Could not delete account. Please sign in again and retry."
+            }
         }
     }
 

@@ -236,6 +236,11 @@ class LocalPreferencesStore(context: Context) {
         }
     }
 
+    suspend fun clearAllLocalData() {
+        appContext.tftDataStore.edit { it.clear() }
+        sharedPrefs.edit().clear().apply()
+    }
+
     internal suspend fun clearAllForTests() {
         appContext.tftDataStore.edit { it.clear() }
         sharedPrefs.edit().clear().commit()

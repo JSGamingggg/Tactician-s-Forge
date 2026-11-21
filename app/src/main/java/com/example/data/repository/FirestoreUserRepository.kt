@@ -259,4 +259,37 @@ class FirestoreUserRepository(
             Result.failure(e)
         }
     }
+
+    /**
+     * Permanently deletes the signed-in user's synced Firestore favorites, preferences,
+     * and Firebase Authentication account (required by Google Play Account Deletion & Apple 5.1.1(v)).
+     */
+    suspend fun deleteAllUserDataAndAccount(): Result<Unit> {
+        var activePath = "users/${auth.currentUser?.uid ?: "unauthenticated"}"
+        return try {
+            val user = auth.currentUser ?: return Result.failure(IllegalStateException("Not signed in."))
+            val uid = user.uid
+            val userDoc = db.collection("users").document(uid)
+
+            activePath = "users/$uid/favorites"
+            val favDocs = userDoc.collection("favorites").get().await()
+            for (doc in favDocs.documents) {
+                doc.reference.delete().await()
+            }
+
+            activePath = "users/$uid/preferences/settings"
+            runCatching {
+                userDoc.collection("preferences").document("settings").delete().await()
+            }
+
+            activePath = "auth/users/$uid"
+            user.delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, activePath)
+            Result.failure(e)
+        }
+    }
 }

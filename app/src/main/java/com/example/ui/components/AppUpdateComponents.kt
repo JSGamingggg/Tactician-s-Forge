@@ -2,8 +2,6 @@ package com.example.ui.components
 
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -11,7 +9,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,9 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
@@ -38,7 +33,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -56,39 +50,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.R
 import com.example.update.AppUpdateCoordinator
 import com.example.update.AppUpdateStatus
 import com.example.update.AppUpdateUiState
 import com.example.update.GitHubReleaseInfo
 import kotlinx.coroutines.launch
-import java.io.File
-import kotlin.math.roundToInt
 
 @Composable
 fun AppUpdateInAppBanner(
     updateState: AppUpdateUiState,
     onOpenDetails: () -> Unit,
-    onStartUpdate: (GitHubReleaseInfo) -> Unit,
-    onInstallReadyApk: (File, GitHubReleaseInfo) -> Unit,
+    onOpenStoreUpdate: (GitHubReleaseInfo) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val installPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        scope.launch {
-            AppUpdateCoordinator.resumePendingInstallIfPermitted(context)
-        }
-    }
-
     val status = updateState.status
-    val visible = status is AppUpdateStatus.UpdateAvailable ||
-        status is AppUpdateStatus.Downloading ||
-        status is AppUpdateStatus.ReadyToInstall
+    val visible = status is AppUpdateStatus.UpdateAvailable
 
     AnimatedVisibility(
         visible = visible,
@@ -96,6 +77,7 @@ fun AppUpdateInAppBanner(
         exit = fadeOut() + shrinkVertically(),
         modifier = modifier
     ) {
+        val availableStatus = status as? AppUpdateStatus.UpdateAvailable ?: return@AnimatedVisibility
         Surface(
             onClick = onOpenDetails,
             shape = RoundedCornerShape(14.dp),
@@ -106,125 +88,42 @@ fun AppUpdateInAppBanner(
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 .testTag("in_app_update_banner")
         ) {
-            when (status) {
-                is AppUpdateStatus.UpdateAvailable -> {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SystemUpdate,
-                            contentDescription = "App update available",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Update Available • ${status.release.displayVersionLabel}",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "New GitHub release ready — updates in-place without losing data.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Button(
-                            onClick = { onStartUpdate(status.release) },
-                            modifier = Modifier
-                                .height(40.dp)
-                                .testTag("banner_update_now_button")
-                        ) {
-                            Text("Update")
-                        }
-                    }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.SystemUpdate,
+                    contentDescription = "App update available",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Update Available • ${availableStatus.release.displayVersionLabel}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "A newer version of TFT's Helper is ready on the store.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-
-                is AppUpdateStatus.Downloading -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "Downloading ${status.release.displayVersionLabel}...",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                            Text(
-                                text = "${(status.progress * 100f).roundToInt()}%",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        LinearProgressIndicator(
-                            progress = { status.progress },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                Button(
+                    onClick = { onOpenStoreUpdate(availableStatus.release) },
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("banner_update_now_button")
+                ) {
+                    Text("Update")
                 }
-
-                is AppUpdateStatus.ReadyToInstall -> {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.InstallMobile,
-                            contentDescription = "Ready to install update",
-                            tint = MaterialTheme.colorScheme.secondary
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (status.needsInstallPermission) {
-                                    "Allow app installs to finish updating"
-                                } else {
-                                    "Update Ready: ${status.release.displayVersionLabel}"
-                                },
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                            Text(
-                                text = "Tap Install to apply over current app cleanly.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                if (status.needsInstallPermission) {
-                                    installPermissionLauncher.launch(
-                                        AppUpdateCoordinator.buildInstallPermissionSettingsIntent(context)
-                                    )
-                                } else {
-                                    onInstallReadyApk(File(status.apkFilePath), status.release)
-                                }
-                            },
-                            modifier = Modifier.height(40.dp)
-                        ) {
-                            Text(if (status.needsInstallPermission) "Allow" else "Install")
-                        }
-                    }
-                }
-
-                else -> Unit
             }
         }
     }
@@ -234,37 +133,20 @@ fun AppUpdateInAppBanner(
 fun AppUpdatePromptDialog(
     updateState: AppUpdateUiState,
     onDismissLater: () -> Unit,
-    onDownloadAndInstall: (GitHubReleaseInfo) -> Unit,
-    onInstallReadyApk: (File, GitHubReleaseInfo) -> Unit
+    onOpenStoreUpdate: (GitHubReleaseInfo) -> Unit
 ) {
     if (!updateState.showPromptModal) return
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val installPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        scope.launch {
-            AppUpdateCoordinator.resumePendingInstallIfPermitted(context)
-        }
-    }
 
     val status = updateState.status
     val release = when (status) {
         is AppUpdateStatus.UpdateAvailable -> status.release
-        is AppUpdateStatus.Downloading -> status.release
-        is AppUpdateStatus.ReadyToInstall -> status.release
         is AppUpdateStatus.Error -> status.release
         else -> null
     } ?: return
 
-    val sizeLabel = remember(release.apkSizeBytes) {
-        AppUpdateCoordinator.formatMegabytes(release.apkSizeBytes)
-    }
-
     AlertDialog(
-        onDismissRequest = {
-            if (status !is AppUpdateStatus.Downloading) onDismissLater()
-        },
+        onDismissRequest = onDismissLater,
         icon = {
             Icon(
                 imageVector = Icons.Default.SystemUpdate,
@@ -274,7 +156,7 @@ fun AppUpdatePromptDialog(
         },
         title = {
             Text(
-                text = "New GitHub Release Available",
+                text = "App Update Available",
                 style = MaterialTheme.typography.titleLarge
             )
         },
@@ -298,19 +180,18 @@ fun AppUpdatePromptDialog(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "${release.displayVersionLabel}  •  ${release.apkAssetName}",
+                            text = release.displayVersionLabel,
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Installed: ${updateState.installedVersionLabel}" +
-                                if (sizeLabel.isNotBlank()) " • Download: $sizeLabel" else "",
+                            text = "Installed: ${updateState.installedVersionLabel}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Updates directly in-place inside the app — your saved comps, favorites, and overlay settings stay intact.",
+                            text = "Update via Google Play Store (or official release page) — your saved comps, favorites, and overlay settings stay intact.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -325,119 +206,32 @@ fun AppUpdatePromptDialog(
                     )
                 }
 
-                when (status) {
-                    is AppUpdateStatus.Downloading -> {
-                        val dlMb = AppUpdateCoordinator.formatMegabytes(status.bytesDownloaded)
-                        val totMb = AppUpdateCoordinator.formatMegabytes(status.totalBytes)
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            LinearProgressIndicator(
-                                progress = { status.progress },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Text(
-                                text = "Downloading inside app: ${(status.progress * 100f).roundToInt()}%" +
-                                    if (dlMb.isNotBlank() && totMb.isNotBlank()) " ($dlMb / $totMb)" else "",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                    }
-
-                    is AppUpdateStatus.ReadyToInstall -> {
-                        val downloadsInfo = status.savedDownloadsFileName?.let {
-                            "\nSaved copy to Downloads/$it"
-                        }.orEmpty()
-                        if (status.signatureMismatchDetected) {
-                            Text(
-                                text = "One-Time Key Upgrade Needed: Your currently installed build was signed with an older temporary CI key, whereas ${release.displayVersionLabel} uses the permanent Google Sign-In key. Android requires uninstalling the old-key build once before installing the new APK from your Downloads folder.$downloadsInfo",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        } else {
-                            Text(
-                                text = if (status.needsInstallPermission) {
-                                    "Tap 'Allow & Install' and enable 'Allow from this source' once so Android can apply the update in-place.$downloadsInfo"
-                                } else {
-                                    "Package verified! Tap 'Install Update' to apply without uninstalling.$downloadsInfo"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                    }
-
-                    is AppUpdateStatus.Error -> {
-                        Text(
-                            text = status.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-
-                    else -> Unit
+                if (status is AppUpdateStatus.Error) {
+                    Text(
+                        text = status.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             }
         },
         confirmButton = {
-            when (status) {
-                is AppUpdateStatus.Downloading -> {
-                    Button(onClick = {}, enabled = false) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Downloading...")
-                    }
-                }
-
-                is AppUpdateStatus.ReadyToInstall -> {
-                    if (status.signatureMismatchDetected) {
-                        Button(
-                            onClick = {
-                                AppUpdateCoordinator.launchUninstallCurrentPackage(context)
-                            },
-                            modifier = Modifier.testTag("dialog_uninstall_old_key_button")
-                        ) {
-                            Icon(Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Uninstall Old Build (APK in Downloads)")
-                        }
-                    } else {
-                        Button(
-                            onClick = {
-                                if (status.needsInstallPermission) {
-                                    installPermissionLauncher.launch(
-                                        AppUpdateCoordinator.buildInstallPermissionSettingsIntent(context)
-                                    )
-                                } else {
-                                    onInstallReadyApk(File(status.apkFilePath), status.release)
-                                }
-                            },
-                            modifier = Modifier.testTag("dialog_install_update_button")
-                        ) {
-                            Icon(Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (status.needsInstallPermission) "Allow & Install" else "Install Update")
-                        }
-                    }
-                }
-
-                else -> {
-                    Button(
-                        onClick = { onDownloadAndInstall(release) },
-                        modifier = Modifier.testTag("dialog_update_now_button")
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (status is AppUpdateStatus.Error) "Retry Update" else "Update Now")
-                    }
-                }
+            Button(
+                onClick = { onOpenStoreUpdate(release) },
+                modifier = Modifier.testTag("dialog_update_now_button")
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Update")
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (release.htmlUrl.isNotBlank() && status !is AppUpdateStatus.Downloading) {
+                if (release.htmlUrl.isNotBlank()) {
                     TextButton(
                         onClick = {
                             runCatching {
@@ -445,16 +239,14 @@ fun AppUpdatePromptDialog(
                             }
                         }
                     ) {
-                        Text("Release Page")
+                        Text("Release Notes")
                     }
                 }
-                if (status !is AppUpdateStatus.Downloading) {
-                    TextButton(
-                        onClick = onDismissLater,
-                        modifier = Modifier.testTag("dialog_update_later_button")
-                    ) {
-                        Text("Later")
-                    }
+                TextButton(
+                    onClick = onDismissLater,
+                    modifier = Modifier.testTag("dialog_update_later_button")
+                ) {
+                    Text("Later")
                 }
             }
         }
@@ -467,7 +259,7 @@ fun AppUpdateSettingsCard(
     onCheckForUpdate: () -> Unit,
     onSaveGithubRepo: (String) -> Unit,
     onToggleUpdateAlerts: (Boolean) -> Unit,
-    onStartUpdate: (GitHubReleaseInfo) -> Unit,
+    onOpenStoreUpdate: (GitHubReleaseInfo) -> Unit,
     onOpenUpdateDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -505,7 +297,7 @@ fun AppUpdateSettingsCard(
                     )
                     Column {
                         Text(
-                            text = "In-App GitHub Self-Updater",
+                            text = "App Updates",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -520,11 +312,11 @@ fun AppUpdateSettingsCard(
                 if (!updateState.configuredRepo.isNullOrBlank() && !editingRepo) {
                     IconButton(
                         onClick = { editingRepo = true },
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Edit,
-                            contentDescription = "Edit GitHub repository and token",
+                            contentDescription = "Edit release feed repository",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp)
                         )
@@ -536,7 +328,7 @@ fun AppUpdateSettingsCard(
                 OutlinedTextField(
                     value = repoInput,
                     onValueChange = { repoInput = it },
-                    label = { Text("GitHub Repository (owner/repo or URL)") },
+                    label = { Text("Release Feed Repository (owner/repo)") },
                     placeholder = { Text("JSGamingggg/Tactician-s-Forge") },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
@@ -547,8 +339,8 @@ fun AppUpdateSettingsCard(
                 OutlinedTextField(
                     value = tokenInput,
                     onValueChange = { tokenInput = it },
-                    label = { Text("GitHub Token (Required only for Private repos)") },
-                    placeholder = { Text("github_pat_... or ghp_... (Contents: Read)") },
+                    label = { Text("Read Token (Optional, Private repos only)") },
+                    placeholder = { Text("github_pat_... (Contents: Read)") },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
@@ -573,24 +365,23 @@ fun AppUpdateSettingsCard(
                         },
                         modifier = Modifier
                             .weight(1f)
-                            .height(44.dp)
+                            .height(48.dp)
                             .testTag("save_github_repo_button")
                     ) {
-                        Text("Save & Check Releases")
+                        Text("Save & Check")
                     }
                     if (!updateState.configuredRepo.isNullOrBlank()) {
                         OutlinedButton(
                             onClick = { editingRepo = false },
-                            modifier = Modifier.height(44.dp)
+                            modifier = Modifier.height(48.dp)
                         ) {
                             Text("Cancel")
                         }
                     }
                 }
             } else {
-                val tokenStatus = if (updateState.hasGithubToken) " • Token Active (Private/Public)" else " • Public Mode"
                 Text(
-                    text = "Source: github.com/${updateState.configuredRepo}/releases$tokenStatus",
+                    text = "Auto-checks for new app versions on open • Comp updates remain manual",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -603,12 +394,12 @@ fun AppUpdateSettingsCard(
             ) {
                 Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                     Text(
-                        text = "GitHub Release Update Alerts",
+                        text = "App Release Alerts",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Notify inside the app on open & send OS push notification when a new release is pushed",
+                        text = "Automatically notify when a newer version of TFT's Helper is released",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -627,7 +418,7 @@ fun AppUpdateSettingsCard(
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Text(
-                            text = "Checking GitHub Releases...",
+                            text = "Checking for app updates…",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.secondary
                         )
@@ -646,7 +437,7 @@ fun AppUpdateSettingsCard(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = "Up to date on latest GitHub release (${status.currentVersionLabel})",
+                            text = "Up to date (${status.currentVersionLabel})",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.secondary
                         )
@@ -666,57 +457,34 @@ fun AppUpdateSettingsCard(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "New Release Ready: ${status.release.displayVersionLabel}",
+                                text = "New Version Available: ${status.release.displayVersionLabel}",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Bold
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
-                                    onClick = { onStartUpdate(status.release) },
+                                    onClick = { onOpenStoreUpdate(status.release) },
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(44.dp)
+                                        .height(48.dp)
                                 ) {
-                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                     Spacer(Modifier.width(6.dp))
-                                    Text("Update Now")
+                                    Text("Update")
                                 }
                                 OutlinedButton(
                                     onClick = onOpenUpdateDialog,
-                                    modifier = Modifier.height(44.dp)
+                                    modifier = Modifier.height(48.dp)
                                 ) {
                                     Text("Details")
                                 }
                             }
                         }
-                    }
-                }
-
-                is AppUpdateStatus.Downloading -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        LinearProgressIndicator(
-                            progress = { status.progress },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            text = "Downloading update: ${(status.progress * 100f).roundToInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-                }
-
-                is AppUpdateStatus.ReadyToInstall -> {
-                    Button(
-                        onClick = onOpenUpdateDialog,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                    ) {
-                        Icon(Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Finish Installing ${status.release.displayVersionLabel}")
                     }
                 }
 
@@ -728,46 +496,16 @@ fun AppUpdateSettingsCard(
                             color = MaterialTheme.colorScheme.error
                         )
                         if (status.needsTokenOrPublicRepo && !editingRepo) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Button(
+                                onClick = { editingRepo = true },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("add_github_token_button")
                             ) {
-                                Button(
-                                    onClick = { editingRepo = true },
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(40.dp)
-                                        .testTag("add_github_token_button")
-                                ) {
-                                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Add GitHub Token", style = MaterialTheme.typography.labelMedium)
-                                }
-                                if (!updateState.configuredRepo.isNullOrBlank()) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            runCatching {
-                                                context.startActivity(
-                                                    Intent(
-                                                        Intent.ACTION_VIEW,
-                                                        Uri.parse("https://github.com/${updateState.configuredRepo}/settings")
-                                                    )
-                                                )
-                                            }
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(40.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.OpenInNew,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Spacer(Modifier.width(4.dp))
-                                        Text("Repo Settings", style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Configure Release Feed", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -775,28 +513,27 @@ fun AppUpdateSettingsCard(
 
                 AppUpdateStatus.RepoNotConfigured -> {
                     Text(
-                        text = "Enter your GitHub repository above (or build via GitHub Actions to auto-configure it).",
+                        text = "Configure your release feed repository above to enable version checks.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                AppUpdateStatus.Idle -> Unit
+                else -> Unit
             }
 
             if (!updateState.configuredRepo.isNullOrBlank()) {
                 OutlinedButton(
                     onClick = onCheckForUpdate,
-                    enabled = updateState.status !is AppUpdateStatus.Checking &&
-                        updateState.status !is AppUpdateStatus.Downloading,
+                    enabled = updateState.status !is AppUpdateStatus.Checking,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
+                        .height(48.dp)
                         .testTag("check_app_update_button")
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(androidx.compose.ui.res.stringResource(com.example.R.string.check_for_app_updates))
+                    Text(stringResource(R.string.check_for_app_updates))
                 }
             }
         }

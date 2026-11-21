@@ -22,6 +22,10 @@
     <string name="channel_app_updates_desc">Notifications when a new TFT\'s Helper APK release is published to GitHub for in-app updating.</string>
     <string name="overlay_action_stop">Close Overlay</string>
     <string name="overlay_empty_pins">Star a composition and tap the pin icon to display it here during live matches.</string>
+    <string name="overlay_opacity_label">Opacity</string>
+    <string name="overlay_opacity_toggle_desc">Adjust overlay transparency</string>
+    <string name="overlay_opacity_slider_desc">Overlay transparency slider</string>
+    <string name="overlay_opacity_reset_desc">Reset overlay opacity to default</string>
     <string name="made_by_credits">Made By JS96 + MK</string>
     <string name="auto_sync_cadence_summary">Background Alerts: 15m Worker &amp; Alarm • Manual Comp &amp; App Update Checks</string>
     <string name="check_for_updates">Check for Updates</string>

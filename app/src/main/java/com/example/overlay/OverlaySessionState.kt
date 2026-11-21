@@ -65,6 +65,10 @@ class OverlaySessionState {
     var isArmyFinderOpen by mutableStateOf(false)
         private set
 
+    // Transparency / Opacity slider panel visibility
+    var isOpacityControlOpen by mutableStateOf(false)
+        private set
+
     var finderTab by mutableStateOf(OverlayFinderTab.CHAMPIONS)
         private set
 
@@ -140,6 +144,14 @@ class OverlaySessionState {
 
     fun updateArmyFinderOpen(open: Boolean) {
         isArmyFinderOpen = open
+    }
+
+    fun toggleOpacityControl() {
+        isOpacityControlOpen = !isOpacityControlOpen
+    }
+
+    fun updateOpacityControlOpen(open: Boolean) {
+        isOpacityControlOpen = open
     }
 
     fun selectFinderTab(tab: OverlayFinderTab) {
@@ -240,6 +252,7 @@ class OverlaySessionState {
         listScrollOffset = 0
         detailScrollOffset = 0
         isArmyFinderOpen = false
+        isOpacityControlOpen = false
         finderTab = OverlayFinderTab.CHAMPIONS
         finderQuery = ""
         finderCostFilter = null

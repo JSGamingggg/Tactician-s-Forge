@@ -343,7 +343,22 @@ class LocalPreferencesStore(context: Context) {
         return runCatching { overlayAdapter.fromJson(raw) }.getOrNull().orEmpty()
     }
 
+    fun readOverlayOpacity(): Float {
+        val stored = sharedPrefs.getFloat(KEY_OVERLAY_OPACITY, DEFAULT_OVERLAY_OPACITY)
+        return if (stored.isNaN()) DEFAULT_OVERLAY_OPACITY else stored.coerceIn(MIN_OVERLAY_OPACITY, MAX_OVERLAY_OPACITY)
+    }
+
+    fun saveOverlayOpacity(opacity: Float) {
+        val clamped = if (opacity.isNaN()) DEFAULT_OVERLAY_OPACITY else opacity.coerceIn(MIN_OVERLAY_OPACITY, MAX_OVERLAY_OPACITY)
+        sharedPrefs.edit().putFloat(KEY_OVERLAY_OPACITY, clamped).apply()
+    }
+
     companion object {
+        const val KEY_OVERLAY_OPACITY = "overlay_opacity_float"
+        const val MIN_OVERLAY_OPACITY = 0.25f
+        const val MAX_OVERLAY_OPACITY = 1.0f
+        const val DEFAULT_OVERLAY_OPACITY = 0.96f
+
         private val sharedMoshi: Moshi by lazy {
             Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
         }

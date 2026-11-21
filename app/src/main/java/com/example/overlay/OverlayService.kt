@@ -81,6 +81,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
@@ -93,11 +94,14 @@ import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -113,6 +117,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -344,6 +349,27 @@ internal fun resolveOverlayWindowScreenOrientation(
 
 internal const val DEFAULT_LANDSCAPE_OVERLAY_WIDTH_DP = 650
 internal const val DEFAULT_LANDSCAPE_OVERLAY_HEIGHT_DP = 391
+internal const val OVERLAY_BAUBLE_TOUCH_TARGET_DP = 48
+internal const val OVERLAY_BAUBLE_VISUAL_SIZE_DP = 34
+internal const val MIN_OVERLAY_OPACITY = LocalPreferencesStore.MIN_OVERLAY_OPACITY
+internal const val MAX_OVERLAY_OPACITY = LocalPreferencesStore.MAX_OVERLAY_OPACITY
+internal const val DEFAULT_OVERLAY_OPACITY = LocalPreferencesStore.DEFAULT_OVERLAY_OPACITY
+internal const val MIN_BAUBLE_IDLE_ALPHA = 0.60f
+
+internal fun clampOverlayOpacity(raw: Float): Float =
+    if (raw.isNaN()) DEFAULT_OVERLAY_OPACITY else raw.coerceIn(MIN_OVERLAY_OPACITY, MAX_OVERLAY_OPACITY)
+
+/**
+ * Computes a visibility-safe alpha for the floating bauble based on the user's overlay opacity.
+ * While pressed, dragging, or open, the bauble snaps to full opacity so it never gets lost;
+ * while idle, it dims gently down to [MIN_BAUBLE_IDLE_ALPHA] so it remains unobtrusive yet clearly visible.
+ */
+internal fun resolveBaubleAlpha(overlayOpacity: Float, isInteractive: Boolean): Float {
+    if (isInteractive) return 1f
+    val clamped = clampOverlayOpacity(overlayOpacity)
+    val fraction = ((clamped - MIN_OVERLAY_OPACITY) / (MAX_OVERLAY_OPACITY - MIN_OVERLAY_OPACITY)).coerceIn(0f, 1f)
+    return (MIN_BAUBLE_IDLE_ALPHA + fraction * (1f - MIN_BAUBLE_IDLE_ALPHA)).coerceIn(MIN_BAUBLE_IDLE_ALPHA, 1f)
+}
 
 data class OverlayDrawerDimensions(
     val widthDp: Dp,
@@ -612,6 +638,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private val dockEdgeState = mutableStateOf(OverlayDockEdge.LEFT)
     private val isDraggingState = mutableStateOf(false)
     private val isBaublePressedState = mutableStateOf(false)
+    private val overlayOpacityState = mutableFloatStateOf(DEFAULT_OVERLAY_OPACITY)
     private val customWidthDpState = mutableStateOf<Float?>(null)
     private val customHeightDpState = mutableStateOf<Float?>(null)
     private var savedExpandedOriginPx: Pair<Int, Int>? = null
@@ -654,6 +681,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
 
         prefsStore = LocalPreferencesStore(this)
+        overlayOpacityState.floatValue = prefsStore.readOverlayOpacity()
         metaRepository = MetaRepository(this)
         firestoreRepo = FirestoreUserRepository(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -1043,8 +1071,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         }
 
         if (::bubbleLayoutParams.isInitialized) {
-            val viewW = bubbleView?.width?.takeIf { it > 0 } ?: dpToPx(48)
-            val viewH = bubbleView?.height?.takeIf { it > 0 } ?: dpToPx(48)
+            val viewW = bubbleView?.width?.takeIf { it > 0 } ?: dpToPx(OVERLAY_BAUBLE_TOUCH_TARGET_DP)
+            val viewH = bubbleView?.height?.takeIf { it > 0 } ?: dpToPx(OVERLAY_BAUBLE_TOUCH_TARGET_DP)
             val targetX = savedBubblePosPx?.first ?: bubbleLayoutParams.x
             val targetY = savedBubblePosPx?.second ?: bubbleLayoutParams.y
             val (clampedX, clampedY) = clampBubbleWindowPosition(
@@ -1161,6 +1189,12 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         transitionDisplayState(nextState)
     }
 
+    private fun updateOverlayOpacity(newOpacity: Float) {
+        val clamped = clampOverlayOpacity(newOpacity)
+        overlayOpacityState.floatValue = clamped
+        prefsStore.saveOverlayOpacity(clamped)
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun attachOverlayView() {
         val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1217,6 +1251,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         configVersion = configurationVersion.intValue,
                         customWidthDp = customWidthDpState.value,
                         customHeightDp = customHeightDpState.value,
+                        overlayOpacity = overlayOpacityState.floatValue,
+                        onOpacityChanged = ::updateOverlayOpacity,
                         allComps = allCompsState.value,
                         allChampions = allChampionsState.value,
                         allItems = allItemsState.value,
@@ -1268,7 +1304,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             }
         }
 
-        val defaultBubbleSizePx = dpToPx(48)
+        val defaultBubbleSizePx = dpToPx(OVERLAY_BAUBLE_TOUCH_TARGET_DP)
         val (initialBubbleX, initialBubbleY) = clampBubbleWindowPosition(
             desiredX = initialBounds.safeLeftPx + dpToPx(12),
             desiredY = initialBounds.safeTopPx + dpToPx(18),
@@ -1306,6 +1342,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         isDrawerOpen = displayState.value == OverlayDisplayState.EXPANDED,
                         isDragging = isDraggingState.value,
                         isPressed = isBaublePressedState.value,
+                        overlayOpacity = overlayOpacityState.floatValue,
                         onToggleDrawer = ::toggleDrawerExpanded
                     )
                 }
@@ -1416,16 +1453,25 @@ private fun OverlayFloatingBauble(
     isDrawerOpen: Boolean,
     isDragging: Boolean,
     isPressed: Boolean,
+    overlayOpacity: Float,
     onToggleDrawer: () -> Unit
 ) {
     val dragScale by animateFloatAsState(
         targetValue = when {
-            isDragging -> 1.09f
-            isPressed -> 0.95f
+            isDragging -> 1.12f
+            isPressed -> 0.94f
             else -> 1f
         },
         animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
         label = "overlayBubbleDragScale"
+    )
+    val baubleAlpha by animateFloatAsState(
+        targetValue = resolveBaubleAlpha(
+            overlayOpacity = overlayOpacity,
+            isInteractive = isDrawerOpen || isDragging || isPressed
+        ),
+        animationSpec = tween(durationMillis = 160),
+        label = "overlayBubbleAlpha"
     )
     val borderBrush = Brush.linearGradient(
         when {
@@ -1443,10 +1489,11 @@ private fun OverlayFloatingBauble(
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(48.dp)
+            .size(OVERLAY_BAUBLE_TOUCH_TARGET_DP.dp)
             .graphicsLayer {
                 scaleX = dragScale
                 scaleY = dragScale
+                alpha = baubleAlpha
             }
             .semantics(mergeDescendants = true) {
                 role = Role.Button
@@ -1459,16 +1506,18 @@ private fun OverlayFloatingBauble(
             .testTag("overlay_bubble_button")
     ) {
         // Non-clickable Surface so root touch handler receives 100% of drag & tap events
-        // across the entire bauble surface, while preserving accessibility button semantics.
+        // across the entire 48dp hit zone while the visual bauble stays compact (34dp).
         Surface(
             shape = CircleShape,
             color = if (isDrawerOpen) DeepSlate.copy(alpha = 0.98f) else ObsidianVoid.copy(alpha = 0.96f),
             border = BorderStroke(
-                width = if (isDragging || isDrawerOpen) 2.dp else 1.5.dp,
+                width = if (isDragging || isDrawerOpen) 1.75.dp else 1.25.dp,
                 brush = borderBrush
             ),
-            shadowElevation = if (isDragging || isDrawerOpen) 12.dp else 8.dp,
-            modifier = Modifier.size(42.dp)
+            shadowElevation = if (isDragging || isDrawerOpen) 8.dp else 5.dp,
+            modifier = Modifier
+                .size(OVERLAY_BAUBLE_VISUAL_SIZE_DP.dp)
+                .testTag("overlay_bubble_visual")
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (isDrawerOpen) {
@@ -1476,7 +1525,7 @@ private fun OverlayFloatingBauble(
                         imageVector = Icons.Default.CloseFullscreen,
                         contentDescription = null,
                         tint = ArcaneCyan,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 } else {
                     Image(
@@ -1500,6 +1549,8 @@ private fun OverlayDrawerContent(
     configVersion: Int,
     customWidthDp: Float?,
     customHeightDp: Float?,
+    overlayOpacity: Float,
+    onOpacityChanged: (Float) -> Unit,
     allComps: List<MetaComp>,
     allChampions: List<ChampionTierEntry> = emptyList(),
     allItems: List<ItemTierEntry> = emptyList(),
@@ -1683,6 +1734,8 @@ private fun OverlayDrawerContent(
             .heightIn(max = drawerDims.maxHeightDp)
     }
 
+    val clampedOverlayOpacity = clampOverlayOpacity(overlayOpacity)
+
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = ObsidianVoid.copy(alpha = 0.96f),
@@ -1691,7 +1744,12 @@ private fun OverlayDrawerContent(
             brush = Brush.linearGradient(listOf(BrightGold, ArcaneCyan))
         ),
         shadowElevation = 16.dp,
-        modifier = surfaceSizeModifier.testTag("overlay_expanded_drawer")
+        modifier = surfaceSizeModifier
+            .graphicsLayer {
+                alpha = clampedOverlayOpacity
+                compositingStrategy = CompositingStrategy.Offscreen
+            }
+            .testTag("overlay_expanded_drawer")
     ) {
         Box(
             modifier = if (effectiveFixedHeightDp != null) {
@@ -1835,6 +1893,24 @@ private fun OverlayDrawerContent(
                                 )
                             }
                         }
+                        val isOpacityCustom = abs(clampedOverlayOpacity - DEFAULT_OVERLAY_OPACITY) > 0.02f
+                        IconButton(
+                            onClick = { sessionState.toggleOpacityControl() },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("overlay_opacity_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Opacity,
+                                contentDescription = stringResource(R.string.overlay_opacity_toggle_desc),
+                                tint = when {
+                                    sessionState.isOpacityControlOpen -> BrightGold
+                                    isOpacityCustom -> ArcaneCyan
+                                    else -> Color(0xFFB7C4D8)
+                                },
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                         IconButton(
                             onClick = onRefresh,
                             modifier = Modifier
@@ -1860,6 +1936,18 @@ private fun OverlayDrawerContent(
                             Icon(Icons.Default.Close, contentDescription = "Stop overlay", tint = Color(0xFFE74C3C), modifier = Modifier.size(16.dp))
                         }
                     }
+                }
+
+                AnimatedVisibility(visible = sessionState.isOpacityControlOpen) {
+                    OverlayOpacityControlBar(
+                        opacity = clampedOverlayOpacity,
+                        showPresets = drawerDims.widthDp >= 430.dp,
+                        onOpacityChanged = onOpacityChanged,
+                        onResetOpacity = { onOpacityChanged(DEFAULT_OVERLAY_OPACITY) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp, bottom = 4.dp)
+                    )
                 }
 
                         // Compact single filter strip while browsing comps list
@@ -3499,3 +3587,126 @@ private fun MiniOverlayHexGrid(
         }
     }
 }
+
+@Composable
+private fun OverlayOpacityControlBar(
+    opacity: Float,
+    showPresets: Boolean,
+    onOpacityChanged: (Float) -> Unit,
+    onResetOpacity: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val percent = (clampOverlayOpacity(opacity) * 100f).roundToInt()
+    val sliderDesc = stringResource(R.string.overlay_opacity_slider_desc)
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = DeepSlate.copy(alpha = 0.94f),
+        border = BorderStroke(1.dp, ArcaneCyan.copy(alpha = 0.45f)),
+        modifier = modifier.testTag("overlay_opacity_panel")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Opacity,
+                contentDescription = null,
+                tint = BrightGold,
+                modifier = Modifier.size(15.dp)
+            )
+            Text(
+                text = stringResource(R.string.overlay_opacity_label),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFFD5E1F2),
+                maxLines = 1
+            )
+            Text(
+                text = "$percent%",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = ArcaneCyan,
+                maxLines = 1,
+                modifier = Modifier
+                    .width(34.dp)
+                    .testTag("overlay_opacity_value")
+            )
+            Slider(
+                value = clampOverlayOpacity(opacity),
+                onValueChange = { onOpacityChanged(it) },
+                valueRange = MIN_OVERLAY_OPACITY..MAX_OVERLAY_OPACITY,
+                colors = SliderDefaults.colors(
+                    thumbColor = BrightGold,
+                    activeTrackColor = ArcaneCyan,
+                    inactiveTrackColor = SlateOutline
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(28.dp)
+                    .semantics { contentDescription = "$sliderDesc: $percent%" }
+                    .testTag("overlay_opacity_slider")
+            )
+            if (showPresets) {
+                OverlayOpacityPresetChip(
+                    label = "50%",
+                    selected = abs(opacity - 0.50f) < 0.03f,
+                    onClick = { onOpacityChanged(0.50f) },
+                    testTag = "overlay_opacity_preset_50"
+                )
+                OverlayOpacityPresetChip(
+                    label = "100%",
+                    selected = abs(opacity - 1.0f) < 0.03f,
+                    onClick = { onOpacityChanged(1.0f) },
+                    testTag = "overlay_opacity_preset_100"
+                )
+            }
+            if (abs(opacity - DEFAULT_OVERLAY_OPACITY) > 0.02f) {
+                IconButton(
+                    onClick = onResetOpacity,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .testTag("overlay_opacity_reset_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.RestartAlt,
+                        contentDescription = stringResource(R.string.overlay_opacity_reset_desc),
+                        tint = BrightGold,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OverlayOpacityPresetChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(7.dp),
+        color = if (selected) ArcaneCyan.copy(alpha = 0.22f) else SlateElevated,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) ArcaneCyan else SlateOutline.copy(alpha = 0.7f)
+        ),
+        modifier = Modifier.testTag(testTag)
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) ArcaneCyan else Color(0xFFB7C4D8),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+        )
+    }
+}
+

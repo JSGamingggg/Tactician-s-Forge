@@ -349,8 +349,8 @@ internal fun resolveOverlayWindowScreenOrientation(
 
 internal const val DEFAULT_LANDSCAPE_OVERLAY_WIDTH_DP = 650
 internal const val DEFAULT_LANDSCAPE_OVERLAY_HEIGHT_DP = 391
-internal const val OVERLAY_BAUBLE_TOUCH_TARGET_DP = 48
-internal const val OVERLAY_BAUBLE_VISUAL_SIZE_DP = 37
+internal const val OVERLAY_BAUBLE_TOUCH_TARGET_DP = 58
+internal const val OVERLAY_BAUBLE_VISUAL_SIZE_DP = 48
 internal const val MIN_OVERLAY_OPACITY = LocalPreferencesStore.MIN_OVERLAY_OPACITY
 internal const val MAX_OVERLAY_OPACITY = LocalPreferencesStore.MAX_OVERLAY_OPACITY
 internal const val DEFAULT_OVERLAY_OPACITY = LocalPreferencesStore.DEFAULT_OVERLAY_OPACITY
@@ -1506,12 +1506,12 @@ private fun OverlayFloatingBauble(
             .testTag("overlay_bubble_button")
     ) {
         // Non-clickable Surface so root touch handler receives 100% of drag & tap events
-        // across the entire 48dp hit zone while the visual bauble stays compact (37dp).
+        // across the entire 58dp hit zone while the visual bauble is 48dp (with headroom for drag scale & shadow).
         Surface(
             shape = CircleShape,
             color = if (isDrawerOpen) DeepSlate.copy(alpha = 0.98f) else ObsidianVoid.copy(alpha = 0.96f),
             border = BorderStroke(
-                width = if (isDragging || isDrawerOpen) 1.75.dp else 1.25.dp,
+                width = if (isDragging || isDrawerOpen) 2.dp else 1.5.dp,
                 brush = borderBrush
             ),
             shadowElevation = if (isDragging || isDrawerOpen) 8.dp else 5.dp,
@@ -1525,7 +1525,7 @@ private fun OverlayFloatingBauble(
                         imageVector = Icons.Default.CloseFullscreen,
                         contentDescription = null,
                         tint = ArcaneCyan,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(21.dp)
                     )
                 } else {
                     Image(

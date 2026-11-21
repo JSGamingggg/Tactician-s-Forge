@@ -3461,9 +3461,10 @@ class ExampleRobolectricTest {
         val prefs = LocalPreferencesStore(context)
         kotlinx.coroutines.runBlocking { prefs.clearAllForTests() }
 
-        // 1. Visual bauble size is compact (37dp, +10% from 34dp) while outer touch target remains 48dp for accessibility
-        assertEquals(48, com.example.overlay.OVERLAY_BAUBLE_TOUCH_TARGET_DP)
-        assertEquals(37, com.example.overlay.OVERLAY_BAUBLE_VISUAL_SIZE_DP)
+        // 1. Visual bauble size is 48dp (+30% from 37dp) inside a 58dp outer touch target (>= 48dp accessibility minimum)
+        assertEquals(58, com.example.overlay.OVERLAY_BAUBLE_TOUCH_TARGET_DP)
+        assertEquals(48, com.example.overlay.OVERLAY_BAUBLE_VISUAL_SIZE_DP)
+        assertTrue(com.example.overlay.OVERLAY_BAUBLE_TOUCH_TARGET_DP >= 48)
         assertTrue(com.example.overlay.OVERLAY_BAUBLE_VISUAL_SIZE_DP < com.example.overlay.OVERLAY_BAUBLE_TOUCH_TARGET_DP)
 
         // 2. Opacity clamping enforces safe 25%..100% bounds and handles NaN

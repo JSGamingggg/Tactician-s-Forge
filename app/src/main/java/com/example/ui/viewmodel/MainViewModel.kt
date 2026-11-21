@@ -133,6 +133,7 @@ class MainViewModel(
                         val persistedEnv = TftEnvironment.fromRaw(prefs.selectedEnvironment)
                         if (_selectedEnvironment.value != persistedEnv) {
                             _selectedEnvironment.value = persistedEnv
+                            refreshActiveEnvSnapshot()
                         }
                     }
                 }
@@ -162,6 +163,7 @@ class MainViewModel(
                         val persistedEnv = TftEnvironment.fromRaw(prefs.selectedEnvironment)
                         if (_selectedEnvironment.value != persistedEnv) {
                             _selectedEnvironment.value = persistedEnv
+                            refreshActiveEnvSnapshot()
                         }
                     }
                 }
@@ -242,45 +244,57 @@ class MainViewModel(
         initialValue = metaRepository.getPatches(TftEnvironment.LIVE, initialBundle)
     )
 
-    val activeEnvSnapshot: StateFlow<EnvironmentSnapshot> =
-        combine(
-            _selectedEnvironment,
-            _metaBundle,
-            _isOfflineFallback,
-            PrefetchTelemetryStore.status
-        ) { env, bundle, offlineFallback, prefetchStatus ->
-            EnvironmentSnapshot(
-                environment = env,
-                comps = metaRepository.getComps(env, bundle),
-                champions = metaRepository.getChampions(env, bundle),
-                items = metaRepository.getItems(env, bundle),
-                augments = metaRepository.getAugments(env, bundle),
-                patches = metaRepository.getPatches(env, bundle),
-                cacheStatus = bundle.toCacheStatus(isOfflineFallback = offlineFallback, environment = env).copy(
-                    prefetchedAssetsCount = prefetchStatus.totalReadyCount,
-                    totalPrefetchAssets = prefetchStatus.totalPlannedCount,
-                    isPrefetchingAssets = prefetchStatus.isRunning
-                )
-            )
-        }.stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = EnvironmentSnapshot(
-                environment = TftEnvironment.LIVE,
-                comps = metaRepository.getComps(TftEnvironment.LIVE, initialBundle),
-                champions = metaRepository.getChampions(TftEnvironment.LIVE, initialBundle),
-                items = metaRepository.getItems(TftEnvironment.LIVE, initialBundle),
-                augments = metaRepository.getAugments(TftEnvironment.LIVE, initialBundle),
-                patches = metaRepository.getPatches(TftEnvironment.LIVE, initialBundle),
-                cacheStatus = initialBundle.toCacheStatus(environment = TftEnvironment.LIVE)
+    private fun buildEnvironmentSnapshot(
+        env: TftEnvironment = _selectedEnvironment.value,
+        bundle: OfflineMetaBundle = _metaBundle.value,
+        offlineFallback: Boolean = _isOfflineFallback.value
+    ): EnvironmentSnapshot {
+        val prefetchStatus = PrefetchTelemetryStore.status.value
+        return EnvironmentSnapshot(
+            environment = env,
+            comps = metaRepository.getComps(env, bundle),
+            champions = metaRepository.getChampions(env, bundle),
+            items = metaRepository.getItems(env, bundle),
+            augments = metaRepository.getAugments(env, bundle),
+            patches = metaRepository.getPatches(env, bundle),
+            cacheStatus = bundle.toCacheStatus(isOfflineFallback = offlineFallback, environment = env).copy(
+                prefetchedAssetsCount = prefetchStatus.totalReadyCount,
+                totalPrefetchAssets = prefetchStatus.totalPlannedCount,
+                isPrefetchingAssets = prefetchStatus.isRunning
             )
         )
+    }
+
+    private fun refreshActiveEnvSnapshot() {
+        _activeEnvSnapshot.value = buildEnvironmentSnapshot()
+    }
+
+    private val _activeEnvSnapshot = MutableStateFlow(
+        buildEnvironmentSnapshot(
+            env = TftEnvironment.LIVE,
+            bundle = initialBundle,
+            offlineFallback = false
+        )
+    )
+    val activeEnvSnapshot: StateFlow<EnvironmentSnapshot> = _activeEnvSnapshot.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            combine(_metaBundle, _isOfflineFallback, PrefetchTelemetryStore.status) { bundle, offlineFallback, _ ->
+                bundle to offlineFallback
+            }.collect { (bundle, offlineFallback) ->
+                _activeEnvSnapshot.value = buildEnvironmentSnapshot(
+                    env = _selectedEnvironment.value,
+                    bundle = bundle,
+                    offlineFallback = offlineFallback
+                )
+            }
+        }
         viewModelScope.launch {
             val loaded = metaRepository.loadOfflineBundleAsync()
             _metaBundle.value = loaded
             _liveVersionInfo.value = loaded.liveVersionInfo
+            refreshActiveEnvSnapshot()
             appContext?.let { AppUpdateCoordinator.refreshSettingsSnapshot(it) }
         }
         observeBackgroundCacheUpdates()
@@ -479,6 +493,7 @@ class MainViewModel(
         hasUserExplicitlySelectedEnv = true
         if (_selectedEnvironment.value == env) return
         _selectedEnvironment.value = env
+        refreshActiveEnvSnapshot()
         val shouldPrefetch = appContext != null && prefetchedEnvsInSession.add(env)
         envPersistJob?.cancel()
         envPersistJob = viewModelScope.launch(Dispatchers.IO) {

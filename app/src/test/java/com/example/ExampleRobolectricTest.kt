@@ -2471,10 +2471,10 @@ class ExampleRobolectricTest {
         )
         val pbeResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(pbeComp, pbeCatalog!!)
         assertTrue(pbeResult.isSuccess)
-        assertEquals("TFTSet19", pbeResult.setKey)
-        assertTrue(Regex("^02[0-9a-f]{30}TFTSet19$").matches(pbeResult.code))
-        // 1280=500, 1281=501, 1282=502
-        assertEquals("02500501502000000000000000000000TFTSet19", pbeResult.code)
+        assertEquals("None", pbeResult.setKey)
+        assertTrue(Regex("^02[0-9a-f]{30}None$").matches(pbeResult.code))
+        // 1280=500, 1281=501, 1282=502 -> PBE Set 19 client requires trailing None suffix
+        assertEquals("02500501502000000000000000000000None", pbeResult.code)
 
         // Strict set guard: PBE Set 19 comp MUST NOT fall back to TFTSet18 or TFTSet10 when TFTSet19 is missing
         val wrongSetResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(pbeComp, liveCatalog)
@@ -2820,8 +2820,8 @@ class ExampleRobolectricTest {
         assertNotNull(mapCatalog)
         val mapResult = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(hyperpopComp, mapCatalog!!)
         assertTrue(mapResult.isSuccess)
-        assertEquals("TFTSet19", mapResult.setKey)
-        assertTrue(Regex("^02[0-9a-f]{30}TFTSet19$").matches(mapResult.code))
+        assertEquals("None", mapResult.setKey)
+        assertTrue(Regex("^02[0-9a-f]{30}None$").matches(mapResult.code))
 
         // 3. Network fallback: if primary pbe teamplanner JSON lacks TFTSet19, encoder continues to tftchampions.json array
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -2855,8 +2855,9 @@ class ExampleRobolectricTest {
             com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, fallbackClient)
         }
         assertTrue(resolved.isSuccess)
-        assertEquals("TFTSet19", resolved.setKey)
+        assertEquals("None", resolved.setKey)
         assertTrue(resolved.code.startsWith("024b0"))
+        assertTrue(resolved.code.endsWith("None"))
         assertEquals(4, resolved.matchedChampions.size)
     }
 
@@ -2970,8 +2971,9 @@ class ExampleRobolectricTest {
         assertNotNull(wrappedCatalog)
         val wrappedRes = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(hyperpopComp, wrappedCatalog!!)
         assertTrue(wrappedRes.isSuccess)
-        assertEquals("TFTSet19", wrappedRes.setKey)
+        assertEquals("None", wrappedRes.setKey)
         assertTrue(wrappedRes.code.startsWith("024b0"))
+        assertTrue(wrappedRes.code.endsWith("None"))
         assertEquals(3, wrappedRes.matchedChampions.size)
 
         // 2. MetaTFT lookup `{ "units": [...] }` JSON resolves v02 Set 19 codes when CommunityDragon pbe-planner only has Set 17/18
@@ -3012,8 +3014,8 @@ class ExampleRobolectricTest {
             com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, metaTftClient)
         }
         assertTrue(metaTftResolved.isSuccess)
-        assertEquals("TFTSet19", metaTftResolved.setKey)
-        assertTrue(Regex("^02[0-9a-f]{30}TFTSet19$").matches(metaTftResolved.code))
+        assertEquals("None", metaTftResolved.setKey)
+        assertTrue(Regex("^02[0-9a-f]{30}None$").matches(metaTftResolved.code))
         assertEquals(7, metaTftResolved.matchedChampions.size)
 
         // 3. Batch enrichCompsWithTeamCodes automatically attaches v02 copy codes to newly added/updated comps
@@ -3060,8 +3062,8 @@ class ExampleRobolectricTest {
             com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, hyperpopComp, tftAcademyGuideClient)
         }
         assertTrue(academyResolved.isSuccess)
-        assertEquals(validV02Set19, academyResolved.code)
-        assertEquals("TFTSet19", academyResolved.setKey)
+        assertEquals("024b04b14b24b34b44b54b6000000000None", academyResolved.code)
+        assertEquals("None", academyResolved.setKey)
 
         // 5. Never emits bogus v01 code when NO v02 source has Set 19 IDs
         com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
@@ -3154,7 +3156,7 @@ class ExampleRobolectricTest {
         )
         val encodedFromJs = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(pbeComp, jsCatalog!!)
         assertTrue(encodedFromJs.isSuccess)
-        assertEquals(exactSiteCode, encodedFromJs.code)
+        assertEquals("024b04b14b24b34b44b54b6000000000None", encodedFromJs.code)
 
         // 3. End-to-end scraper + site-first priority: pulls exact code from `/tierlist/comps/set19/__data.json`
         //    and preserves each comp's dedicated guide sourceUrl in enforceSetAlignment
@@ -3219,11 +3221,111 @@ class ExampleRobolectricTest {
         val fetched = scraper.fetchPbeTeamComps("19.1-PBE", defaultPbeSetNumber = 19)
         assertEquals(1, fetched.pbeComps.size)
         val scrapedHyperpop = fetched.pbeComps.first()
-        assertEquals(exactSiteCode, scrapedHyperpop.teamPlannerCode)
+        assertEquals("024b04b14b24b34b44b54b6000000000None", scrapedHyperpop.teamPlannerCode)
         assertEquals(
             "https://tftacademy.com/tierlist/comps/set19/set19-hyperpop-reroll",
             scrapedHyperpop.sourceUrl
         )
+    }
+
+    @Test
+    fun `set 19 pbe team planner normalizes Set19 and TFTSet19 suffixes to working None suffix while preserving live Set18`() {
+        val rawSet19FromSite = "0244442741043142d416434000000000Set19"
+        val workingPbeNone = "0244442741043142d416434000000000None"
+        val liveSet18Code = "02010429fff00702a3f7000000000000TFTSet18"
+
+        // Validator accepts Set19 and None for Set 19, rejects None for Set 18 LIVE
+        assertTrue(com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(rawSet19FromSite, expectedSetNumber = 19))
+        assertTrue(com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(workingPbeNone, expectedSetNumber = 19))
+        org.junit.Assert.assertFalse(
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.isValidTeamPlannerCode(workingPbeNone, expectedSetNumber = 18)
+        )
+
+        // Normalization rewrites Set19 / TFTSet19 -> None for Set 19 PBE, leaves LIVE Set 18 untouched
+        assertEquals(
+            workingPbeNone,
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.normalizeCodeForTarget(
+                rawCode = rawSet19FromSite,
+                environment = TftEnvironment.PBE,
+                targetSetNum = 19
+            )
+        )
+        assertEquals(
+            workingPbeNone,
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.normalizeCodeForTarget(
+                rawCode = workingPbeNone,
+                environment = TftEnvironment.PBE,
+                targetSetNum = 19
+            )
+        )
+        assertEquals(
+            liveSet18Code,
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.normalizeCodeForTarget(
+                rawCode = liveSet18Code,
+                environment = TftEnvironment.LIVE,
+                targetSetNum = 18
+            )
+        )
+
+        // Direct passthrough on a PBE Set 19 comp automatically outputs None suffix
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val pbeCompWithSet19Suffix = MetaComp(
+            id = "pbe_set19_none_norm_test",
+            title = "Hyperpop Reroll",
+            tier = TierRank.S,
+            environment = TftEnvironment.PBE,
+            setName = "Set 19 (PBE)",
+            patchTag = "19.1-PBE",
+            playstyle = "1-Cost Reroll",
+            avgPlacement = 3.45,
+            top4Rate = 62.0,
+            winRate = 18.0,
+            pickRate = 4.2,
+            trendDelta = "+0.3",
+            isTrending = true,
+            carryName = "Ziggs",
+            coreUnits = listOf("Kobuko", "Ziggs", "Lulu", "Tristana", "Seraphine", "Swain", "Teemo"),
+            traits = listOf("5 Hyperpop"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Slow roll at 5",
+            notes = "",
+            teamPlannerCode = rawSet19FromSite
+        )
+        val resolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, pbeCompWithSet19Suffix)
+        }
+        assertTrue(resolved.isSuccess)
+        assertEquals(workingPbeNone, resolved.code)
+        assertEquals("None", resolved.setKey)
+    }
+
+    @Test
+    fun `mainViewModel activeEnvSnapshot switches atomically between LIVE and PBE without state tearing`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val viewModel = MainViewModel(
+            currentUserId = null,
+            metaRepository = MetaRepository(context),
+            localStore = LocalPreferencesStore(context),
+            firestoreRepo = FirestoreUserRepository(context),
+            autoSyncOnInit = false,
+            appContext = null
+        )
+
+        val liveSnap = viewModel.activeEnvSnapshot.value
+        assertEquals(TftEnvironment.LIVE, liveSnap.environment)
+        assertTrue(liveSnap.comps.all { it.environment == TftEnvironment.LIVE })
+
+        viewModel.setEnvironment(TftEnvironment.PBE)
+        val pbeSnap = viewModel.activeEnvSnapshot.value
+        assertEquals(TftEnvironment.PBE, pbeSnap.environment)
+        assertTrue(pbeSnap.comps.all { it.environment == TftEnvironment.PBE })
+        assertTrue(pbeSnap.patches.all { it.environment == TftEnvironment.PBE })
+
+        viewModel.setEnvironment(TftEnvironment.LIVE)
+        val backToLive = viewModel.activeEnvSnapshot.value
+        assertEquals(TftEnvironment.LIVE, backToLive.environment)
+        assertTrue(backToLive.comps.all { it.environment == TftEnvironment.LIVE })
     }
 
     @Test

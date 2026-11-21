@@ -1043,8 +1043,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         }
 
         if (::bubbleLayoutParams.isInitialized) {
-            val viewW = bubbleView?.width?.takeIf { it > 0 } ?: dpToPx(64)
-            val viewH = bubbleView?.height?.takeIf { it > 0 } ?: dpToPx(64)
+            val viewW = bubbleView?.width?.takeIf { it > 0 } ?: dpToPx(48)
+            val viewH = bubbleView?.height?.takeIf { it > 0 } ?: dpToPx(48)
             val targetX = savedBubblePosPx?.first ?: bubbleLayoutParams.x
             val targetY = savedBubblePosPx?.second ?: bubbleLayoutParams.y
             val (clampedX, clampedY) = clampBubbleWindowPosition(
@@ -1268,7 +1268,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
             }
         }
 
-        val defaultBubbleSizePx = dpToPx(64)
+        val defaultBubbleSizePx = dpToPx(48)
         val (initialBubbleX, initialBubbleY) = clampBubbleWindowPosition(
             desiredX = initialBounds.safeLeftPx + dpToPx(12),
             desiredY = initialBounds.safeTopPx + dpToPx(18),
@@ -1441,12 +1441,22 @@ private fun OverlayFloatingBauble(
     }
 
     Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
-            .padding(2.dp)
+            .size(48.dp)
             .graphicsLayer {
                 scaleX = dragScale
                 scaleY = dragScale
             }
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = actionLabel
+                onClick(label = actionLabel) {
+                    onToggleDrawer()
+                    true
+                }
+            }
+            .testTag("overlay_bubble_button")
     ) {
         // Non-clickable Surface so root touch handler receives 100% of drag & tap events
         // across the entire bauble surface, while preserving accessibility button semantics.
@@ -1454,21 +1464,11 @@ private fun OverlayFloatingBauble(
             shape = CircleShape,
             color = if (isDrawerOpen) DeepSlate.copy(alpha = 0.98f) else ObsidianVoid.copy(alpha = 0.96f),
             border = BorderStroke(
-                width = if (isDragging || isDrawerOpen) 2.5.dp else 2.dp,
+                width = if (isDragging || isDrawerOpen) 2.dp else 1.5.dp,
                 brush = borderBrush
             ),
-            shadowElevation = if (isDragging || isDrawerOpen) 16.dp else 10.dp,
-            modifier = Modifier
-                .size(58.dp)
-                .semantics(mergeDescendants = true) {
-                    role = Role.Button
-                    contentDescription = actionLabel
-                    onClick(label = actionLabel) {
-                        onToggleDrawer()
-                        true
-                    }
-                }
-                .testTag("overlay_bubble_button")
+            shadowElevation = if (isDragging || isDrawerOpen) 12.dp else 8.dp,
+            modifier = Modifier.size(42.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (isDrawerOpen) {
@@ -1476,7 +1476,7 @@ private fun OverlayFloatingBauble(
                         imageVector = Icons.Default.CloseFullscreen,
                         contentDescription = null,
                         tint = ArcaneCyan,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 } else {
                     Image(

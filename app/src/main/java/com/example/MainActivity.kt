@@ -639,7 +639,8 @@ private fun AuthenticatedOrGuestWorkspace(
                                          onCheckAppUpdate = { mainViewModel.checkForAppUpdate(userInitiated = true) },
                                          onSaveGithubRepo = mainViewModel::saveGithubRepo,
                                          onToggleAppUpdateAlerts = mainViewModel::setAppUpdateAlertsEnabled,
-                                         onStartAppUpdate = mainViewModel::openAppUpdateDestination,
+                                         onOpenPlayStoreUpdate = mainViewModel::openPlayStorePage,
+                                         onOpenGitHubReleaseUpdate = mainViewModel::openGitHubReleasePage,
                                          onOpenAppUpdateDialog = mainViewModel::openAppUpdateDialog,
                                          onUpdateAlertSettings = mainViewModel::updateAlertSettings,
                                          onSetThemeMode = mainViewModel::setThemeMode,
@@ -674,7 +675,8 @@ private fun AuthenticatedOrGuestWorkspace(
          AppUpdatePromptDialog(
              updateState = appUpdateState,
              onDismissLater = { mainViewModel.dismissAppUpdateDialog(suppressThisReleaseOnLaunch = true) },
-             onOpenStoreUpdate = mainViewModel::openAppUpdateDestination
+             onOpenPlayStore = mainViewModel::openPlayStorePage,
+             onOpenGitHubUpdate = mainViewModel::openGitHubReleasePage
          )
      }
  }

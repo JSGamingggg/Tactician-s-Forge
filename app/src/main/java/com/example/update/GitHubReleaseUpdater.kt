@@ -109,6 +109,7 @@ data class AppUpdateUiState(
     val installedVersionLabel: String = "v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
     val installedCommitShort: String? = BuildConfig.GIT_COMMIT_SHA.takeIf { it.isNotBlank() }?.take(7),
     val appUpdateAlertsEnabled: Boolean = true,
+    val installedFromGooglePlay: Boolean = false,
     val status: AppUpdateStatus = AppUpdateStatus.Idle,
     val showPromptModal: Boolean = false,
     val pendingAutoInstallAfterPermission: Boolean = false
@@ -487,6 +488,7 @@ object AppUpdateCoordinator {
         val token = resolveConfiguredToken(prefsStore)
         val alertsEnabled = prefsStore.isAppUpdateAlertsEnabled()
         val installed = currentInstalledInfo(context)
+        val fromPlay = isInstalledFromGooglePlay(context)
         _uiState.update { state ->
             state.copy(
                 configuredRepo = repo,
@@ -495,6 +497,7 @@ object AppUpdateCoordinator {
                 installedVersionLabel = "v${installed.versionName} (Build ${installed.versionCode})",
                 installedCommitShort = installed.gitCommitSha.takeIf { it.isNotBlank() }?.take(7),
                 appUpdateAlertsEnabled = alertsEnabled,
+                installedFromGooglePlay = fromPlay,
                 status = if (repo == null && state.status is AppUpdateStatus.Idle) {
                     AppUpdateStatus.RepoNotConfigured
                 } else {
@@ -637,6 +640,7 @@ object AppUpdateCoordinator {
         val alertsEnabled = prefsStore.isAppUpdateAlertsEnabled()
         val installed = currentInstalledInfo(appContext)
         val installedLabel = "v${installed.versionName} (Build ${installed.versionCode})"
+        val fromPlay = isInstalledFromGooglePlay(appContext)
 
         if (repoSlug == null) {
             _uiState.update {
@@ -646,6 +650,7 @@ object AppUpdateCoordinator {
                     hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
+                    installedFromGooglePlay = fromPlay,
                     status = AppUpdateStatus.RepoNotConfigured
                 )
             }
@@ -661,6 +666,7 @@ object AppUpdateCoordinator {
                     hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
+                    installedFromGooglePlay = fromPlay,
                     status = AppUpdateStatus.Checking
                 )
             }
@@ -726,6 +732,7 @@ object AppUpdateCoordinator {
                     hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
+                    installedFromGooglePlay = fromPlay,
                     status = if (userInitiated || needsTokenHint) {
                         AppUpdateStatus.Error(
                             message = err.localizedMessage ?: "Failed to reach GitHub Releases",
@@ -777,6 +784,7 @@ object AppUpdateCoordinator {
                     hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
+                    installedFromGooglePlay = fromPlay,
                     status = AppUpdateStatus.UpdateAvailable(candidate),
                     showPromptModal = it.showPromptModal || shouldShowModal
                 )
@@ -796,6 +804,7 @@ object AppUpdateCoordinator {
                     hasGithubToken = !githubToken.isNullOrBlank(),
                     installedVersionLabel = installedLabel,
                     appUpdateAlertsEnabled = alertsEnabled,
+                    installedFromGooglePlay = fromPlay,
                     status = AppUpdateStatus.UpToDate(
                         currentVersionLabel = installedLabel,
                         checkedAtMillis = now
@@ -808,8 +817,27 @@ object AppUpdateCoordinator {
     }
 
     /**
+     * Detects whether the app was installed from Google Play Store (`com.android.vending`)
+     * so update prompts can prioritize Play Store for Play installs and GitHub Releases
+     * for GitHub/direct installs, while offering both links cleanly.
+     */
+    @Suppress("DEPRECATION")
+    fun isInstalledFromGooglePlay(context: Context): Boolean {
+        val installerPackage = runCatching {
+            val pm = context.applicationContext.packageManager
+            val pkg = context.applicationContext.packageName
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                pm.getInstallSourceInfo(pkg).installingPackageName
+            } else {
+                pm.getInstallerPackageName(pkg)
+            }
+        }.getOrNull()
+        return installerPackage == "com.android.vending"
+    }
+
+    /**
      * Builds a Google Play-compliant [Intent.ACTION_VIEW] pointing to the app's Google Play Store listing
-     * (`market://` with HTTPS Play Store / release page fallback). Never downloads or installs external APKs.
+     * (`market://` with HTTPS Play Store fallback). Never downloads or installs external APKs.
      */
     fun buildPlayStoreUpdateIntent(
         context: Context,
@@ -829,16 +857,50 @@ object AppUpdateCoordinator {
     }
 
     /**
-     * Opens Google Play Store (or HTTPS store/release fallback) via standard [Intent.ACTION_VIEW]
-     * in full compliance with Google Play Developer Program policies (no `REQUEST_INSTALL_PACKAGES`
-     * and no runtime `.apk` downloading or sideloading).
+     * Builds a browser [Intent.ACTION_VIEW] pointing to the official HTTPS GitHub Releases web page
+     * so users can also update directly from GitHub without using `REQUEST_INSTALL_PACKAGES`
+     * or in-app `.apk` sideloading.
      */
-    fun openStoreOrReleaseUpdate(
+    fun buildGitHubReleaseIntent(
+        release: GitHubReleaseInfo? = null,
+        configuredRepo: String? = _uiState.value.configuredRepo
+    ): Intent {
+        val normalizedRepo = GitHubReleaseParser.normalizeRepoSlug(configuredRepo)
+            ?: "JSGamingggg/Tactician-s-Forge"
+        val releasePageUrl = release?.htmlUrl
+            ?.trim()
+            ?.takeIf { it.startsWith("https://github.com/", ignoreCase = true) }
+            ?: "https://github.com/$normalizedRepo/releases/latest"
+        return Intent(Intent.ACTION_VIEW, Uri.parse(releasePageUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    /**
+     * Opens the official GitHub Releases web page in the device's browser.
+     */
+    fun openGitHubReleaseUpdate(
         context: Context,
         release: GitHubReleaseInfo? = null
     ): Boolean {
         val appContext = context.applicationContext
-        val marketIntent = buildPlayStoreUpdateIntent(appContext, release, preferWebFallback = false)
+        val githubIntent = buildGitHubReleaseIntent(release, _uiState.value.configuredRepo)
+        val launched = runCatching {
+            appContext.startActivity(githubIntent)
+            true
+        }.getOrDefault(false)
+        if (launched) {
+            _uiState.update { it.copy(showPromptModal = false) }
+        }
+        return launched
+    }
+
+    /**
+     * Explicitly opens Google Play Store (`market://`) with HTTPS Play Store fallback.
+     */
+    fun openPlayStoreUpdate(context: Context): Boolean {
+        val appContext = context.applicationContext
+        val marketIntent = buildPlayStoreUpdateIntent(appContext, release = null, preferWebFallback = false)
         val launchedPlay = runCatching {
             appContext.startActivity(marketIntent)
             true
@@ -847,7 +909,7 @@ object AppUpdateCoordinator {
             _uiState.update { it.copy(showPromptModal = false) }
             return true
         }
-        val webIntent = buildPlayStoreUpdateIntent(appContext, release, preferWebFallback = true)
+        val webIntent = buildPlayStoreUpdateIntent(appContext, release = null, preferWebFallback = true)
         val launchedWeb = runCatching {
             appContext.startActivity(webIntent)
             true
@@ -856,6 +918,22 @@ object AppUpdateCoordinator {
             _uiState.update { it.copy(showPromptModal = false) }
         }
         return launchedWeb
+    }
+
+    /**
+     * Routes update taps to Google Play when installed from Google Play, or to the official
+     * GitHub Releases web page when installed outside Google Play (direct/GitHub builds),
+     * always via standard [Intent.ACTION_VIEW] with zero `REQUEST_INSTALL_PACKAGES` usage.
+     */
+    fun openStoreOrReleaseUpdate(
+        context: Context,
+        release: GitHubReleaseInfo? = null
+    ): Boolean {
+        return if (isInstalledFromGooglePlay(context)) {
+            openPlayStoreUpdate(context)
+        } else {
+            openGitHubReleaseUpdate(context, release)
+        }
     }
 
     fun formatMegabytes(bytes: Long): String {

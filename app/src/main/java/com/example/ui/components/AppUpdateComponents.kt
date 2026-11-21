@@ -1,7 +1,5 @@
 package com.example.ui.components
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -109,7 +107,11 @@ fun AppUpdateInAppBanner(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "A newer version of TFT's Helper is ready on the store.",
+                        text = if (updateState.installedFromGooglePlay) {
+                            "Update via Google Play or tap for GitHub Releases."
+                        } else {
+                            "Update via GitHub Releases or tap for Google Play."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
                         maxLines = 1,
@@ -122,7 +124,7 @@ fun AppUpdateInAppBanner(
                         .height(48.dp)
                         .testTag("banner_update_now_button")
                 ) {
-                    Text("Update")
+                    Text(if (updateState.installedFromGooglePlay) "Update" else "GitHub")
                 }
             }
         }
@@ -133,10 +135,10 @@ fun AppUpdateInAppBanner(
 fun AppUpdatePromptDialog(
     updateState: AppUpdateUiState,
     onDismissLater: () -> Unit,
-    onOpenStoreUpdate: (GitHubReleaseInfo) -> Unit
+    onOpenPlayStore: () -> Unit,
+    onOpenGitHubUpdate: (GitHubReleaseInfo) -> Unit
 ) {
     if (!updateState.showPromptModal) return
-    val context = LocalContext.current
 
     val status = updateState.status
     val release = when (status) {
@@ -144,6 +146,8 @@ fun AppUpdatePromptDialog(
         is AppUpdateStatus.Error -> status.release
         else -> null
     } ?: return
+
+    val fromPlay = updateState.installedFromGooglePlay
 
     AlertDialog(
         onDismissRequest = onDismissLater,
@@ -191,7 +195,7 @@ fun AppUpdatePromptDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Update via Google Play Store (or official release page) — your saved comps, favorites, and overlay settings stay intact.",
+                            text = "Update via Google Play Store or GitHub Releases — your saved comps, favorites, and overlay settings stay intact.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -217,7 +221,9 @@ fun AppUpdatePromptDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onOpenStoreUpdate(release) },
+                onClick = {
+                    if (fromPlay) onOpenPlayStore() else onOpenGitHubUpdate(release)
+                },
                 modifier = Modifier.testTag("dialog_update_now_button")
             ) {
                 Icon(
@@ -226,21 +232,18 @@ fun AppUpdatePromptDialog(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("Update")
+                Text(if (fromPlay) "Google Play" else "GitHub Release")
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (release.htmlUrl.isNotBlank()) {
-                    TextButton(
-                        onClick = {
-                            runCatching {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.htmlUrl)))
-                            }
-                        }
-                    ) {
-                        Text("Release Notes")
-                    }
+                TextButton(
+                    onClick = {
+                        if (fromPlay) onOpenGitHubUpdate(release) else onOpenPlayStore()
+                    },
+                    modifier = Modifier.testTag("dialog_update_alt_source_button")
+                ) {
+                    Text(if (fromPlay) "GitHub" else "Google Play")
                 }
                 TextButton(
                     onClick = onDismissLater,
@@ -259,7 +262,8 @@ fun AppUpdateSettingsCard(
     onCheckForUpdate: () -> Unit,
     onSaveGithubRepo: (String) -> Unit,
     onToggleUpdateAlerts: (Boolean) -> Unit,
-    onOpenStoreUpdate: (GitHubReleaseInfo) -> Unit,
+    onOpenPlayStore: () -> Unit,
+    onOpenGitHubUpdate: (GitHubReleaseInfo?) -> Unit,
     onOpenUpdateDialog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -316,7 +320,7 @@ fun AppUpdateSettingsCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Edit,
-                            contentDescription = "Edit release feed repository",
+                            contentDescription = "Edit GitHub release feed repository",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp)
                         )
@@ -328,7 +332,7 @@ fun AppUpdateSettingsCard(
                 OutlinedTextField(
                     value = repoInput,
                     onValueChange = { repoInput = it },
-                    label = { Text("Release Feed Repository (owner/repo)") },
+                    label = { Text("GitHub Repository (owner/repo)") },
                     placeholder = { Text("JSGamingggg/Tactician-s-Forge") },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
@@ -381,7 +385,7 @@ fun AppUpdateSettingsCard(
                 }
             } else {
                 Text(
-                    text = "Auto-checks for new app versions on open • Comp updates remain manual",
+                    text = "Source: github.com/${updateState.configuredRepo}/releases • Auto-checks on open (Comp updates remain manual)",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -462,12 +466,16 @@ fun AppUpdateSettingsCard(
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Bold
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 Button(
-                                    onClick = { onOpenStoreUpdate(status.release) },
+                                    onClick = { onOpenGitHubUpdate(status.release) },
                                     modifier = Modifier
                                         .weight(1f)
                                         .height(48.dp)
+                                        .testTag("card_update_github_button")
                                 ) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.OpenInNew,
@@ -475,14 +483,23 @@ fun AppUpdateSettingsCard(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(Modifier.width(6.dp))
-                                    Text("Update")
+                                    Text("GitHub")
                                 }
                                 OutlinedButton(
-                                    onClick = onOpenUpdateDialog,
-                                    modifier = Modifier.height(48.dp)
+                                    onClick = onOpenPlayStore,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("card_update_play_store_button")
                                 ) {
-                                    Text("Details")
+                                    Text("Google Play")
                                 }
+                            }
+                            TextButton(
+                                onClick = onOpenUpdateDialog,
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Text("View Release Notes")
                             }
                         }
                     }
@@ -513,7 +530,7 @@ fun AppUpdateSettingsCard(
 
                 AppUpdateStatus.RepoNotConfigured -> {
                     Text(
-                        text = "Configure your release feed repository above to enable version checks.",
+                        text = "Configure your GitHub repository above to enable version checks.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -534,6 +551,24 @@ fun AppUpdateSettingsCard(
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(stringResource(R.string.check_for_app_updates))
+                }
+                OutlinedButton(
+                    onClick = {
+                        val currentRelease = (updateState.status as? AppUpdateStatus.UpdateAvailable)?.release
+                        onOpenGitHubUpdate(currentRelease)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("open_github_releases_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Open GitHub Releases")
                 }
             }
         }

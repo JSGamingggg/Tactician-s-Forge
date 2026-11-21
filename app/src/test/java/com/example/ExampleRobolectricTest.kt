@@ -3542,6 +3542,40 @@ class ExampleRobolectricTest {
         assertEquals(android.content.Intent.ACTION_VIEW, webIntent.action)
         assertEquals("https://play.google.com/store/apps/details?id=${context.packageName}", webIntent.dataString)
 
+        val githubLatestIntent = com.example.update.AppUpdateCoordinator.buildGitHubReleaseIntent(
+            release = null,
+            configuredRepo = "JSGamingggg/Tactician-s-Forge"
+        )
+        assertEquals(android.content.Intent.ACTION_VIEW, githubLatestIntent.action)
+        assertEquals("https://github.com/JSGamingggg/Tactician-s-Forge/releases/latest", githubLatestIntent.dataString)
+        assertNotEquals("application/vnd.android.package-archive", githubLatestIntent.type)
+
+        val sampleRelease = com.example.update.GitHubReleaseInfo(
+            releaseId = 1L,
+            tagName = "v2.0.0",
+            releaseTitle = "v2.0.0",
+            body = "Release notes",
+            htmlUrl = "https://github.com/JSGamingggg/Tactician-s-Forge/releases/tag/v2.0.0",
+            publishedAtIso = "",
+            publishedAtMs = 0L,
+            parsedVersionCode = 200,
+            parsedVersionName = "2.0.0",
+            parsedCommitSha = null,
+            isPrerelease = false,
+            apkAssetName = "app-release.apk",
+            apkAssetId = 10L,
+            apkDownloadUrl = "https://github.com/JSGamingggg/Tactician-s-Forge/releases/download/v2.0.0/app-release.apk",
+            apkSizeBytes = 1024L,
+            assetUpdatedAtMs = 0L
+        )
+        val githubTagIntent = com.example.update.AppUpdateCoordinator.buildGitHubReleaseIntent(
+            release = sampleRelease,
+            configuredRepo = "JSGamingggg/Tactician-s-Forge"
+        )
+        assertEquals(android.content.Intent.ACTION_VIEW, githubTagIntent.action)
+        assertEquals("https://github.com/JSGamingggg/Tactician-s-Forge/releases/tag/v2.0.0", githubTagIntent.dataString)
+        assertFalse(com.example.update.AppUpdateCoordinator.isInstalledFromGooglePlay(context))
+
         // 4. App metadata & privacy / account deletion resources comply with store policies
         val appTitle = context.getString(R.string.app_name)
         assertTrue(appTitle.length <= 30)

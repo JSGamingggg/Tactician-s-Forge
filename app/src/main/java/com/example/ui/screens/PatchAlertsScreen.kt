@@ -93,7 +93,8 @@ fun AboutScreen(
     onCheckAppUpdate: () -> Unit,
     onSaveGithubRepo: (String) -> Unit,
     onToggleAppUpdateAlerts: (Boolean) -> Unit,
-    onStartAppUpdate: (GitHubReleaseInfo) -> Unit,
+    onOpenPlayStoreUpdate: () -> Unit,
+    onOpenGitHubReleaseUpdate: (GitHubReleaseInfo?) -> Unit,
     onOpenAppUpdateDialog: () -> Unit,
     onUpdateAlertSettings: (Boolean?, Boolean?, Boolean?, Boolean?) -> Unit,
     onSetThemeMode: (ThemeMode) -> Unit,
@@ -466,7 +467,8 @@ fun AboutScreen(
                             onCheckForUpdate = onCheckAppUpdate,
                             onSaveGithubRepo = onSaveGithubRepo,
                             onToggleUpdateAlerts = onToggleAppUpdateAlerts,
-                            onOpenStoreUpdate = onStartAppUpdate,
+                            onOpenPlayStore = onOpenPlayStoreUpdate,
+                            onOpenGitHubUpdate = onOpenGitHubReleaseUpdate,
                             onOpenUpdateDialog = onOpenAppUpdateDialog,
                             modifier = Modifier.weight(1f)
                         )
@@ -480,7 +482,8 @@ fun AboutScreen(
                         onCheckForUpdate = onCheckAppUpdate,
                         onSaveGithubRepo = onSaveGithubRepo,
                         onToggleUpdateAlerts = onToggleAppUpdateAlerts,
-                        onOpenStoreUpdate = onStartAppUpdate,
+                        onOpenPlayStore = onOpenPlayStoreUpdate,
+                        onOpenGitHubUpdate = onOpenGitHubReleaseUpdate,
                         onOpenUpdateDialog = onOpenAppUpdateDialog
                     )
                 }

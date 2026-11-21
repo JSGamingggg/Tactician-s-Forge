@@ -375,6 +375,22 @@ class MainViewModel(
         }
     }
 
+    fun openGitHubReleasePage(release: GitHubReleaseInfo? = null) {
+        val ctx = appContext ?: return
+        val opened = AppUpdateCoordinator.openGitHubReleaseUpdate(ctx, release)
+        if (!opened) {
+            _snackbarMessage.value = "Unable to open GitHub Releases in browser."
+        }
+    }
+
+    fun openPlayStorePage() {
+        val ctx = appContext ?: return
+        val opened = AppUpdateCoordinator.openPlayStoreUpdate(ctx)
+        if (!opened) {
+            _snackbarMessage.value = "Unable to open Google Play Store."
+        }
+    }
+
     fun clearLocalAppData() {
         viewModelScope.launch {
             localStore.clearAllLocalData()

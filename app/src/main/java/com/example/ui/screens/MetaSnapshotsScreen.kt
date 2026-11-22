@@ -57,7 +57,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -221,7 +223,7 @@ fun MetaSnapshotsScreen(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp
+                tonalElevation = 3.dp
             ) {
                 Row(
                     modifier = Modifier
@@ -232,37 +234,48 @@ fun MetaSnapshotsScreen(
                 ) {
                     Text(
                         text = "Meta Comps",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(
+                        val hextechTop = LocalHextechColors.current
+                        FilledTonalButton(
                             onClick = { showCreateDialog = true },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                             modifier = Modifier
-                                .height(36.dp)
+                                .defaultMinSize(minHeight = 42.dp)
                                 .testTag("create_custom_comp_button")
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "Create custom composition", modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(2.dp))
-                            Text("Custom", style = MaterialTheme.typography.labelMedium)
+                            Icon(Icons.Default.Add, contentDescription = "Create custom composition", modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Custom", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                         }
                         Button(
                             onClick = onToggleOverlay,
+                            shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isOverlayRunning) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
-                                contentColor = if (isOverlayRunning) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onPrimary
+                                containerColor = if (isOverlayRunning) hextechTop.liveBadge else MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
                             ),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                             modifier = Modifier
-                                .height(36.dp)
+                                .defaultMinSize(minHeight = 42.dp)
                                 .testTag("toggle_live_overlay_button")
                         ) {
-                            Icon(Icons.Default.Layers, contentDescription = "Toggle live match overlay", modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (isOverlayRunning) "Overlay On" else "Overlay", style = MaterialTheme.typography.labelMedium)
+                            Icon(Icons.Default.Layers, contentDescription = "Toggle live match overlay", modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = if (isOverlayRunning) "Overlay On" else "Overlay",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -357,12 +370,28 @@ fun MetaSnapshotsScreen(
 
                     // Search & Filter Bar
                     item {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedTextField(
                                 value = searchQuery,
                                 onValueChange = { searchQuery = it },
                                 placeholder = { Text("Search comp, trait, carry, or unit...") },
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search compositions") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Search,
+                                        contentDescription = "Search compositions",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                },
+                                trailingIcon = {
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { searchQuery = "" }) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Clear search query"
+                                            )
+                                        }
+                                    }
+                                },
                                 singleLine = true,
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier
@@ -370,12 +399,26 @@ fun MetaSnapshotsScreen(
                                     .testTag("meta_search_input")
                             )
 
+                            val chipColors = FilterChipDefaults.filterChipColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                labelColor = MaterialTheme.colorScheme.onSurface,
+                                iconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary
+                            )
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 item {
                                     FilterChip(
                                         selected = showFavoritesOnly,
                                         onClick = { showFavoritesOnly = !showFavoritesOnly },
-                                        label = { Text("Favorites") },
+                                        colors = chipColors,
+                                        label = {
+                                            Text(
+                                                text = "Favorites",
+                                                fontWeight = if (showFavoritesOnly) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        },
                                         leadingIcon = {
                                             Icon(
                                                 if (showFavoritesOnly) Icons.Default.Star else Icons.Outlined.StarOutline,
@@ -397,10 +440,17 @@ fun MetaSnapshotsScreen(
                                     "REROLL" to "Reroll"
                                 )
                                 items(filters) { (key, label) ->
+                                    val isSelected = selectedFilter == key
                                     FilterChip(
-                                        selected = selectedFilter == key,
+                                        selected = isSelected,
                                         onClick = { selectedFilter = key },
-                                        label = { Text(label) }
+                                        colors = chipColors,
+                                        label = {
+                                            Text(
+                                                text = label,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                            )
+                                        }
                                     )
                                 }
                             }
@@ -963,17 +1013,17 @@ private fun AppCopyCodeButton(
     val accent = if (copied) hextech.buff else MaterialTheme.colorScheme.secondary
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(10.dp),
-        color = accent.copy(alpha = if (copied) 0.22f else 0.14f),
-        border = BorderStroke(1.dp, accent.copy(alpha = if (copied) 0.95f else 0.65f)),
+        shape = RoundedCornerShape(12.dp),
+        color = accent.copy(alpha = if (copied) 0.28f else 0.18f),
+        border = BorderStroke(1.3.dp, accent.copy(alpha = if (copied) 0.95f else 0.75f)),
         modifier = modifier
-            .defaultMinSize(minWidth = 48.dp, minHeight = 36.dp)
+            .defaultMinSize(minWidth = 48.dp, minHeight = 40.dp)
             .testTag(testTag)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Icon(
                 imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
@@ -983,10 +1033,10 @@ private fun AppCopyCodeButton(
                     "Copy TFT Team Planner code for $compTitle"
                 },
                 tint = accent,
-                modifier = Modifier.size(15.dp)
+                modifier = Modifier.size(16.dp)
             )
             Text(
-                text = if (copied) "Copied" else "Copy Code",
+                text = if (copied) "Copied!" else "Copy Code",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 color = accent,
@@ -1093,6 +1143,7 @@ fun CompDetailSheetContent(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
                 onClick = onToggleFavorite,
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
@@ -1103,10 +1154,23 @@ fun CompDetailSheetContent(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(if (isFavorite) "Favorited" else "Save Favorite")
+                Text(if (isFavorite) "Favorited" else "Save Favorite", fontWeight = FontWeight.Bold)
             }
-            OutlinedButton(
+            FilledTonalButton(
                 onClick = onTogglePin,
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = if (isPinned) {
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.24f)
+                    } else {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    },
+                    contentColor = if (isPinned) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    }
+                ),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
@@ -1117,7 +1181,7 @@ fun CompDetailSheetContent(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(if (isPinned) "Pinned Overlay" else "Pin to Overlay")
+                Text(if (isPinned) "Pinned Overlay" else "Pin to Overlay", fontWeight = FontWeight.Bold)
             }
         }
 
@@ -1126,9 +1190,10 @@ fun CompDetailSheetContent(
             val accent = if (isCodeCopied) hextech.buff else MaterialTheme.colorScheme.secondary
             OutlinedButton(
                 onClick = onCopyCode,
-                border = BorderStroke(1.2.dp, accent.copy(alpha = 0.85f)),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.4.dp, accent.copy(alpha = 0.9f)),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = accent.copy(alpha = if (isCodeCopied) 0.22f else 0.12f),
+                    containerColor = accent.copy(alpha = if (isCodeCopied) 0.26f else 0.16f),
                     contentColor = accent
                 ),
                 modifier = Modifier
@@ -1176,7 +1241,7 @@ fun CompDetailSheetContent(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 comp.augmentPriorities.forEach { aug ->
-                    TftAugmentChip(augmentName = aug)
+                    TftAugmentChip(augmentName = aug, environment = comp.environment)
                 }
             }
         }
@@ -1406,6 +1471,7 @@ private fun TierSubHeaderCard(
                                     cost = 4,
                                     isCarry = false,
                                     size = 24.dp,
+                                    environment = environment,
                                     modifier = Modifier.offset(x = (idx * 15).dp)
                                 )
                             }

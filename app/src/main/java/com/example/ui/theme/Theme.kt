@@ -22,11 +22,11 @@ private val HextechDarkColorScheme = darkColorScheme(
     secondary = ArcaneCyan,
     onSecondary = DeepCyanOnSecondary,
     secondaryContainer = CyanContainerDark,
-    onSecondaryContainer = Color(0xFF7CF5EA),
+    onSecondaryContainer = Color(0xFF8FFBF0),
     tertiary = MythicViolet,
-    onTertiary = Color(0xFF140D2E),
+    onTertiary = Color(0xFF170B33),
     tertiaryContainer = VioletContainerDark,
-    onTertiaryContainer = Color(0xFFD5CAFF),
+    onTertiaryContainer = Color(0xFFE0D6FF),
     background = ObsidianVoid,
     onBackground = MistText,
     surface = DeepSlate,
@@ -34,24 +34,26 @@ private val HextechDarkColorScheme = darkColorScheme(
     surfaceVariant = SlateElevated,
     onSurfaceVariant = MutedSlateText,
     outline = SlateOutline,
-    outlineVariant = Color(0xFF1F293D),
+    outlineVariant = Color(0xFF233252),
     error = NerfCrimson,
-    onError = Color.White
+    onError = Color.White,
+    errorContainer = Color(0xFF4C141A),
+    onErrorContainer = Color(0xFFFFD6D9)
 )
 
 private val AlabasterLightColorScheme = lightColorScheme(
     primary = EngravedGold,
     onPrimary = Color.White,
     primaryContainer = EngravedGoldContainer,
-    onPrimaryContainer = Color(0xFF3E2A06),
+    onPrimaryContainer = Color(0xFF451A03),
     secondary = DeepArcaneTeal,
     onSecondary = Color.White,
     secondaryContainer = DeepTealContainer,
-    onSecondaryContainer = Color(0xFF003831),
-    tertiary = Color(0xFF5D46C6),
+    onSecondaryContainer = Color(0xFF042F2E),
+    tertiary = Color(0xFF6D28D9),
     onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFE7E2FF),
-    onTertiaryContainer = Color(0xFF1E1352),
+    tertiaryContainer = Color(0xFFEDE9FE),
+    onTertiaryContainer = Color(0xFF2E1065),
     background = AlabasterCanvas,
     onBackground = InkObsidian,
     surface = AlabasterSurface,
@@ -59,15 +61,17 @@ private val AlabasterLightColorScheme = lightColorScheme(
     surfaceVariant = AlabasterElevated,
     onSurfaceVariant = InkMuted,
     outline = AlabasterOutline,
-    outlineVariant = Color(0xFFE3DDD0),
-    error = Color(0xFFC0392B),
-    onError = Color.White
+    outlineVariant = Color(0xFFE2E8F0),
+    error = Color(0xFFDC2626),
+    onError = Color.White,
+    errorContainer = Color(0xFFFEE2E2),
+    onErrorContainer = Color(0xFF7F1D1D)
 )
 
 @Immutable
 data class HextechExtendedColors(
     val isDark: Boolean = true,
-    val goldBorder: Color = BrushedGold.copy(alpha = 0.45f),
+    val goldBorder: Color = BrushedGold.copy(alpha = 0.55f),
     val tierS: Color = TierSColor,
     val tierA: Color = TierAColor,
     val tierB: Color = TierBColor,
@@ -83,11 +87,11 @@ data class HextechExtendedColors(
 val LocalHextechColors = staticCompositionLocalOf { HextechExtendedColors() }
 
 private val HextechShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(14.dp),
-    large = RoundedCornerShape(18.dp),
-    extraLarge = RoundedCornerShape(24.dp)
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(26.dp)
 )
 
 @Composable
@@ -105,7 +109,7 @@ fun TacticiansForgeTheme(
     val extendedColors = if (useDark) {
         HextechExtendedColors(
             isDark = true,
-            goldBorder = BrushedGold.copy(alpha = 0.56f),
+            goldBorder = BrushedGold.copy(alpha = 0.62f),
             tierS = TierSColor,
             tierA = TierAColor,
             tierB = TierBColor,
@@ -120,9 +124,9 @@ fun TacticiansForgeTheme(
     } else {
         HextechExtendedColors(
             isDark = false,
-            goldBorder = EngravedGold.copy(alpha = 0.45f),
-            tierS = Color(0xFFC9870A),
-            tierA = Color(0xFF6B4FE0),
+            goldBorder = EngravedGold.copy(alpha = 0.55f),
+            tierS = Color(0xFFD97706),
+            tierA = Color(0xFF7C3AED),
             tierB = DeepArcaneTeal,
             tierC = Color(0xFF2563EB),
             tierX = Color(0xFFE11D48),

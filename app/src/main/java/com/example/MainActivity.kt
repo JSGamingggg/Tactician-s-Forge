@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.MilitaryTech
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -66,6 +67,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.Lifecycle
@@ -444,42 +446,54 @@ private fun AuthenticatedOrGuestWorkspace(
                 snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
                 bottomBar = {
                     if (!useNavRail) {
-                        NavigationBar(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 6.dp
-                        ) {
-                            val navItemColors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
-                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            HorizontalDivider(
+                                thickness = 1.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
                             )
-                            AppTab.entries.forEach { tab ->
-                                val selected = currentTab == tab
-                                NavigationBarItem(
-                                    selected = selected,
-                                    onClick = { currentTab = tab },
-                                    colors = navItemColors,
-                                    icon = {
-                                        val navIcon = if (selected) tab.selectedIcon else tab.unselectedIcon
-                                        if (tab == AppTab.ABOUT && hasPendingAppUpdate) {
-                                            BadgedBox(badge = { Badge() }) {
+                            NavigationBar(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 4.dp
+                            ) {
+                                val navItemColors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                AppTab.entries.forEach { tab ->
+                                    val selected = currentTab == tab
+                                    NavigationBarItem(
+                                        selected = selected,
+                                        onClick = { currentTab = tab },
+                                        colors = navItemColors,
+                                        icon = {
+                                            val navIcon = if (selected) tab.selectedIcon else tab.unselectedIcon
+                                            if (tab == AppTab.ABOUT && hasPendingAppUpdate) {
+                                                BadgedBox(badge = { Badge() }) {
+                                                    Icon(
+                                                        imageVector = navIcon,
+                                                        contentDescription = stringResource(tab.labelRes)
+                                                    )
+                                                }
+                                            } else {
                                                 Icon(
                                                     imageVector = navIcon,
                                                     contentDescription = stringResource(tab.labelRes)
                                                 )
                                             }
-                                        } else {
-                                            Icon(
-                                                imageVector = navIcon,
-                                                contentDescription = stringResource(tab.labelRes)
+                                        },
+                                        label = {
+                                            Text(
+                                                text = stringResource(tab.labelRes),
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                maxLines = 1
                                             )
-                                        }
-                                    },
-                                    label = { Text(stringResource(tab.labelRes), maxLines = 1) },
-                                    modifier = Modifier.testTag("nav_${tab.key}")
-                                )
+                                        },
+                                        modifier = Modifier.testTag("nav_${tab.key}")
+                                    )
+                                }
                             }
                         }
                     }
@@ -524,7 +538,13 @@ private fun AuthenticatedOrGuestWorkspace(
                                             )
                                         }
                                     },
-                                    label = { Text(stringResource(tab.labelRes), maxLines = 1) },
+                                    label = {
+                                        Text(
+                                            text = stringResource(tab.labelRes),
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1
+                                        )
+                                    },
                                     modifier = Modifier.testTag("nav_${tab.key}")
                                 )
                             }

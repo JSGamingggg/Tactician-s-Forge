@@ -1011,11 +1011,62 @@ private fun augmentVisual(name: String, tier: AugmentTier): Pair<ImageVector, Co
     return icon to color
 }
 
+private val REGEX_RIOT_SCALE_BLOCK = Regex("(?:%i:[^%]+%)+")
+private val REGEX_RIOT_SCALE_SINGLE = Regex("%i:([^%]+)%")
+private val REGEX_HTML_BR = Regex("<br\\s*/?>", RegexOption.IGNORE_CASE)
+private val REGEX_HTML_TAG = Regex("<[^>]+>")
+private val REGEX_AT_PLACEHOLDER = Regex("@[A-Za-z0-9_]+@")
+private val REGEX_MULTI_SPACE = Regex("[ \\t]{2,}")
+private val REGEX_PUNCT_SPACE = Regex("\\s+([.,;:])")
+
+/**
+ * Strips any raw Riot Data Dragon inline macros (%i:scaleAP%, @Gold@, HTML tags)
+ * so champion abilities, item tooltips, trait tooltips, and augment descriptions
+ * always render cleanly in the UI.
+ */
+fun sanitizeTftDescription(raw: String): String {
+    if (raw.isBlank()) return ""
+    var out = raw
+        .replace(REGEX_HTML_BR, "\n")
+        .replace(REGEX_HTML_TAG, "")
+    out = REGEX_RIOT_SCALE_BLOCK.replace(out) { match ->
+        val labels = REGEX_RIOT_SCALE_SINGLE.findAll(match.value).map { m ->
+            when (m.groupValues[1].lowercase()) {
+                "scalead" -> "AD"
+                "scaleap" -> "AP"
+                "scaleas" -> "Attack Speed"
+                "scalehealth" -> "Health"
+                "scalearmor" -> "Armor"
+                "scalemr" -> "Magic Resist"
+                "scaleda" -> "Damage Amp"
+                "scaledr" -> "Durability"
+                "scalesv" -> "Omnivamp"
+                "scalecrit" -> "Crit Chance"
+                "scalemana" -> "Mana"
+                "scalemanaregen", "tftmanaregen" -> "Mana Regen"
+                "scalerange" -> "Range"
+                else -> m.groupValues[1].removePrefix("scale").removePrefix("TFT").ifBlank { "Stat" }
+            }
+        }.distinct().toList()
+        if (labels.isEmpty()) "" else "(${labels.joinToString("/")})"
+    }
+    out = out
+        .replace(REGEX_AT_PLACEHOLDER, "")
+        .replace("((", "(")
+        .replace("))", ")")
+        .replace(" \\n \\n ", "\n")
+        .replace("\\n", "\n")
+        .replace(REGEX_MULTI_SPACE, " ")
+        .replace(REGEX_PUNCT_SPACE, "$1")
+    return out.trim()
+}
+
 @Composable
 fun TftAugmentIcon(
     augmentName: String,
     augmentTierOverride: AugmentTier? = null,
     size: Dp = 18.dp,
+    environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1023,18 +1074,20 @@ fun TftAugmentIcon(
     val cleanName = remember(augmentName, rev) { formatRiotAssetLabel(augmentName) }
     val augTier = remember(cleanName, augmentTierOverride) { augmentTierOverride ?: inferAugmentTier(cleanName) }
     val (fallbackIcon, tint) = remember(cleanName, augTier) { augmentVisual(cleanName, augTier) }
-    val iconUrl = remember(augmentName, TftAssetIconResolver.ddragonVersion, rev) {
-        TftAssetIconResolver.resolveAugmentIconUrl(augmentName)
+    val fallbackUrls = remember(augmentName, environment, TftAssetIconResolver.ddragonVersion, rev) {
+        TftAssetIconResolver.resolveAugmentIconFallbackUrls(augmentName, environment)
     }
     val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(36) }
-    var imageLoaded by remember(iconUrl) { mutableStateOf(false) }
+    var attemptIndex by remember(fallbackUrls) { mutableIntStateOf(0) }
+    val activeIconUrl = fallbackUrls.getOrNull(attemptIndex)
+    var imageLoaded by remember(activeIconUrl) { mutableStateOf(false) }
 
     Box(
         modifier = modifier
             .size(size)
-            .clip(RoundedCornerShape(5.dp))
-            .background(tint.copy(alpha = 0.20f))
-            .border(0.9.dp, tint.copy(alpha = 0.70f), RoundedCornerShape(5.dp)),
+            .clip(RoundedCornerShape(6.dp))
+            .background(tint.copy(alpha = 0.22f))
+            .border(1.dp, tint.copy(alpha = 0.72f), RoundedCornerShape(6.dp)),
         contentAlignment = Alignment.Center
     ) {
         if (!imageLoaded) {
@@ -1045,10 +1098,10 @@ fun TftAugmentIcon(
                 modifier = Modifier.size(size * 0.72f)
             )
         }
-        if (iconUrl != null) {
-            val request = remember(iconUrl, targetPx, context) {
+        if (activeIconUrl != null) {
+            val request = remember(activeIconUrl, targetPx, context) {
                 ImageRequest.Builder(context)
-                    .data(iconUrl)
+                    .data(activeIconUrl)
                     .size(targetPx)
                     .crossfade(false)
                     .build()
@@ -1058,10 +1111,15 @@ fun TftAugmentIcon(
                 contentDescription = "$cleanName (${augTier.label} augment)",
                 contentScale = ContentScale.Crop,
                 onSuccess = { imageLoaded = true },
-                onError = { imageLoaded = false },
+                onError = {
+                    imageLoaded = false
+                    if (attemptIndex + 1 < fallbackUrls.size) {
+                        attemptIndex += 1
+                    }
+                },
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(RoundedCornerShape(5.dp))
+                    .clip(RoundedCornerShape(6.dp))
             )
         }
     }
@@ -1072,6 +1130,7 @@ fun TftAugmentChip(
     augmentName: String,
     augmentTierOverride: AugmentTier? = null,
     compact: Boolean = false,
+    environment: TftEnvironment? = null,
     modifier: Modifier = Modifier
 ) {
     val rev = TftAssetIconResolver.catalogRevision
@@ -1080,9 +1139,9 @@ fun TftAugmentChip(
     val (_, tint) = remember(cleanName, augTier) { augmentVisual(cleanName, augTier) }
 
     Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = tint.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.50f)),
+        shape = RoundedCornerShape(9.dp),
+        color = tint.copy(alpha = 0.16f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.55f)),
         modifier = modifier
     ) {
         Row(
@@ -1096,7 +1155,8 @@ fun TftAugmentChip(
             TftAugmentIcon(
                 augmentName = augmentName,
                 augmentTierOverride = augTier,
-                size = if (compact) 15.dp else 20.dp
+                size = if (compact) 16.dp else 20.dp,
+                environment = environment
             )
             Text(
                 text = cleanName,
@@ -1109,7 +1169,7 @@ fun TftAugmentChip(
             if (!compact) {
                 Text(
                     text = augTier.label.uppercase(),
-                    fontSize = 9.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     color = tint
                 )
@@ -1134,14 +1194,14 @@ fun SplitCheckForUpdatesRow(
         FilledTonalButton(
             onClick = onCheckCompUpdates,
             enabled = !isRefreshingComps,
-            shape = RoundedCornerShape(12.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+            shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
             border = BorderStroke(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+                width = 1.2.dp,
+                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.65f)
             ),
             colors = ButtonDefaults.filledTonalButtonColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
                 contentColor = MaterialTheme.colorScheme.onSurface
             ),
             modifier = Modifier
@@ -1160,16 +1220,16 @@ fun SplitCheckForUpdatesRow(
                     imageVector = Icons.Default.Refresh,
                     contentDescription = stringResource(R.string.check_for_comp_updates),
                     tint = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(18.dp)
                 )
             }
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(7.dp))
             Text(
                 text = stringResource(
                     if (isRefreshingComps) R.string.checking_for_comp_updates else R.string.check_for_comp_updates
                 ),
                 style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 textAlign = TextAlign.Center,
                 overflow = TextOverflow.Ellipsis
@@ -1179,14 +1239,14 @@ fun SplitCheckForUpdatesRow(
         FilledTonalButton(
             onClick = onCheckAppUpdates,
             enabled = !isCheckingAppUpdate,
-            shape = RoundedCornerShape(12.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+            shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
             border = BorderStroke(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                width = 1.2.dp,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
             ),
             colors = ButtonDefaults.filledTonalButtonColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                 contentColor = MaterialTheme.colorScheme.onSurface
             ),
             modifier = Modifier
@@ -1205,16 +1265,16 @@ fun SplitCheckForUpdatesRow(
                     imageVector = Icons.Default.Download,
                     contentDescription = stringResource(R.string.check_for_app_updates),
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(18.dp)
                 )
             }
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(7.dp))
             Text(
                 text = stringResource(
                     if (isCheckingAppUpdate) R.string.checking_for_app_updates else R.string.check_for_app_updates
                 ),
                 style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 textAlign = TextAlign.Center,
                 overflow = TextOverflow.Ellipsis

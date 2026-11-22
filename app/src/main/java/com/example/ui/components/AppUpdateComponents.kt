@@ -30,7 +30,9 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -134,11 +136,12 @@ fun AppUpdateInAppBanner(
                                     onDownloadAndInstall(status.release)
                                 }
                             },
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .height(48.dp)
                                 .testTag("banner_update_now_button")
                         ) {
-                            Text("Update")
+                            Text("Update", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -225,11 +228,12 @@ fun AppUpdateInAppBanner(
                         }
                         Button(
                             onClick = onInstallReady,
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .height(48.dp)
                                 .testTag("banner_install_now_button")
                         ) {
-                            Text(if (status.needsInstallPermission) "Allow" else "Install")
+                            Text(if (status.needsInstallPermission) "Allow" else "Install", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -677,6 +681,7 @@ fun AppUpdateSettingsCard(
                             )
                             Button(
                                 onClick = { onDownloadAndInstall(status.release) },
+                                shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp)
@@ -688,14 +693,15 @@ fun AppUpdateSettingsCard(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(Modifier.width(6.dp))
-                                Text("Update In-App")
+                                Text("Update In-App", fontWeight = FontWeight.Bold)
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                OutlinedButton(
+                                FilledTonalButton(
                                     onClick = { onOpenGitHubUpdate(status.release) },
+                                    shape = RoundedCornerShape(14.dp),
                                     modifier = Modifier
                                         .weight(1f)
                                         .height(48.dp)
@@ -707,16 +713,17 @@ fun AppUpdateSettingsCard(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(Modifier.width(6.dp))
-                                    Text("GitHub Web")
+                                    Text("GitHub Web", fontWeight = FontWeight.Bold)
                                 }
-                                OutlinedButton(
+                                FilledTonalButton(
                                     onClick = onOpenPlayStore,
+                                    shape = RoundedCornerShape(14.dp),
                                     modifier = Modifier
                                         .weight(1f)
                                         .height(48.dp)
                                         .testTag("card_update_play_store_button")
                                 ) {
-                                    Text("Google Play")
+                                    Text("Google Play", fontWeight = FontWeight.Bold)
                                 }
                             }
                             TextButton(
@@ -876,20 +883,21 @@ fun AppUpdateSettingsCard(
             }
 
             if (!updateState.configuredRepo.isNullOrBlank()) {
-                OutlinedButton(
+                Button(
                     onClick = onCheckForUpdate,
                     enabled = updateState.status !is AppUpdateStatus.Checking &&
                         updateState.status !is AppUpdateStatus.Downloading,
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
                         .testTag("check_app_update_button")
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.check_for_app_updates))
+                    Text(stringResource(R.string.check_for_app_updates), fontWeight = FontWeight.Bold)
                 }
-                OutlinedButton(
+                FilledTonalButton(
                     onClick = {
                         val currentRelease = when (val st = updateState.status) {
                             is AppUpdateStatus.UpdateAvailable -> st.release
@@ -900,6 +908,11 @@ fun AppUpdateSettingsCard(
                         }
                         onOpenGitHubUpdate(currentRelease)
                     },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
@@ -908,10 +921,10 @@ fun AppUpdateSettingsCard(
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Open GitHub Releases")
+                    Text("Open GitHub Releases", fontWeight = FontWeight.Bold)
                 }
             }
         }

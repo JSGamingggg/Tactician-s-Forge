@@ -2890,7 +2890,7 @@ private fun OverlayCompLeftDetailPane(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         comp.augmentPriorities.forEach { aug ->
-                            TftAugmentChip(augmentName = aug, compact = true)
+                            TftAugmentChip(augmentName = aug, compact = true, environment = comp.environment)
                         }
                     }
                 }
@@ -3087,7 +3087,7 @@ private fun OverlayCompCard(
                                     verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     comp.augmentPriorities.take(3).forEach { aug ->
-                                        TftAugmentChip(augmentName = aug, compact = true)
+                                        TftAugmentChip(augmentName = aug, compact = true, environment = comp.environment)
                                     }
                                 }
                             }
@@ -3119,7 +3119,7 @@ private fun OverlayCompCard(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 comp.augmentPriorities.take(3).forEach { aug ->
-                                    TftAugmentChip(augmentName = aug, compact = true)
+                                    TftAugmentChip(augmentName = aug, compact = true, environment = comp.environment)
                                 }
                             }
                         }

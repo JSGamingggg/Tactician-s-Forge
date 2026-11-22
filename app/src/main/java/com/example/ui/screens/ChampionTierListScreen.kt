@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -357,15 +358,25 @@ fun ChampionTierListScreen(
 
         // Champions | Items | Augments Sub-tab Switcher
         item {
+            val segColors = SegmentedButtonDefaults.colors(
+                activeContainerColor = MaterialTheme.colorScheme.primary,
+                activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                activeBorderColor = MaterialTheme.colorScheme.primary,
+                inactiveContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                inactiveContentColor = MaterialTheme.colorScheme.onSurface,
+                inactiveBorderColor = MaterialTheme.colorScheme.outline
+            )
             SingleChoiceSegmentedButtonRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("tier_catalog_segmented_row")
             ) {
                 TierCatalogTab.entries.forEachIndexed { idx, tab ->
+                    val isSelected = activeSubTab == tab
                     SegmentedButton(
-                        selected = activeSubTab == tab,
+                        selected = isSelected,
                         onClick = { activeSubTab = tab },
+                        colors = segColors,
                         shape = SegmentedButtonDefaults.itemShape(
                             index = idx,
                             count = TierCatalogTab.entries.size
@@ -390,6 +401,7 @@ fun ChampionTierListScreen(
                         }
                         Text(
                             text = if (count > 0) "${tab.label} ($count)" else tab.label,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -904,7 +916,7 @@ private fun ChampionTierCard(
                                 if (champ.abilityDescription.isNotBlank()) {
                                     Text(
                                         text = champ.abilityDescription,
-                                        style = MaterialTheme.typography.bodySmall,
+                                        style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
@@ -950,14 +962,18 @@ private fun ChampionTierCard(
                     }
 
                     if (onChampionAvatarClick != null) {
-                        FilledTonalButton(
+                        Button(
                             onClick = onChampionAvatarClick,
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .minimumInteractiveComponentSize()
+                                .height(48.dp)
                                 .testTag("inspect_champ_${champ.id}")
                         ) {
-                            Text("View Full Stats, Optimal Items & Synergy Comps")
+                            Text(
+                                text = "View Full Stats, Optimal Items & Synergy Comps",
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -1041,7 +1057,7 @@ private fun ItemTierCard(
             }
             Text(
                 text = item.statsSummary,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
 
@@ -1167,6 +1183,7 @@ private fun AugmentTierCard(
                 TftAugmentChip(
                     augmentName = augment.name,
                     augmentTierOverride = augment.augmentTier,
+                    environment = augment.environment,
                     modifier = Modifier.weight(1f, fill = false)
                 )
                 Row(
@@ -1223,7 +1240,7 @@ private fun AugmentTierCard(
             }
             Text(
                 text = augment.description,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
 

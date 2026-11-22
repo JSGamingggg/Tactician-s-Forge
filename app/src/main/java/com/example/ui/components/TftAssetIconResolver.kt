@@ -45,6 +45,7 @@ object TftAssetIconResolver {
     private var pbeChampionImages: Map<String, String> = emptyMap()
     private var pbeTraitImages: Map<String, String> = emptyMap()
     private var pbeItemImages: Map<String, String> = emptyMap()
+    private var pbeAugmentImages: Map<String, String> = emptyMap()
     private var pbeChampionCosts: Map<String, Int> = emptyMap()
     private var pbeChampionTraits: Map<String, List<String>> = emptyMap()
 
@@ -99,9 +100,10 @@ object TftAssetIconResolver {
         championCosts: Map<String, Int>,
         championTraits: Map<String, List<String>>,
         traitIcons: Map<String, String>,
-        itemIcons: Map<String, String> = emptyMap()
+        itemIcons: Map<String, String> = emptyMap(),
+        augmentIcons: Map<String, String> = emptyMap()
     ) {
-        if (championIcons.isEmpty() && traitIcons.isEmpty() && itemIcons.isEmpty()) return
+        if (championIcons.isEmpty() && traitIcons.isEmpty() && itemIcons.isEmpty() && augmentIcons.isEmpty()) return
         val normChamps = HashMap<String, String>(championIcons.size * 2)
         championIcons.forEach { (k, v) ->
             if (v.isNotBlank()) normChamps[normalizeLookupKey(k)] = v
@@ -113,6 +115,10 @@ object TftAssetIconResolver {
         val normItems = HashMap<String, String>(itemIcons.size * 2)
         itemIcons.forEach { (k, v) ->
             if (v.isNotBlank()) normItems[normalizeLookupKey(k)] = v
+        }
+        val normAugments = HashMap<String, String>(augmentIcons.size * 2)
+        augmentIcons.forEach { (k, v) ->
+            if (v.isNotBlank()) normAugments[normalizeLookupKey(k)] = v
         }
         val normCosts = HashMap<String, Int>(championCosts.size * 2)
         championCosts.forEach { (k, v) ->
@@ -133,6 +139,10 @@ object TftAssetIconResolver {
         }
         if (normItems.isNotEmpty() && normItems != pbeItemImages) {
             pbeItemImages = normItems
+            changed = true
+        }
+        if (normAugments.isNotEmpty() && normAugments != pbeAugmentImages) {
+            pbeAugmentImages = normAugments
             changed = true
         }
         if (normCosts.isNotEmpty() && normCosts != pbeChampionCosts) {
@@ -584,7 +594,8 @@ object TftAssetIconResolver {
     fun resolveTraitDescription(traitNameOrId: String): String? {
         val clean = traitNameOrId.replace(REGEX_LEADING_COUNT, "").trim()
         val norm = normalizeLookupKey(clean)
-        return traitDescriptionCatalog[norm] ?: traitDescriptionCatalog[normalizeLookupKey(traitNameOrId)]
+        val raw = traitDescriptionCatalog[norm] ?: traitDescriptionCatalog[normalizeLookupKey(traitNameOrId)]
+        return raw?.let { sanitizeTftDescription(it) }?.takeIf { it.isNotBlank() }
     }
 
     fun resolveTraitIconUrl(traitNameOrId: String, environment: TftEnvironment? = null): String? {
@@ -808,9 +819,12 @@ object TftAssetIconResolver {
         return urls.toList()
     }
 
-    fun resolveAugmentIconUrl(nameOrId: String): String? {
+    fun resolveAugmentIconUrl(nameOrId: String, environment: TftEnvironment? = null): String? =
+        resolveAugmentIconFallbackUrls(nameOrId, environment).firstOrNull()
+
+    fun resolveAugmentIconFallbackUrls(nameOrId: String, environment: TftEnvironment? = null): List<String> {
         val raw = nameOrId.trim()
-        if (raw.isEmpty()) return null
+        if (raw.isEmpty()) return emptyList()
 
         val norm = normalizeLookupKey(raw)
         val cleanName = formatRiotAssetLabel(raw)
@@ -823,12 +837,13 @@ object TftAssetIconResolver {
         val strippedPlusNorm = strippedTierNorm
             .removeSuffix("plusplus")
             .removeSuffix("plus")
-        val candidateKeys = LinkedHashSet<String>(10).apply {
+        val candidateKeys = LinkedHashSet<String>(14).apply {
             if (norm.isNotEmpty()) add(norm)
             if (cleanNorm.isNotEmpty()) {
                 add(cleanNorm)
                 add("da$cleanNorm")
                 add("da18$cleanNorm")
+                add("da19$cleanNorm")
             }
             if (strippedTierNorm.isNotEmpty()) {
                 add(strippedTierNorm)
@@ -842,27 +857,57 @@ object TftAssetIconResolver {
             }
         }
 
-        // 1. Check dynamically fetched Riot tft-augments.json map (real non-missing icons)
-        for (k in candidateKeys) {
-            val dynamicPath = dynamicAugmentImages[k]
-            if (!dynamicPath.isNullOrBlank()) return toDdragonImgUrl(dynamicPath)
-        }
-
-        // 2. Check preloaded Set 18 exact DDragon/TFTAcademy 200-OK augment icon catalog
-        for (k in candidateKeys) {
-            val preloaded = preloadedAugmentImages[k]
-            if (!preloaded.isNullOrBlank()) return preloaded
-        }
-
-        // 3. Check evergreen / well-known Data Dragon augment filenames
-        for (k in candidateKeys) {
-            val staticFile = AUGMENT_FILENAME_MAP[k]
-            if (!staticFile.isNullOrBlank()) {
-                return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-augment/$staticFile"
+        val urls = LinkedHashSet<String>(6)
+        fun addUrl(url: String?) {
+            if (!url.isNullOrBlank() && url.startsWith("https://", ignoreCase = true)) {
+                urls.add(url)
             }
         }
 
-        return null
+        // 0. For PBE augments, check preloaded PBE Set 19 augment icon map first
+        if (environment == TftEnvironment.PBE) {
+            for (k in candidateKeys) {
+                addUrl(pbeAugmentImages[k])
+            }
+        }
+
+        // 1. Dynamically fetched Riot tft-augments.json map (real non-missing icons)
+        for (k in candidateKeys) {
+            dynamicAugmentImages[k]?.takeIf { it.isNotBlank() }?.let { addUrl(toDdragonImgUrl(it)) }
+        }
+
+        // 2. Preloaded Set 18 exact DDragon/TFTAcademy 200-OK augment icon catalog
+        for (k in candidateKeys) {
+            addUrl(preloadedAugmentImages[k])
+        }
+
+        // 3. Evergreen / well-known Data Dragon augment filenames
+        for (k in candidateKeys) {
+            AUGMENT_FILENAME_MAP[k]?.takeIf { it.isNotBlank() }?.let { staticFile ->
+                addUrl("https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-augment/$staticFile")
+            }
+        }
+
+        // 4. PBE fallback if environment wasn't PBE
+        if (environment != TftEnvironment.PBE) {
+            for (k in candidateKeys) {
+                addUrl(pbeAugmentImages[k])
+            }
+        }
+
+        // 5. Structured SunderArmor fallback for brand-new set augments
+        val pascal = cleanName
+            .replace("+", "")
+            .replace(REGEX_AUGMENT_TIER_SUFFIX, "")
+            .split(REGEX_NON_ALNUM)
+            .filter { it.isNotBlank() }
+            .joinToString("") { part -> part.replaceFirstChar { c -> c.uppercaseChar() } }
+        if (pascal.isNotBlank()) {
+            addUrl("https://sunderarmor.com/augments/$pascal.png")
+            addUrl("https://sunderarmor.com/augments/${pascal}2.png")
+        }
+
+        return urls.toList()
     }
 
     internal fun parseDdragonChampionJson(jsonText: String): Map<String, String> =

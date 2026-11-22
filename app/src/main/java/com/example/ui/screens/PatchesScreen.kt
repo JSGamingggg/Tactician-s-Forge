@@ -23,13 +23,13 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -144,7 +144,7 @@ fun PatchesScreen(
                             color = MaterialTheme.colorScheme.secondary
                         )
                     }
-                    OutlinedButton(
+                    Button(
                         onClick = {
                             onRefreshVersions()
                             PatchMonitorWorker.enqueueImmediateCheck(
@@ -154,6 +154,7 @@ fun PatchesScreen(
                             )
                         },
                         enabled = !isRefreshingVersions,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .height(48.dp)
                             .testTag("refresh_patches_button")
@@ -164,7 +165,7 @@ fun PatchesScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(Modifier.width(6.dp))
-                        Text("Sync")
+                        Text("Sync", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -287,14 +288,14 @@ internal fun PatchUpdateCard(
             )
             Text(
                 text = cleanHeadline,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             cleanHighlights.forEach { hl ->
                 Text(
                     text = "• $hl",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
@@ -356,7 +357,8 @@ internal fun PatchUpdateCard(
                                 change.category.contains("Augment", ignoreCase = true) -> {
                                     TftAugmentIcon(
                                         augmentName = change.targetName,
-                                        size = 22.dp
+                                        size = 22.dp,
+                                        environment = patch.environment
                                     )
                                 }
                             }
@@ -429,8 +431,9 @@ internal fun PatchUpdateCard(
                 }
 
                 if (patch.balanceChanges.size > maxInitialChanges) {
-                    TextButton(
+                    FilledTonalButton(
                         onClick = { showAllChanges = !showAllChanges },
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
@@ -443,7 +446,7 @@ internal fun PatchUpdateCard(
                                 "Show all ${patch.balanceChanges.size} changes"
                             },
                             style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }

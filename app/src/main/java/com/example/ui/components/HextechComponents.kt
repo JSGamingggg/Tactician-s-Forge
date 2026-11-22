@@ -87,9 +87,9 @@ fun EnvironmentToggleBar(
     )
 
     Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.78f)),
         modifier = modifier
     ) {
         BoxWithConstraints(
@@ -113,20 +113,20 @@ fun EnvironmentToggleBar(
                 modifier = Modifier
                     .offset(x = pillOffsetX)
                     .width(segmentWidth)
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .height(50.dp)
+                    .clip(RoundedCornerShape(12.dp))
                     .background(
                         Brush.horizontalGradient(
                             listOf(
-                                MaterialTheme.colorScheme.surface,
-                                activeAccent.copy(alpha = 0.18f)
+                                activeAccent.copy(alpha = if (hextech.isDark) 0.28f else 0.20f),
+                                MaterialTheme.colorScheme.surface
                             )
                         )
                     )
                     .border(
-                        width = 1.4.dp,
-                        color = activeAccent.copy(alpha = 0.85f),
-                        shape = RoundedCornerShape(10.dp)
+                        width = 1.6.dp,
+                        color = activeAccent.copy(alpha = 0.92f),
+                        shape = RoundedCornerShape(12.dp)
                     )
             )
 
@@ -150,8 +150,8 @@ fun EnvironmentToggleBar(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .height(50.dp)
+                            .clip(RoundedCornerShape(12.dp))
                             .clickable { onSelect(env) }
                             .testTag("env_toggle_${env.name.lowercase()}"),
                         contentAlignment = Alignment.Center
@@ -165,11 +165,11 @@ fun EnvironmentToggleBar(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(if (isSelected) 9.dp else 7.dp)
+                                    .size(if (isSelected) 10.dp else 7.dp)
                                     .clip(CircleShape)
-                                    .background(indicatorColor.copy(alpha = if (isSelected) 1f else 0.65f))
+                                    .background(indicatorColor.copy(alpha = if (isSelected) 1f else 0.6f))
                             )
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(8.dp))
                             Column(horizontalAlignment = Alignment.Start) {
                                 Text(
                                     text = env.label,
@@ -181,6 +181,7 @@ fun EnvironmentToggleBar(
                                     text = if (env == TftEnvironment.LIVE) liveLabel else pbeLabel,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = subtitleColor,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -205,23 +206,23 @@ fun TierBadge(tier: TierRank, modifier: Modifier = Modifier) {
     }
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(9.dp))
             .background(
                 Brush.linearGradient(
                     listOf(
-                        badgeColor.copy(alpha = 0.28f),
-                        badgeColor.copy(alpha = 0.12f)
+                        badgeColor.copy(alpha = 0.32f),
+                        badgeColor.copy(alpha = 0.14f)
                     )
                 )
             )
-            .border(1.1.dp, badgeColor.copy(alpha = 0.82f), RoundedCornerShape(8.dp))
+            .border(1.2.dp, badgeColor.copy(alpha = 0.88f), RoundedCornerShape(9.dp))
     ) {
         Text(
             text = "${tier.label}-TIER",
             style = MaterialTheme.typography.labelSmall,
             color = badgeColor,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            fontWeight = FontWeight.ExtraBold,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
         )
     }
 }
@@ -236,9 +237,9 @@ fun DeltaBadge(delta: DeltaType, modifier: Modifier = Modifier) {
         DeltaType.NEW -> hextech.pbeBadge
     }
     Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = color.copy(alpha = 0.18f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.7f)),
+        shape = RoundedCornerShape(7.dp),
+        color = color.copy(alpha = 0.22f),
+        border = BorderStroke(1.1.dp, color.copy(alpha = 0.78f)),
         modifier = modifier
     ) {
         Text(
@@ -246,7 +247,7 @@ fun DeltaBadge(delta: DeltaType, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.labelSmall,
             color = color,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
         )
     }
 }
@@ -261,41 +262,68 @@ fun HextechPanelCard(
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
     val outline = MaterialTheme.colorScheme.outline
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val elevatedTint = MaterialTheme.colorScheme.surfaceVariant
+    val isDark = LocalHextechColors.current.isDark
+
     val borderStroke = remember(accentBorder, primary, secondary, outline) {
         if (accentBorder) {
             BorderStroke(
-                width = 1.25.dp,
+                width = 1.35.dp,
                 brush = Brush.linearGradient(
                     listOf(
-                        primary.copy(alpha = 0.82f),
-                        secondary.copy(alpha = 0.55f)
+                        primary.copy(alpha = 0.88f),
+                        secondary.copy(alpha = 0.62f)
                     )
                 )
             )
         } else {
-            BorderStroke(1.dp, outline)
+            BorderStroke(1.dp, outline.copy(alpha = if (isDark) 0.72f else 0.85f))
         }
     }
+
+    val panelBackground = remember(surfaceColor, elevatedTint, isDark, accentBorder) {
+        if (isDark) {
+            Brush.verticalGradient(
+                listOf(
+                    elevatedTint.copy(alpha = if (accentBorder) 0.45f else 0.26f),
+                    surfaceColor
+                )
+            )
+        } else {
+            Brush.verticalGradient(
+                listOf(
+                    surfaceColor,
+                    elevatedTint.copy(alpha = if (accentBorder) 0.24f else 0.10f)
+                )
+            )
+        }
+    }
+
     if (onClick != null) {
         Surface(
             onClick = onClick,
             shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = if (accentBorder) 4.dp else 2.dp,
+            color = surfaceColor,
+            shadowElevation = if (isDark) 2.dp else 3.dp,
             border = borderStroke,
             modifier = modifier.fillMaxWidth()
         ) {
-            content()
+            Box(modifier = Modifier.background(panelBackground)) {
+                content()
+            }
         }
     } else {
         Surface(
             shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = if (accentBorder) 4.dp else 2.dp,
+            color = surfaceColor,
+            shadowElevation = if (isDark) 2.dp else 3.dp,
             border = borderStroke,
             modifier = modifier.fillMaxWidth()
         ) {
-            content()
+            Box(modifier = Modifier.background(panelBackground)) {
+                content()
+            }
         }
     }
 }

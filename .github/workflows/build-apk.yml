@@ -20,10 +20,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -117,7 +117,7 @@ jobs:
           echo "build_ts_ms=${BUILD_TS_MS}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '9.3.1'
 
@@ -144,7 +144,7 @@ jobs:
 
       - name: Upload Debug APK Artifact (if quota available)
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tacticians-forge-debug-apk
           path: app/build/outputs/apk/debug/*.apk
@@ -182,7 +182,7 @@ jobs:
       - name: Upload Release APK Artifact (if quota available)
         if: steps.release_build.outputs.built == 'true'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tacticians-forge-release-apk
           path: app/build/outputs/apk/release/*.apk
@@ -199,7 +199,7 @@ jobs:
 
       - name: Publish Latest APK to GitHub Releases
         if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-apk
           name: "Tactician's Forge v${{ steps.build_meta.outputs.version_name }}"
@@ -217,7 +217,7 @@ jobs:
 
       - name: Attach Release APK to Latest Release (when built)
         if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/v') && steps.release_build.outputs.built == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-apk
           overwrite_files: true
@@ -227,7 +227,7 @@ jobs:
 
       - name: Publish APK to GitHub Release on Tag
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           make_latest: true
           overwrite_files: true
@@ -243,7 +243,7 @@ jobs:
 
       - name: Attach Release APK to Tag Release (when built)
         if: startsWith(github.ref, 'refs/tags/v') && steps.release_build.outputs.built == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           overwrite_files: true
           fail_on_unmatched_files: true

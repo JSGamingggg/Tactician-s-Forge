@@ -296,7 +296,7 @@ fun resolveChampionDetailProfile(
         avgPlacement = resolvedAvgPlacement,
         top4Rate = resolvedTop4,
         abilityName = matchedChamp?.abilityName.orEmpty().trim(),
-        abilityDescription = matchedChamp?.abilityDescription.orEmpty().trim(),
+        abilityDescription = sanitizeTftDescription(matchedChamp?.abilityDescription.orEmpty()),
         patchDelta = matchedChamp?.patchDelta,
         patchNote = sanitizeExternalSourceMentions(matchedChamp?.patchNote.orEmpty()),
         optimalItems = resolvedOptimalItems,

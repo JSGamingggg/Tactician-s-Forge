@@ -4483,4 +4483,97 @@ class ExampleRobolectricTest {
         assertEquals(1, fetched.pbePatchRecords.count { it.id == "tftips_pbe_19_1_PBE" })
         assertEquals(fetched.pbePatchRecords.size, fetched.pbePatchRecords.map { it.id }.distinct().size)
     }
+
+    @Test
+    fun `preloaded live and pbe catalogs have clean names descriptions and resolved icons for all champions items and augments`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = OfflineMetaCacheStore(context)
+        val seeded = store.readOrSeedBundle()
+
+        val rawTokenPattern = Regex("%i:[^%]+%|@[A-Za-z0-9_.*]+@|<br\\s*/?>", RegexOption.IGNORE_CASE)
+
+        // LIVE Set 18 Champions
+        assertEquals(74, seeded.liveChampions.size)
+        seeded.liveChampions.forEach { champ ->
+            assertFalse("Raw token in LIVE champ ${champ.name}: ${champ.abilityDescription}", rawTokenPattern.containsMatchIn(champ.abilityDescription))
+            assertFalse("Raw ID in LIVE champ name: ${champ.name}", champ.name.startsWith("TFT_"))
+            assertNotNull(
+                "Missing icon for LIVE champ ${champ.name}",
+                com.example.ui.components.TftAssetIconResolver.resolveChampionIconUrl(champ.name, TftEnvironment.LIVE)
+            )
+        }
+
+        // PBE Set 19 Champions
+        assertEquals(94, seeded.pbeChampions.size)
+        seeded.pbeChampions.forEach { champ ->
+            assertFalse("Raw token in PBE champ ${champ.name}: ${champ.abilityDescription}", rawTokenPattern.containsMatchIn(champ.abilityDescription))
+            assertFalse("Raw ID in PBE champ name: ${champ.name}", champ.name.startsWith("TFT_"))
+            assertNotNull(
+                "Missing icon for PBE champ ${champ.name}",
+                com.example.ui.components.TftAssetIconResolver.resolveChampionIconUrl(champ.name, TftEnvironment.PBE)
+            )
+        }
+
+        // LIVE Set 18 Items
+        assertTrue(seeded.liveItems.size >= 140)
+        seeded.liveItems.forEach { item ->
+            assertFalse("Raw ID in LIVE item name: ${item.name}", item.name.startsWith("TFT_"))
+            assertFalse("Generic placeholder in LIVE item ${item.name}: ${item.statsSummary}", item.statsSummary.contains("Set 18 equipment item", ignoreCase = true))
+            assertFalse("Raw token in LIVE item ${item.name}: ${item.statsSummary}", rawTokenPattern.containsMatchIn(item.statsSummary))
+            assertNotNull(
+                "Missing icon for LIVE item ${item.name}",
+                com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl(item.name, TftEnvironment.LIVE)
+            )
+        }
+        val tacticiansCape = seeded.liveItems.firstOrNull { it.name == "Tactician's Cape" }
+        val tacticiansShield = seeded.liveItems.firstOrNull { it.name == "Tactician's Shield" }
+        assertNotNull("Tactician's Cape should be cleanly named", tacticiansCape)
+        assertNotNull("Tactician's Shield should be cleanly named", tacticiansShield)
+        assertTrue(seeded.liveItems.any { it.name == "Hand of Justice" })
+
+        // PBE Set 19 Items
+        assertTrue(seeded.pbeItems.size >= 80)
+        seeded.pbeItems.forEach { item ->
+            assertFalse("Raw ID in PBE item name: ${item.name}", item.name.startsWith("TFT_"))
+            assertFalse("Raw token in PBE item ${item.name}: ${item.statsSummary}", rawTokenPattern.containsMatchIn(item.statsSummary))
+            assertFalse("Lone dash in PBE item ${item.name}: ${item.statsSummary}", item.statsSummary.trim().endsWith("• -") || item.statsSummary.trim() == "-")
+            assertNotNull(
+                "Missing icon for PBE item ${item.name}",
+                com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl(item.name, TftEnvironment.PBE)
+            )
+        }
+
+        // LIVE Set 18 Augments
+        assertTrue(seeded.liveAugments.size >= 340)
+        seeded.liveAugments.forEach { aug ->
+            assertFalse("Raw token in LIVE augment name: ${aug.name}", rawTokenPattern.containsMatchIn(aug.name))
+            assertFalse("Raw token in LIVE augment desc ${aug.name}: ${aug.description}", rawTokenPattern.containsMatchIn(aug.description))
+            assertTrue(
+                "Missing icon fallback for LIVE augment ${aug.name}",
+                com.example.ui.components.TftAssetIconResolver.resolveAugmentIconFallbackUrls(aug.name, TftEnvironment.LIVE).isNotEmpty()
+            )
+        }
+        assertTrue(seeded.liveAugments.any { it.name == "Gold Windfall" })
+        assertTrue(com.example.ui.components.TftAssetIconResolver.resolveAugmentIconFallbackUrls("Stampede", TftEnvironment.LIVE).any { it.startsWith("https://") })
+
+        // PBE Set 19 Augments + Preloaded PBE Augment Icons
+        assertTrue(seeded.pbeAugments.size >= 240)
+        assertTrue("Expected >= 240 preloaded PBE augment icons, got ${seeded.pbeAugmentIcons.size}", seeded.pbeAugmentIcons.size >= 240)
+        seeded.pbeAugments.forEach { aug ->
+            assertFalse("Raw token in PBE augment name: ${aug.name}", rawTokenPattern.containsMatchIn(aug.name))
+            assertFalse("Raw token in PBE augment desc ${aug.name}: ${aug.description}", rawTokenPattern.containsMatchIn(aug.description))
+            val urls = com.example.ui.components.TftAssetIconResolver.resolveAugmentIconFallbackUrls(aug.name, TftEnvironment.PBE)
+            assertTrue("Missing icon fallback for PBE augment ${aug.name}", urls.any { it.startsWith("https://") })
+        }
+        assertTrue(
+            com.example.ui.components.TftAssetIconResolver.resolveAugmentIconFallbackUrls("Bonus Gift", TftEnvironment.PBE)
+                .any { it.startsWith("https://") }
+        )
+
+        // Runtime sanitizer converts Riot stat tokens into readable labels and strips raw placeholders
+        assertEquals(
+            "Deal 120 (AP) magic damage\nand gain 10 Gold.",
+            com.example.ui.components.sanitizeTftDescription("Deal 120 %i:scaleAP% magic damage<br>and gain @Gold@ 10 Gold.")
+        )
+    }
 }

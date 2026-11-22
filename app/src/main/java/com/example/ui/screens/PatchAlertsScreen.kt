@@ -35,7 +35,9 @@ import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -230,28 +232,31 @@ fun AboutScreen(
                 if (!hasNotifPerm) {
                     Button(
                         onClick = requestOrOpenNotificationSettings,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
                             .testTag("grant_notifications_button")
                     ) {
                         Text(
-                            if (deniedPromptOnce || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            text = if (deniedPromptOnce || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
                                 "Open Notification Settings"
                             } else {
                                 "Enable Notifications"
-                            }
+                            },
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 } else {
-                    OutlinedButton(
+                    FilledTonalButton(
                         onClick = openNotificationSettings,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
                             .testTag("manage_notifications_button")
                     ) {
-                        Text("Manage System Notification Settings")
+                        Text("Manage System Notification Settings", fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -280,7 +285,7 @@ fun AboutScreen(
                     onCheckedChange = { onUpdateAlertSettings(null, null, null, it) }
                 )
 
-                OutlinedButton(
+                FilledTonalButton(
                     onClick = {
                         if (!hasNotifPerm) {
                             requestOrOpenNotificationSettings()
@@ -307,6 +312,11 @@ fun AboutScreen(
                             )
                         }
                     },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
@@ -315,10 +325,10 @@ fun AboutScreen(
                     Icon(
                         Icons.AutoMirrored.Filled.Send,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("Send Test ${environment.label} Notification")
+                    Text("Send Test ${environment.label} Notification", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -344,7 +354,7 @@ fun AboutScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (!canDrawOverlay) {
-                    OutlinedButton(
+                    Button(
                         onClick = {
                             val intent = Intent(
                                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -352,22 +362,27 @@ fun AboutScreen(
                             )
                             context.startActivity(intent)
                         },
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
                             .testTag("grant_overlay_permission_button")
                     ) {
-                        Text("Grant 'Display Over Other Apps' Permission")
+                        Text("Grant 'Display Over Other Apps' Permission", fontWeight = FontWeight.Bold)
                     }
                 } else {
                     Button(
                         onClick = onToggleOverlay,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
                             .testTag("overlay_service_toggle_button")
                     ) {
-                        Text(if (isOverlayRunning) "Stop Live Match Overlay" else "Launch Floating Bubble Overlay")
+                        Text(
+                            text = if (isOverlayRunning) "Stop Live Match Overlay" else "Launch Floating Bubble Overlay",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -388,15 +403,28 @@ fun AboutScreen(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
+                val themeChipColors = FilterChipDefaults.filterChipColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                    labelColor = MaterialTheme.colorScheme.onSurface,
+                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     ThemeMode.entries.forEach { mode ->
+                        val isSelected = themeMode == mode
                         FilterChip(
-                            selected = themeMode == mode,
+                            selected = isSelected,
                             onClick = { onSetThemeMode(mode) },
-                            label = { Text(mode.label.substringBefore(" ")) },
+                            colors = themeChipColors,
+                            label = {
+                                Text(
+                                    text = mode.label.substringBefore(" "),
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -565,23 +593,25 @@ fun AboutScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        OutlinedButton(
+                        FilledTonalButton(
                             onClick = { showPrivacyDialog = true },
+                            shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(48.dp)
                                 .testTag("view_privacy_policy_button")
                         ) {
-                            Text(stringResource(R.string.view_privacy_policy))
+                            Text(stringResource(R.string.view_privacy_policy), fontWeight = FontWeight.Bold)
                         }
                         OutlinedButton(
                             onClick = { showClearLocalDialog = true },
+                            shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(48.dp)
                                 .testTag("clear_local_data_button")
                         ) {
-                            Text(stringResource(R.string.clear_local_data))
+                            Text(stringResource(R.string.clear_local_data), fontWeight = FontWeight.SemiBold)
                         }
                         if (currentUser != null) {
                             OutlinedButton(

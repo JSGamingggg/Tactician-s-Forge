@@ -13,37 +13,31 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.NewReleases
-import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.data.model.PatchUpdateRecord
 import com.example.data.model.TftEnvironment
-import com.example.ui.theme.ArcaneCyan
-import com.example.ui.theme.BrightGold
-import com.example.ui.theme.DeepSlate
-import com.example.ui.theme.PbePurple
+import com.example.ui.theme.LocalHextechColors
 
 @Composable
 fun PatchTierAlertBanner(
@@ -53,13 +47,16 @@ fun PatchTierAlertBanner(
     modifier: Modifier = Modifier
 ) {
     if (latestPatch == null) return
-    val envColor = if (environment == TftEnvironment.PBE) PbePurple else ArcaneCyan
+    val hextech = LocalHextechColors.current
+    val envColor = if (environment == TftEnvironment.PBE) hextech.pbeBadge else hextech.liveBadge
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val surfaceColor = MaterialTheme.colorScheme.surface
 
     Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = DeepSlate,
-        border = BorderStroke(1.5.dp, Brush.horizontalGradient(listOf(envColor, BrightGold))),
-        shadowElevation = 6.dp,
+        shape = RoundedCornerShape(16.dp),
+        color = surfaceColor,
+        border = BorderStroke(1.5.dp, Brush.horizontalGradient(listOf(envColor, primaryColor))),
+        shadowElevation = 4.dp,
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onOpenDetails)
@@ -70,12 +67,12 @@ fun PatchTierAlertBanner(
                 .fillMaxWidth()
                 .background(
                     Brush.verticalGradient(
-                        listOf(envColor.copy(alpha = 0.22f), DeepSlate)
+                        listOf(envColor.copy(alpha = 0.16f), surfaceColor)
                     )
                 )
                 .padding(14.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -87,11 +84,11 @@ fun PatchTierAlertBanner(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = envColor.copy(alpha = 0.3f),
+                            color = envColor.copy(alpha = 0.22f),
                             border = BorderStroke(1.dp, envColor)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -103,7 +100,7 @@ fun PatchTierAlertBanner(
                                 )
                                 Text(
                                     text = "${environment.label} ${latestPatch.version}",
-                                    fontSize = 11.sp,
+                                    style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = envColor
                                 )
@@ -112,39 +109,48 @@ fun PatchTierAlertBanner(
                         if (latestPatch.isMajorPatch) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = BrightGold.copy(alpha = 0.25f),
-                                border = BorderStroke(1.dp, BrightGold)
+                                color = primaryColor.copy(alpha = 0.20f),
+                                border = BorderStroke(1.dp, primaryColor)
                             ) {
                                 Text(
                                     text = "MAJOR PATCH",
-                                    fontSize = 9.sp,
+                                    style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = BrightGold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    color = primaryColor,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                                 )
                             }
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.TrendingUp,
-                            contentDescription = null,
-                            tint = BrightGold,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Text(
-                            text = "Patch Notes",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = BrightGold
-                        )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = primaryColor.copy(alpha = 0.16f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.TrendingUp,
+                                contentDescription = null,
+                                tint = primaryColor,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "Patch Notes",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = primaryColor
+                            )
+                        }
                     }
                 }
 
                 Text(
                     text = latestPatch.title.ifBlank { latestPatch.headline },
-                    style = MaterialTheme.typography.titleSmall,
-                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -153,8 +159,8 @@ fun PatchTierAlertBanner(
                 latestPatch.highlights.take(2).forEach { hl ->
                     Text(
                         text = "• $hl",
-                        fontSize = 11.sp,
-                        color = Color(0xFFC7D3EA),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -167,14 +173,14 @@ fun PatchTierAlertBanner(
                 ) {
                     Text(
                         text = "Tap to view all ${latestPatch.balanceChanges.size} patch changes →",
-                        fontSize = 10.sp,
-                        color = ArcaneCyan,
-                        fontWeight = FontWeight.Medium
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = latestPatch.releaseDate,
-                        fontSize = 9.sp,
-                        color = Color(0xFF93A1B8)
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -190,13 +196,21 @@ fun PatchTierDetailsDialog(
     if (patch == null) return
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = DeepSlate,
-        titleContentColor = Color.White,
-        textContentColor = Color(0xFFE3EBFA),
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = BrightGold)
-                Text(patch.title.ifBlank { "Patch ${patch.version} Changes" })
+                Icon(
+                    Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = patch.title.ifBlank { "Patch ${patch.version} Changes" },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
             }
         },
         text = {
@@ -210,23 +224,23 @@ fun PatchTierDetailsDialog(
             ) {
                 Text(
                     text = patch.headline,
-                    fontSize = 13.sp,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
-                    color = ArcaneCyan
+                    color = MaterialTheme.colorScheme.secondary
                 )
 
                 if (patch.highlights.isNotEmpty()) {
                     Text(
                         text = "Summary by Category:",
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = BrightGold
+                        color = MaterialTheme.colorScheme.primary
                     )
                     patch.highlights.forEach { h ->
                         Text(
                             text = "• $h",
-                            fontSize = 11.sp,
-                            color = Color(0xFFE3EBFA)
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -235,9 +249,9 @@ fun PatchTierDetailsDialog(
                     Spacer(Modifier.height(4.dp))
                     Text(
                         text = "All Patch Balance Changes (${patch.balanceChanges.size}):",
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = BrightGold
+                        color = MaterialTheme.colorScheme.primary
                     )
                     patch.balanceChanges.forEach { bc ->
                         val prev = bc.previousValue.replace(Regex("\\s+"), " ").trim()
@@ -270,9 +284,9 @@ fun PatchTierDetailsDialog(
                                 ) {
                                     Text(
                                         text = "${bc.targetName} (${bc.category})",
-                                        fontSize = 11.sp,
+                                        style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color.White,
+                                        color = MaterialTheme.colorScheme.onSurface,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f)
@@ -280,21 +294,21 @@ fun PatchTierDetailsDialog(
                                     if (showInlineDiff) {
                                         Text(
                                             text = diffText,
-                                            fontSize = 10.sp,
+                                            style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = BrightGold,
+                                            color = MaterialTheme.colorScheme.primary,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.widthIn(max = 116.dp)
+                                            modifier = Modifier.widthIn(max = 124.dp)
                                         )
                                     }
                                 }
                                 if (diffText.isNotBlank() && !showInlineDiff) {
                                     Text(
                                         text = diffText,
-                                        fontSize = 10.sp,
+                                        style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = BrightGold,
+                                        color = MaterialTheme.colorScheme.primary,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -302,8 +316,8 @@ fun PatchTierDetailsDialog(
                                 if (cleanSummary.isNotBlank()) {
                                     Text(
                                         text = cleanSummary,
-                                        fontSize = 10.sp,
-                                        color = Color(0xFFC7D3EA),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 3,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -315,8 +329,11 @@ fun PatchTierDetailsDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Got It", color = ArcaneCyan, fontWeight = FontWeight.Bold)
+            Button(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Got It", fontWeight = FontWeight.Bold)
             }
         }
     )

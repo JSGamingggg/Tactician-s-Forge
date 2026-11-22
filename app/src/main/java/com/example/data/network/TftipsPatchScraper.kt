@@ -51,8 +51,15 @@ class TftipsPatchScraper(
             }
         }
 
-        val combined = (enrichedRecords + parsedFromJson)
-            .distinctBy { "${it.environment.name}_${it.version.uppercase()}" }
+        val seenIds = HashSet<String>()
+        val seenNormVersions = HashSet<String>()
+        val combined = (enrichedRecords + parsedFromJson).filter { rec ->
+            val normId = rec.id.trim().lowercase()
+            val normVer = "${rec.environment.name}_${rec.version.lowercase().replace(Regex("[^a-z0-9]"), "")}"
+            val idAdded = normId.isEmpty() || seenIds.add(normId)
+            val verAdded = seenNormVersions.add(normVer)
+            idAdded && verAdded
+        }
 
         val livePatches = combined.filter { it.environment == TftEnvironment.LIVE }
         val pbePatches = combined.filter { it.environment == TftEnvironment.PBE }
@@ -128,7 +135,12 @@ class TftipsPatchScraper(
                     val verInText = PATCH_VERSION_REGEX.find("$anchorText $slug")?.value
                     val targetSet = SET_TRANSITION_REGEX.find(anchorText)?.groupValues?.getOrNull(2)
                     when {
-                        verInText != null -> if (verInText.contains("PBE", ignoreCase = true)) verInText else "$verInText-PBE"
+                        verInText != null -> {
+                            val normalizedPbeVer = verInText
+                                .replace(Regex("""[\s/(]+PBE\)?$""", RegexOption.IGNORE_CASE), "-PBE")
+                                .replace(Regex("""\s+"""), "")
+                            if (normalizedPbeVer.contains("PBE", ignoreCase = true)) normalizedPbeVer else "$normalizedPbeVer-PBE"
+                        }
                         targetSet != null -> "$targetSet.1-PBE"
                         else -> "19.1-PBE"
                     }
@@ -294,38 +306,44 @@ class TftipsPatchScraper(
                 val detail = detailMap[entry.targetName.lowercase()]
                 if (detail != null) {
                     entry.copy(
-                        summary = detail.summary.ifBlank { entry.summary },
-                        previousValue = detail.previousValue,
-                        newValue = detail.newValue,
+                        summary = cleanText(detail.summary).ifBlank { cleanText(entry.summary) },
+                        previousValue = sanitizeCompactStatValue(detail.previousValue),
+                        newValue = sanitizeCompactStatValue(detail.newValue),
                         deltaType = detail.deltaType ?: entry.deltaType
                     )
                 } else {
-                    entry
+                    entry.copy(
+                        summary = cleanText(entry.summary),
+                        previousValue = sanitizeCompactStatValue(entry.previousValue),
+                        newValue = sanitizeCompactStatValue(entry.newValue)
+                    )
                 }
             }
         } else {
             detailMap.values.mapIndexed { idx, d ->
                 BalanceChangeEntry(
                     id = "tftips_bc_${baseRecord.environment.name.lowercase()}_${resolvedVersion.replace(Regex("[^a-zA-Z0-9]"), "_")}_${idx + 1}",
-                    targetName = d.targetName,
+                    targetName = cleanText(d.targetName),
                     category = d.category,
                     deltaType = d.deltaType ?: DeltaType.ADJUST,
-                    summary = d.summary,
-                    previousValue = d.previousValue,
-                    newValue = d.newValue
+                    summary = cleanText(d.summary),
+                    previousValue = sanitizeCompactStatValue(d.previousValue),
+                    newValue = sanitizeCompactStatValue(d.newValue)
                 )
             }
-        }
+        }.distinctBy { "${it.targetName.lowercase()}|${it.category.lowercase()}" }
 
         return baseRecord.copy(
             id = "tftips_${baseRecord.environment.name.lowercase()}_${resolvedVersion.replace(Regex("[^a-zA-Z0-9]"), "_")}",
             version = resolvedVersion,
-            title = resolvedTitle,
+            title = cleanText(resolvedTitle),
+            headline = cleanText(baseRecord.headline),
+            highlights = baseRecord.highlights.map(::cleanText).filter { it.isNotBlank() },
             balanceChanges = updatedChanges
         )
     }
 
-    private data class ParsedTargetDetail(
+    internal data class ParsedTargetDetail(
         val targetName: String,
         val category: String,
         val deltaType: DeltaType?,
@@ -334,7 +352,7 @@ class TftipsPatchScraper(
         val newValue: String
     )
 
-    private fun parseDetailTargetChanges(detailHtml: String): Map<String, ParsedTargetDetail> {
+    internal fun parseDetailTargetChanges(detailHtml: String): Map<String, ParsedTargetDetail> {
         val result = LinkedHashMap<String, ParsedTargetDetail>()
 
         // 1. Parse rendered HTML <h2> sections (Buffs, Nerfs, Modified, Adjustments) and <h3> target blocks
@@ -438,13 +456,16 @@ class TftipsPatchScraper(
         val summary = bestLines.take(2).joinToString(" | ").take(130)
             .ifBlank { "Balance adjustment in latest patch" }
 
+        val compactOld = sanitizeCompactStatValue(firstOld.ifBlank { delVal })
+        val compactNew = sanitizeCompactStatValue(firstNew.ifBlank { insVal })
+
         return ParsedTargetDetail(
             targetName = targetName,
             category = detectCategoryFromHtml(blockHtml),
             deltaType = deltaType,
             summary = summary,
-            previousValue = firstOld.ifBlank { delVal },
-            newValue = firstNew.ifBlank { insVal }
+            previousValue = compactOld,
+            newValue = compactNew
         )
     }
 
@@ -493,9 +514,9 @@ class TftipsPatchScraper(
             targetName = targetName,
             category = detectCategoryFromHtml(snippet),
             deltaType = null,
-            summary = summary.take(130),
-            previousValue = oldVal,
-            newValue = newVal.ifBlank { insVal }
+            summary = cleanText(summary).take(130),
+            previousValue = sanitizeCompactStatValue(oldVal),
+            newValue = sanitizeCompactStatValue(newVal.ifBlank { insVal })
         )
     }
 
@@ -689,6 +710,20 @@ class TftipsPatchScraper(
         return unescapeHtml(raw.replace(HTML_TAG_REGEX, " "))
             .replace(WHITESPACE_REGEX, " ")
             .trim()
+    }
+
+    /**
+     * Keeps only short numeric/stat diff tokens (e.g. "280/420/650", "1.5s", "35%")
+     * for inline stat pills. Full multi-word PBE <ins>/<del> descriptions remain in
+     * `summary` so they never stretch patch rows or create vertical blank gaps.
+     */
+    private fun sanitizeCompactStatValue(raw: String): String {
+        val cleaned = cleanText(raw)
+        if (cleaned.isBlank()) return ""
+        if (cleaned.length > 28) return ""
+        val words = cleaned.split(' ').count { it.isNotBlank() }
+        if (words > 4) return ""
+        return cleaned
     }
 
     companion object {

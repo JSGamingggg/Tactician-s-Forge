@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Confine FileProvider strictly to the app's private update cache directory -->
+    <cache-path
+        name="app_updates"
+        path="app_updates/" />
+</paths>

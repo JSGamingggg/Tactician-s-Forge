@@ -23,7 +23,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
@@ -31,6 +33,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -63,11 +66,15 @@ import kotlinx.coroutines.launch
 fun AppUpdateInAppBanner(
     updateState: AppUpdateUiState,
     onOpenDetails: () -> Unit,
+    onDownloadAndInstall: (GitHubReleaseInfo) -> Unit,
+    onInstallReady: () -> Unit,
     onOpenStoreUpdate: (GitHubReleaseInfo) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val status = updateState.status
-    val visible = status is AppUpdateStatus.UpdateAvailable
+    val visible = status is AppUpdateStatus.UpdateAvailable ||
+        status is AppUpdateStatus.Downloading ||
+        status is AppUpdateStatus.ReadyToInstall
 
     AnimatedVisibility(
         visible = visible,
@@ -75,7 +82,6 @@ fun AppUpdateInAppBanner(
         exit = fadeOut() + shrinkVertically(),
         modifier = modifier
     ) {
-        val availableStatus = status as? AppUpdateStatus.UpdateAvailable ?: return@AnimatedVisibility
         Surface(
             onClick = onOpenDetails,
             shape = RoundedCornerShape(14.dp),
@@ -86,46 +92,149 @@ fun AppUpdateInAppBanner(
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 .testTag("in_app_update_banner")
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.SystemUpdate,
-                    contentDescription = "App update available",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Update Available • ${availableStatus.release.displayVersionLabel}",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = if (updateState.installedFromGooglePlay) {
-                            "Update via Google Play or tap for GitHub Releases."
+            when (status) {
+                is AppUpdateStatus.UpdateAvailable -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = "App update available",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Update Available • ${status.release.displayVersionLabel}",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = if (updateState.installedFromGooglePlay) {
+                                    "Update via Google Play or install directly in-app."
+                                } else {
+                                    "Download & install directly in-app or open GitHub."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                if (updateState.installedFromGooglePlay) {
+                                    onOpenStoreUpdate(status.release)
+                                } else {
+                                    onDownloadAndInstall(status.release)
+                                }
+                            },
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("banner_update_now_button")
+                        ) {
+                            Text("Update")
+                        }
+                    }
+                }
+
+                is AppUpdateStatus.Downloading -> {
+                    val pct = (status.progress * 100f).toInt().coerceIn(0, 100)
+                    val downloadedLabel = AppUpdateCoordinator.formatMegabytes(status.bytesDownloaded)
+                    val totalLabel = AppUpdateCoordinator.formatMegabytes(status.totalBytes)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = "Downloading update",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Downloading ${status.release.displayVersionLabel} • $pct%",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (downloadedLabel.isNotBlank() && totalLabel.isNotBlank()) {
+                                Text(
+                                    text = "$downloadedLabel / $totalLabel",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                                )
+                            }
+                        }
+                        if (status.totalBytes > 0L) {
+                            LinearProgressIndicator(
+                                progress = { status.progress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         } else {
-                            "Update via GitHub Releases or tap for Google Play."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                    }
                 }
-                Button(
-                    onClick = { onOpenStoreUpdate(availableStatus.release) },
-                    modifier = Modifier
-                        .height(48.dp)
-                        .testTag("banner_update_now_button")
-                ) {
-                    Text(if (updateState.installedFromGooglePlay) "Update" else "GitHub")
+
+                is AppUpdateStatus.ReadyToInstall -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.InstallMobile,
+                            contentDescription = "Update ready to install",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Ready to Install • ${status.release.displayVersionLabel}",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = if (status.needsInstallPermission) {
+                                    "Allow install permission to finish updating."
+                                } else {
+                                    "APK verified — tap Install to update in-app."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Button(
+                            onClick = onInstallReady,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("banner_install_now_button")
+                        ) {
+                            Text(if (status.needsInstallPermission) "Allow" else "Install")
+                        }
+                    }
                 }
+
+                else -> Unit
             }
         }
     }
@@ -135,6 +244,8 @@ fun AppUpdateInAppBanner(
 fun AppUpdatePromptDialog(
     updateState: AppUpdateUiState,
     onDismissLater: () -> Unit,
+    onDownloadAndInstall: (GitHubReleaseInfo) -> Unit,
+    onInstallReady: () -> Unit,
     onOpenPlayStore: () -> Unit,
     onOpenGitHubUpdate: (GitHubReleaseInfo) -> Unit
 ) {
@@ -143,24 +254,39 @@ fun AppUpdatePromptDialog(
     val status = updateState.status
     val release = when (status) {
         is AppUpdateStatus.UpdateAvailable -> status.release
+        is AppUpdateStatus.Downloading -> status.release
+        is AppUpdateStatus.ReadyToInstall -> status.release
         is AppUpdateStatus.Error -> status.release
         else -> null
     } ?: return
 
     val fromPlay = updateState.installedFromGooglePlay
+    val apkSizeLabel = AppUpdateCoordinator.formatMegabytes(release.apkSizeBytes)
 
     AlertDialog(
-        onDismissRequest = onDismissLater,
+        onDismissRequest = {
+            if (status !is AppUpdateStatus.Downloading) {
+                onDismissLater()
+            }
+        },
         icon = {
             Icon(
-                imageVector = Icons.Default.SystemUpdate,
+                imageVector = when (status) {
+                    is AppUpdateStatus.Downloading -> Icons.Default.Download
+                    is AppUpdateStatus.ReadyToInstall -> Icons.Default.InstallMobile
+                    else -> Icons.Default.SystemUpdate
+                },
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary
             )
         },
         title = {
             Text(
-                text = "App Update Available",
+                text = when (status) {
+                    is AppUpdateStatus.Downloading -> "Downloading Update"
+                    is AppUpdateStatus.ReadyToInstall -> "Ready to Install"
+                    else -> "App Update Available"
+                },
                 style = MaterialTheme.typography.titleLarge
             )
         },
@@ -168,7 +294,7 @@ fun AppUpdatePromptDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 320.dp)
+                    .heightIn(max = 340.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -183,8 +309,9 @@ fun AppUpdatePromptDialog(
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        val sizeSuffix = if (apkSizeLabel.isNotBlank()) " • $apkSizeLabel" else ""
                         Text(
-                            text = release.displayVersionLabel,
+                            text = "${release.displayVersionLabel}$sizeSuffix",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold
@@ -195,9 +322,57 @@ fun AppUpdatePromptDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Update via Google Play Store or GitHub Releases — your saved comps, favorites, and overlay settings stay intact.",
+                            text = "Install directly in-app from GitHub Releases or open in your browser — your saved comps, favorites, and overlay settings stay intact.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                if (status is AppUpdateStatus.Downloading) {
+                    val pct = (status.progress * 100f).toInt().coerceIn(0, 100)
+                    val dlLabel = AppUpdateCoordinator.formatMegabytes(status.bytesDownloaded)
+                    val totLabel = AppUpdateCoordinator.formatMegabytes(status.totalBytes)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = if (dlLabel.isNotBlank() && totLabel.isNotBlank()) {
+                                "Downloading APK… $pct% ($dlLabel / $totLabel)"
+                            } else {
+                                "Downloading APK… $pct%"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (status.totalBytes > 0L) {
+                            LinearProgressIndicator(
+                                progress = { status.progress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+
+                if (status is AppUpdateStatus.ReadyToInstall) {
+                    if (status.signatureMismatchDetected) {
+                        Text(
+                            text = "Note: This APK uses a different signing key than the currently installed build. Android may require uninstalling the current build first.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else if (status.needsInstallPermission) {
+                        Text(
+                            text = "Download complete! Tap Allow & Install to grant Android permission to install updates from TFT's Helper.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    } else {
+                        Text(
+                            text = "Download complete and verified! Tap Install Update to launch Android's package installer.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
                         )
                     }
                 }
@@ -220,36 +395,65 @@ fun AppUpdatePromptDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (fromPlay) onOpenPlayStore() else onOpenGitHubUpdate(release)
-                },
-                modifier = Modifier.testTag("dialog_update_now_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(if (fromPlay) "Google Play" else "GitHub Release")
+            when (status) {
+                is AppUpdateStatus.Downloading -> {
+                    Button(
+                        onClick = {},
+                        enabled = false,
+                        modifier = Modifier.testTag("dialog_update_downloading_button")
+                    ) {
+                        Text("Downloading…")
+                    }
+                }
+
+                is AppUpdateStatus.ReadyToInstall -> {
+                    Button(
+                        onClick = onInstallReady,
+                        modifier = Modifier.testTag("dialog_install_now_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.InstallMobile,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (status.needsInstallPermission) "Allow & Install" else "Install Update")
+                    }
+                }
+
+                else -> {
+                    Button(
+                        onClick = {
+                            if (fromPlay) onOpenPlayStore() else onDownloadAndInstall(release)
+                        },
+                        modifier = Modifier.testTag("dialog_update_now_button")
+                    ) {
+                        Icon(
+                            imageVector = if (fromPlay) Icons.AutoMirrored.Filled.OpenInNew else Icons.Default.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (fromPlay) "Google Play" else "Download & Install")
+                    }
+                }
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(
-                    onClick = {
-                        if (fromPlay) onOpenGitHubUpdate(release) else onOpenPlayStore()
-                    },
+                    onClick = { onOpenGitHubUpdate(release) },
                     modifier = Modifier.testTag("dialog_update_alt_source_button")
                 ) {
-                    Text(if (fromPlay) "GitHub" else "Google Play")
+                    Text("GitHub Web")
                 }
-                TextButton(
-                    onClick = onDismissLater,
-                    modifier = Modifier.testTag("dialog_update_later_button")
-                ) {
-                    Text("Later")
+                if (status !is AppUpdateStatus.Downloading) {
+                    TextButton(
+                        onClick = onDismissLater,
+                        modifier = Modifier.testTag("dialog_update_later_button")
+                    ) {
+                        Text("Later")
+                    }
                 }
             }
         }
@@ -262,6 +466,9 @@ fun AppUpdateSettingsCard(
     onCheckForUpdate: () -> Unit,
     onSaveGithubRepo: (String) -> Unit,
     onToggleUpdateAlerts: (Boolean) -> Unit,
+    onDownloadAndInstall: (GitHubReleaseInfo) -> Unit,
+    onInstallReady: () -> Unit,
+    onOpenInstallPermission: () -> Unit,
     onOpenPlayStore: () -> Unit,
     onOpenGitHubUpdate: (GitHubReleaseInfo?) -> Unit,
     onOpenUpdateDialog: () -> Unit,
@@ -385,7 +592,7 @@ fun AppUpdateSettingsCard(
                 }
             } else {
                 Text(
-                    text = "Source: github.com/${updateState.configuredRepo}/releases • Auto-checks on open (Comp updates remain manual)",
+                    text = "Source: github.com/${updateState.configuredRepo}/releases • In-app APK updater & GitHub Web",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -449,6 +656,8 @@ fun AppUpdateSettingsCard(
                 }
 
                 is AppUpdateStatus.UpdateAvailable -> {
+                    val sizeLabel = AppUpdateCoordinator.formatMegabytes(status.release.apkSizeBytes)
+                    val sizeSuffix = if (sizeLabel.isNotBlank()) " • $sizeLabel" else ""
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
@@ -461,16 +670,31 @@ fun AppUpdateSettingsCard(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "New Version Available: ${status.release.displayVersionLabel}",
+                                text = "New Version Available: ${status.release.displayVersionLabel}$sizeSuffix",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Bold
                             )
+                            Button(
+                                onClick = { onDownloadAndInstall(status.release) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("card_update_in_app_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Update In-App")
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Button(
+                                OutlinedButton(
                                     onClick = { onOpenGitHubUpdate(status.release) },
                                     modifier = Modifier
                                         .weight(1f)
@@ -483,7 +707,7 @@ fun AppUpdateSettingsCard(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(Modifier.width(6.dp))
-                                    Text("GitHub")
+                                    Text("GitHub Web")
                                 }
                                 OutlinedButton(
                                     onClick = onOpenPlayStore,
@@ -505,6 +729,105 @@ fun AppUpdateSettingsCard(
                     }
                 }
 
+                is AppUpdateStatus.Downloading -> {
+                    val pct = (status.progress * 100f).toInt().coerceIn(0, 100)
+                    val dlLabel = AppUpdateCoordinator.formatMegabytes(status.bytesDownloaded)
+                    val totLabel = AppUpdateCoordinator.formatMegabytes(status.totalBytes)
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Downloading ${status.release.displayVersionLabel} • $pct%",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (status.totalBytes > 0L) {
+                                LinearProgressIndicator(
+                                    progress = { status.progress.coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            } else {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+                            if (dlLabel.isNotBlank() && totLabel.isNotBlank()) {
+                                Text(
+                                    text = "$dlLabel / $totLabel",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is AppUpdateStatus.ReadyToInstall -> {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Ready to Install: ${status.release.displayVersionLabel}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (status.signatureMismatchDetected) {
+                                Text(
+                                    text = "Signing key differs from the current install; Android may ask to uninstall first.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = onInstallReady,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("card_install_ready_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.InstallMobile,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (status.needsInstallPermission) "Allow & Install" else "Install Update")
+                                }
+                                if (status.needsInstallPermission) {
+                                    OutlinedButton(
+                                        onClick = onOpenInstallPermission,
+                                        modifier = Modifier
+                                            .height(48.dp)
+                                            .testTag("card_open_install_permission_button")
+                                    ) {
+                                        Text("Settings")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 is AppUpdateStatus.Error -> {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -512,6 +835,19 @@ fun AppUpdateSettingsCard(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
+                        if (status.release != null) {
+                            Button(
+                                onClick = { onDownloadAndInstall(status.release) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("card_retry_in_app_update_button")
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Retry In-App Update")
+                            }
+                        }
                         if (status.needsTokenOrPublicRepo && !editingRepo) {
                             Button(
                                 onClick = { editingRepo = true },
@@ -542,7 +878,8 @@ fun AppUpdateSettingsCard(
             if (!updateState.configuredRepo.isNullOrBlank()) {
                 OutlinedButton(
                     onClick = onCheckForUpdate,
-                    enabled = updateState.status !is AppUpdateStatus.Checking,
+                    enabled = updateState.status !is AppUpdateStatus.Checking &&
+                        updateState.status !is AppUpdateStatus.Downloading,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
@@ -554,7 +891,13 @@ fun AppUpdateSettingsCard(
                 }
                 OutlinedButton(
                     onClick = {
-                        val currentRelease = (updateState.status as? AppUpdateStatus.UpdateAvailable)?.release
+                        val currentRelease = when (val st = updateState.status) {
+                            is AppUpdateStatus.UpdateAvailable -> st.release
+                            is AppUpdateStatus.Downloading -> st.release
+                            is AppUpdateStatus.ReadyToInstall -> st.release
+                            is AppUpdateStatus.Error -> st.release
+                            else -> null
+                        }
                         onOpenGitHubUpdate(currentRelease)
                     },
                     modifier = Modifier

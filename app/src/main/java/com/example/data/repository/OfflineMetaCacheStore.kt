@@ -91,7 +91,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 23
+        const val CURRENT_CACHE_VERSION = 24
     }
 }
 
@@ -181,12 +181,14 @@ class OfflineMetaCacheStore(context: Context) {
                 ) {
                     val cleanLive = parsed.liveComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
                     val cleanPbe = parsed.pbeComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
-                    val cleanLivePatches = parsed.livePatches.filter {
-                        it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true)
-                    }.ifEmpty { MetaCatalogData.livePatches }
-                    val cleanPbePatches = parsed.pbePatches.filter {
-                        it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true)
-                    }.ifEmpty { MetaCatalogData.pbePatches }
+                    val cleanLivePatches = parsed.livePatches
+                        .filter { it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true) }
+                        .distinctBy { it.id.trim().lowercase().ifBlank { "${it.environment.name}_${it.version.lowercase()}" } }
+                        .ifEmpty { MetaCatalogData.livePatches }
+                    val cleanPbePatches = parsed.pbePatches
+                        .filter { it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true) }
+                        .distinctBy { it.id.trim().lowercase().ifBlank { "${it.environment.name}_${it.version.lowercase()}" } }
+                        .ifEmpty { MetaCatalogData.pbePatches }
                     val sanitized = if (cleanLive != parsed.liveComps ||
                         cleanPbe != parsed.pbeComps ||
                         cleanLivePatches.size != parsed.livePatches.size ||
@@ -699,10 +701,16 @@ class OfflineMetaCacheStore(context: Context) {
     fun writeBundle(bundle: OfflineMetaBundle): Boolean = synchronized(cacheIoLock) {
         val cleanLive = bundle.liveComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
         val cleanPbe = bundle.pbeComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
+        val cleanLivePatches = bundle.livePatches
+            .distinctBy { it.id.trim().lowercase().ifBlank { "${it.environment.name}_${it.version.lowercase()}" } }
+        val cleanPbePatches = bundle.pbePatches
+            .distinctBy { it.id.trim().lowercase().ifBlank { "${it.environment.name}_${it.version.lowercase()}" } }
         val normalized = bundle.copy(
             cacheVersion = OfflineMetaBundle.CURRENT_CACHE_VERSION,
             liveComps = cleanLive,
             pbeComps = cleanPbe,
+            livePatches = cleanLivePatches,
+            pbePatches = cleanPbePatches,
             compsSignature = bundle.compsSignature.ifBlank {
                 TftNinjaCompsScraper.computeCompsSignature(cleanLive, cleanPbe)
             }

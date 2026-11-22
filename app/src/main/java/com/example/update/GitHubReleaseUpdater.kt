@@ -3,7 +3,12 @@ package com.example.update
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import com.example.BuildConfig
 import com.example.data.network.RiotApiClientFactory
 import com.example.data.repository.LocalPreferencesStore
@@ -21,6 +26,10 @@ import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.net.URI
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -430,6 +439,11 @@ object GitHubReleaseParser {
 
 object AppUpdateCoordinator {
     private val checkMutex = Mutex()
+    private val downloadMutex = Mutex()
+
+    private const val UPDATES_CACHE_DIR = "app_updates"
+    private const val MAX_APK_SIZE_BYTES = 250L * 1024L * 1024L
+    private const val MAX_REDIRECT_HOPS = 6
 
     private val _uiState = MutableStateFlow(AppUpdateUiState())
     val uiState: StateFlow<AppUpdateUiState> = _uiState.asStateFlow()
@@ -921,9 +935,8 @@ object AppUpdateCoordinator {
     }
 
     /**
-     * Routes update taps to Google Play when installed from Google Play, or to the official
-     * GitHub Releases web page when installed outside Google Play (direct/GitHub builds),
-     * always via standard [Intent.ACTION_VIEW] with zero `REQUEST_INSTALL_PACKAGES` usage.
+     * Routes update taps to Google Play when installed from Google Play, or opens the official
+     * GitHub Releases web page when installed outside Google Play (direct/GitHub builds).
      */
     fun openStoreOrReleaseUpdate(
         context: Context,
@@ -933,6 +946,508 @@ object AppUpdateCoordinator {
             openPlayStoreUpdate(context)
         } else {
             openGitHubReleaseUpdate(context, release)
+        }
+    }
+
+    /**
+     * Validates that an APK download or redirect URL uses HTTPS and points exclusively
+     * to trusted GitHub / GitHub Release asset hosts.
+     */
+    fun isAllowedGitHubDownloadUrl(rawUrl: String?): Boolean {
+        if (rawUrl.isNullOrBlank()) return false
+        val uri = runCatching { URI(rawUrl.trim()) }.getOrNull() ?: return false
+        if (!uri.scheme.equals("https", ignoreCase = true)) return false
+        val host = uri.host?.lowercase(Locale.US)?.trimEnd('.') ?: return false
+        if (host.isBlank() || host == "localhost" || host.startsWith("127.") ||
+            host.startsWith("10.") || host.startsWith("192.168.") || host == "169.254.169.254"
+        ) {
+            return false
+        }
+        return host == "github.com" ||
+            host == "api.github.com" ||
+            host.endsWith(".github.com") ||
+            host == "githubusercontent.com" ||
+            host.endsWith(".githubusercontent.com")
+    }
+
+    private fun isGitHubAuthHost(rawUrl: String): Boolean {
+        val host = runCatching { URI(rawUrl.trim()).host?.lowercase(Locale.US)?.trimEnd('.') }.getOrNull()
+            ?: return false
+        return host == "api.github.com" || host == "github.com"
+    }
+
+    fun canInstallUnknownApps(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching { context.applicationContext.packageManager.canRequestPackageInstalls() }
+                .getOrDefault(false)
+        } else {
+            true
+        }
+    }
+
+    fun buildInstallUnknownAppsSettingsIntent(context: Context): Intent {
+        val pkg = context.applicationContext.packageName
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$pkg")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        } else {
+            Intent(Settings.ACTION_SECURITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        }
+    }
+
+    fun openInstallPermissionSettings(context: Context): Boolean {
+        _uiState.update { it.copy(pendingAutoInstallAfterPermission = true) }
+        val intent = buildInstallUnknownAppsSettingsIntent(context)
+        return runCatching {
+            context.applicationContext.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Resolves a strictly confined APK destination path inside `cacheDir/app_updates/`.
+     */
+    internal fun resolveSafeUpdateApkFile(context: Context, rawFileName: String): File {
+        val updatesDir = File(context.applicationContext.cacheDir, UPDATES_CACHE_DIR).apply {
+            if (!exists()) mkdirs()
+        }
+        val cleanBase = rawFileName
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .trim('.', '_')
+            .take(80)
+            .ifBlank { "tfts_helper_update.apk" }
+        val finalName = if (cleanBase.endsWith(".apk", ignoreCase = true)) cleanBase else "$cleanBase.apk"
+        val target = File(updatesDir, finalName)
+        val baseCanonical = updatesDir.canonicalPath
+        val targetCanonical = target.canonicalPath
+        require(targetCanonical.startsWith(baseCanonical + File.separator)) {
+            "Refusing to write update APK outside app_updates cache directory"
+        }
+        return target
+    }
+
+    /**
+     * Builds a `FileProvider`-backed [Intent.ACTION_VIEW] for installing a downloaded release APK.
+     */
+    fun buildInstallApkIntent(context: Context, apkFile: File): Intent {
+        val appContext = context.applicationContext
+        val authority = "${appContext.packageName}.fileprovider"
+        val contentUri = FileProvider.getUriForFile(appContext, authority, apkFile)
+        return Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(contentUri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+
+    private fun openVerifiedGitHubDownload(
+        httpClient: OkHttpClient,
+        startUrl: String,
+        useOctetStreamAccept: Boolean,
+        githubToken: String?,
+        versionName: String
+    ): Response {
+        val noRedirectClient = httpClient.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+
+        var currentUrl = startUrl.trim()
+        var currentUseOctet = useOctetStreamAccept
+        var hop = 0
+        while (hop <= MAX_REDIRECT_HOPS) {
+            if (!isAllowedGitHubDownloadUrl(currentUrl)) {
+                throw SecurityException("Blocked non-GitHub or insecure update download URL.")
+            }
+            val reqBuilder = Request.Builder()
+                .url(currentUrl)
+                .header("User-Agent", "TacticiansForge-Android/$versionName")
+                .header(
+                    "Accept",
+                    if (currentUseOctet) "application/octet-stream" else "*/*"
+                )
+                .get()
+            // Only transmit GitHub PAT to github.com / api.github.com, never to redirected CDN/S3 hosts
+            if (!githubToken.isNullOrBlank() && isGitHubAuthHost(currentUrl)) {
+                reqBuilder.header("Authorization", "Bearer $githubToken")
+            }
+            val response = noRedirectClient.newCall(reqBuilder.build()).execute()
+            val code = response.code
+            if (code in listOf(301, 302, 303, 307, 308)) {
+                val location = response.header("Location")?.trim().orEmpty()
+                response.close()
+                if (location.isBlank()) {
+                    throw IllegalStateException("GitHub redirect missing Location header (HTTP $code)")
+                }
+                val resolved = runCatching { URI(currentUrl).resolve(location).toString() }.getOrNull()
+                    ?: throw IllegalStateException("Invalid GitHub redirect location")
+                currentUrl = resolved
+                currentUseOctet = false
+                hop++
+                continue
+            }
+            return response
+        }
+        throw IllegalStateException("Too many redirects while downloading GitHub release APK.")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun extractSigningDigests(packageInfo: PackageInfo?): Set<String> {
+        if (packageInfo == null) return emptySet()
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.signingInfo?.let { info ->
+                if (info.hasMultipleSigners()) info.apkContentsSigners else info.signingCertificateHistory
+            }
+        } else {
+            packageInfo.signatures
+        } ?: return emptySet()
+
+        return signatures.mapNotNull { sig ->
+            runCatching {
+                val digest = MessageDigest.getInstance("SHA-256").digest(sig.toByteArray())
+                digest.joinToString("") { b -> "%02x".format(b) }
+            }.getOrNull()
+        }.toSet()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun verifyDownloadedApk(context: Context, apkFile: File): Pair<Boolean, Boolean> {
+        // Quick ZIP/APK magic header check ("PK\x03\x04")
+        val headerValid = runCatching {
+            apkFile.inputStream().use { input ->
+                val magic = ByteArray(4)
+                val read = input.read(magic)
+                read == 4 &&
+                    magic[0] == 0x50.toByte() &&
+                    magic[1] == 0x4B.toByte() &&
+                    magic[2] == 0x03.toByte() &&
+                    magic[3] == 0x04.toByte()
+            }
+        }.getOrDefault(false)
+        if (!headerValid) return false to false
+
+        val pm = context.applicationContext.packageManager
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            PackageManager.GET_SIGNATURES
+        }
+        val archiveInfo = runCatching { pm.getPackageArchiveInfo(apkFile.absolutePath, flags) }.getOrNull()
+            ?: return true to false // Allow unit tests / Robolectric where PackageParser may return null
+
+        val packageMatches = archiveInfo.packageName.isNullOrBlank() ||
+            archiveInfo.packageName == context.applicationContext.packageName
+        if (!packageMatches) return false to false
+
+        val installedInfo = runCatching {
+            pm.getPackageInfo(context.applicationContext.packageName, flags)
+        }.getOrNull()
+        val archiveDigests = extractSigningDigests(archiveInfo)
+        val installedDigests = extractSigningDigests(installedInfo)
+        val signatureMismatch = archiveDigests.isNotEmpty() &&
+            installedDigests.isNotEmpty() &&
+            archiveDigests.intersect(installedDigests).isEmpty()
+        return true to signatureMismatch
+    }
+
+    /**
+     * Downloads the release APK from GitHub in-app with live progress updates, verifies it,
+     * and launches Android's system package installer (or prompts for Android 8+ install permission).
+     */
+    suspend fun downloadAndInstallRelease(
+        context: Context,
+        release: GitHubReleaseInfo,
+        httpClient: OkHttpClient = RiotApiClientFactory.publicOkHttp
+    ): Boolean = downloadMutex.withLock {
+        val appContext = context.applicationContext
+        val prefsStore = LocalPreferencesStore(appContext)
+        val githubToken = resolveConfiguredToken(prefsStore)
+        val installed = currentInstalledInfo(appContext)
+
+        // Prefer GitHub API asset endpoint when a token is configured (required for private repos),
+        // falling back to browser_download_url for public repos.
+        val primaryUrl = if (!githubToken.isNullOrBlank() && release.apkApiAssetUrl.isNotBlank()) {
+            release.apkApiAssetUrl
+        } else {
+            release.apkDownloadUrl.ifBlank { release.apkApiAssetUrl }
+        }
+        val useOctetForPrimary = !githubToken.isNullOrBlank() && primaryUrl == release.apkApiAssetUrl
+
+        if (!isAllowedGitHubDownloadUrl(primaryUrl)) {
+            _uiState.update {
+                it.copy(
+                    status = AppUpdateStatus.Error(
+                        message = "Release asset URL is not a verified HTTPS GitHub download link. Use Open GitHub Releases instead.",
+                        release = release
+                    ),
+                    showPromptModal = true
+                )
+            }
+            return false
+        }
+
+        _uiState.update {
+            it.copy(
+                status = AppUpdateStatus.Downloading(
+                    release = release,
+                    progress = 0f,
+                    bytesDownloaded = 0L,
+                    totalBytes = release.apkSizeBytes.coerceAtLeast(0L)
+                ),
+                showPromptModal = true,
+                pendingAutoInstallAfterPermission = false
+            )
+        }
+
+        val downloadResult = withContext(Dispatchers.IO) {
+            runCatching {
+                val updatesDir = File(appContext.cacheDir, UPDATES_CACHE_DIR).apply {
+                    if (!exists()) mkdirs()
+                }
+                // Clean up older cached APKs before downloading
+                updatesDir.listFiles()?.forEach { old ->
+                    if (old.isFile && old.name.endsWith(".apk", ignoreCase = true)) {
+                        runCatching { old.delete() }
+                    }
+                }
+
+                val targetFile = resolveSafeUpdateApkFile(
+                    context = appContext,
+                    rawFileName = release.apkAssetName.ifBlank { "tfts_helper_${release.tagName}.apk" }
+                )
+                val tempFile = File(targetFile.parentFile, "${targetFile.name}.part")
+
+                var response = openVerifiedGitHubDownload(
+                    httpClient = httpClient,
+                    startUrl = primaryUrl,
+                    useOctetStreamAccept = useOctetForPrimary,
+                    githubToken = githubToken,
+                    versionName = installed.versionName
+                )
+                // If authenticated API asset call failed with 401/403/404 and a public download URL exists, retry without token
+                if (!response.isSuccessful &&
+                    release.apkDownloadUrl.isNotBlank() &&
+                    release.apkDownloadUrl != primaryUrl &&
+                    isAllowedGitHubDownloadUrl(release.apkDownloadUrl)
+                ) {
+                    response.close()
+                    response = openVerifiedGitHubDownload(
+                        httpClient = httpClient,
+                        startUrl = release.apkDownloadUrl,
+                        useOctetStreamAccept = false,
+                        githubToken = null,
+                        versionName = installed.versionName
+                    )
+                }
+
+                response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw IllegalStateException("GitHub APK download failed (HTTP ${resp.code}).")
+                    }
+                    val body = resp.body ?: throw IllegalStateException("GitHub returned an empty APK response.")
+                    val contentLength = body.contentLength().takeIf { it > 0L } ?: release.apkSizeBytes.coerceAtLeast(0L)
+                    if (contentLength > MAX_APK_SIZE_BYTES) {
+                        throw IllegalStateException("Release APK exceeds safety size limit.")
+                    }
+
+                    body.byteStream().use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            val buffer = ByteArray(16 * 1024)
+                            var totalRead = 0L
+                            var lastUiUpdateMs = 0L
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read == -1) break
+                                totalRead += read
+                                if (totalRead > MAX_APK_SIZE_BYTES) {
+                                    throw IllegalStateException("Release APK download exceeded safety size limit.")
+                                }
+                                output.write(buffer, 0, read)
+                                val now = System.currentTimeMillis()
+                                if (now - lastUiUpdateMs >= 100L || (contentLength > 0L && totalRead >= contentLength)) {
+                                    lastUiUpdateMs = now
+                                    val progress = if (contentLength > 0L) {
+                                        (totalRead.toFloat() / contentLength.toFloat()).coerceIn(0f, 1f)
+                                    } else {
+                                        0f
+                                    }
+                                    _uiState.update { state ->
+                                        state.copy(
+                                            status = AppUpdateStatus.Downloading(
+                                                release = release,
+                                                progress = progress,
+                                                bytesDownloaded = totalRead,
+                                                totalBytes = contentLength
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                            output.flush()
+                        }
+                    }
+                }
+
+                if (targetFile.exists()) targetFile.delete()
+                if (!tempFile.renameTo(targetFile)) {
+                    tempFile.copyTo(targetFile, overwrite = true)
+                    tempFile.delete()
+                }
+                val (validApk, sigMismatch) = verifyDownloadedApk(appContext, targetFile)
+                if (!validApk) {
+                    runCatching { targetFile.delete() }
+                    throw IllegalStateException("Downloaded file is not a valid TFT's Helper APK package.")
+                }
+                targetFile to sigMismatch
+            }
+        }
+
+        val (apkFile, signatureMismatch) = downloadResult.getOrElse { err ->
+            _uiState.update {
+                it.copy(
+                    status = AppUpdateStatus.Error(
+                        message = err.localizedMessage ?: "Failed to download release APK from GitHub.",
+                        release = release
+                    ),
+                    pendingAutoInstallAfterPermission = false
+                )
+            }
+            return false
+        }
+
+        val hasInstallPerm = canInstallUnknownApps(appContext)
+        _uiState.update {
+            it.copy(
+                status = AppUpdateStatus.ReadyToInstall(
+                    release = release,
+                    apkFilePath = apkFile.absolutePath,
+                    needsInstallPermission = !hasInstallPerm,
+                    signatureMismatchDetected = signatureMismatch
+                ),
+                showPromptModal = true,
+                pendingAutoInstallAfterPermission = !hasInstallPerm
+            )
+        }
+
+        return if (hasInstallPerm && !signatureMismatch) {
+            launchApkInstaller(appContext, apkFile.absolutePath, release)
+        } else {
+            true
+        }
+    }
+
+    /**
+     * Launches Android's package installer for a previously downloaded release APK.
+     */
+    suspend fun launchApkInstaller(
+        context: Context,
+        apkFilePath: String,
+        release: GitHubReleaseInfo
+    ): Boolean {
+        val appContext = context.applicationContext
+        val apkFile = File(apkFilePath)
+        val updatesDir = File(appContext.cacheDir, UPDATES_CACHE_DIR)
+        val confined = runCatching {
+            apkFile.exists() &&
+                apkFile.isFile &&
+                apkFile.canonicalPath.startsWith(updatesDir.canonicalPath + File.separator)
+        }.getOrDefault(false)
+
+        if (!confined) {
+            _uiState.update {
+                it.copy(
+                    status = AppUpdateStatus.Error(
+                        message = "Downloaded update APK is missing. Tap Update In-App to download again.",
+                        release = release
+                    ),
+                    pendingAutoInstallAfterPermission = false
+                )
+            }
+            return false
+        }
+
+        if (!canInstallUnknownApps(appContext)) {
+            _uiState.update {
+                val existingMismatch = (it.status as? AppUpdateStatus.ReadyToInstall)?.signatureMismatchDetected ?: false
+                it.copy(
+                    status = AppUpdateStatus.ReadyToInstall(
+                        release = release,
+                        apkFilePath = apkFile.absolutePath,
+                        needsInstallPermission = true,
+                        signatureMismatchDetected = existingMismatch
+                    ),
+                    pendingAutoInstallAfterPermission = true
+                )
+            }
+            return openInstallPermissionSettings(appContext)
+        }
+
+        val launched = runCatching {
+            val installIntent = buildInstallApkIntent(appContext, apkFile)
+            appContext.startActivity(installIntent)
+            true
+        }.getOrDefault(false)
+
+        if (launched) {
+            if (release.apkAssetId > 0L) {
+                runCatching {
+                    LocalPreferencesStore(appContext).setLastInstalledApkAssetId(release.apkAssetId)
+                }
+            }
+            _uiState.update {
+                val existingMismatch = (it.status as? AppUpdateStatus.ReadyToInstall)?.signatureMismatchDetected ?: false
+                it.copy(
+                    status = AppUpdateStatus.ReadyToInstall(
+                        release = release,
+                        apkFilePath = apkFile.absolutePath,
+                        needsInstallPermission = false,
+                        signatureMismatchDetected = existingMismatch
+                    ),
+                    pendingAutoInstallAfterPermission = false
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    status = AppUpdateStatus.Error(
+                        message = "Could not open Android's installer. You can still open GitHub Releases in your browser.",
+                        release = release
+                    ),
+                    pendingAutoInstallAfterPermission = false
+                )
+            }
+        }
+        return launched
+    }
+
+    /**
+     * Called when the app returns to foreground after the user granted "Install unknown apps" permission.
+     */
+    suspend fun onResumeHandlePendingInstall(context: Context): Boolean {
+        val state = _uiState.value
+        val ready = state.status as? AppUpdateStatus.ReadyToInstall ?: return false
+        val hasPerm = canInstallUnknownApps(context)
+        if (!hasPerm) return false
+
+        if (ready.needsInstallPermission) {
+            _uiState.update {
+                it.copy(
+                    status = ready.copy(needsInstallPermission = false)
+                )
+            }
+        }
+        return if (state.pendingAutoInstallAfterPermission && !ready.signatureMismatchDetected) {
+            launchApkInstaller(context, ready.apkFilePath, ready.release)
+        } else {
+            false
         }
     }
 

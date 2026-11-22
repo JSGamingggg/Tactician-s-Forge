@@ -1,13 +1,12 @@
 package com.example.overlay
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,28 +15,33 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -53,6 +57,7 @@ import com.example.data.model.ChampionTierEntry
 import com.example.data.model.ItemTierEntry
 import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
+import com.example.data.model.TierRank
 import com.example.ui.components.TftChampionAvatar
 import com.example.ui.components.TftItemIcon
 import com.example.ui.components.formatChampionDisplayName
@@ -62,18 +67,41 @@ import com.example.ui.theme.BrightGold
 import com.example.ui.theme.DeepSlate
 import com.example.ui.theme.ObsidianVoid
 import com.example.ui.theme.SlateElevated
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 data class OverlayChampionChoice(
     val name: String,
     val cost: Int,
-    val compCount: Int
+    val compCount: Int,
+    val normalizedKey: String = OverlayArmySearchEngine.normalize(name),
+    val lowerName: String = name.lowercase(Locale.US)
 )
 
 data class OverlayItemChoice(
     val name: String,
     val isComponent: Boolean,
-    val compCount: Int
+    val compCount: Int,
+    val normalizedKey: String = OverlayArmySearchEngine.normalize(name),
+    val lowerName: String = name.lowercase(Locale.US)
+)
+
+/**
+ * Precomputed search index for a set of compositions so overlay search keystrokes and
+ * champion/item chip toggles execute in sub-millisecond O(N) time with zero regex or
+ * catalog scans on the UI thread.
+ */
+data class IndexedOverlayArmy(
+    val comp: MetaComp,
+    val champKeys: Set<String>,
+    val exactItemKeys: Set<String>,
+    val componentKeys: Set<String>,
+    val searchableLowerBlob: String,
+    val searchableNormBlob: String
+)
+
+data class OverlayArmySearchIndex(
+    val entries: List<IndexedOverlayArmy>
 )
 
 /**
@@ -158,11 +186,58 @@ object OverlayArmySearchEngine {
         "tacticiansshield" to listOf("Frying Pan", "Frying Pan")
     )
 
-    fun normalize(raw: String): String =
-        raw.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")
+    private val builtInComponentKeyRecipes: Map<String, List<String>> =
+        builtInItemRecipes.mapValues { (_, comps) -> comps.map(::normalize) }
+
+    /**
+     * Zero-regex ASCII alphanumeric normalizer — orders of magnitude faster than allocating
+     * `Regex("[^a-z0-9]")` on every item/champion comparison during overlay search.
+     */
+    fun normalize(raw: String): String {
+        if (raw.isEmpty()) return ""
+        val sb = StringBuilder(raw.length)
+        for (i in 0 until raw.length) {
+            val ch = raw[i]
+            when {
+                ch in 'a'..'z' || ch in '0'..'9' -> sb.append(ch)
+                ch in 'A'..'Z' -> sb.append((ch.code + 32).toChar())
+            }
+        }
+        return sb.toString()
+    }
 
     fun isBaseComponent(itemName: String): Boolean =
         baseComponentKeys.contains(normalize(formatRiotAssetLabel(itemName)))
+
+    private fun buildCatalogRecipeKeyMap(catalogItems: List<ItemTierEntry>): Map<String, List<String>> {
+        if (catalogItems.isEmpty()) return emptyMap()
+        val map = HashMap<String, List<String>>(catalogItems.size * 2)
+        for (item in catalogItems) {
+            if (item.components.isEmpty()) continue
+            val normComponents = item.components.mapNotNull { c ->
+                val n = normalize(c)
+                if (n.isNotEmpty()) n else null
+            }
+            if (normComponents.isEmpty()) continue
+            val key = normalize(item.name)
+            if (key.isNotEmpty()) {
+                map.putIfAbsent(key, normComponents)
+            }
+        }
+        return map
+    }
+
+    private fun resolveComponentKeysFast(
+        cleanLabel: String,
+        normalizedKey: String,
+        catalogRecipeKeyMap: Map<String, List<String>>
+    ): List<String> {
+        if (baseComponentKeys.contains(normalizedKey)) return listOf(normalizedKey)
+        catalogRecipeKeyMap[normalizedKey]?.let { return it }
+        builtInComponentKeyRecipes[normalizedKey]?.let { return it }
+        if (normalizedKey.contains("emblem")) return listOf("spatula")
+        return emptyList()
+    }
 
     fun resolveComponentsForItem(
         itemName: String,
@@ -220,16 +295,143 @@ object OverlayArmySearchEngine {
         comp: MetaComp,
         catalogItems: List<ItemTierEntry>
     ): Pair<Set<String>, Set<String>> {
+        val recipeMap = buildCatalogRecipeKeyMap(catalogItems)
+        return extractCompItemKeysAndComponentsFast(comp, recipeMap)
+    }
+
+    private fun extractCompItemKeysAndComponentsFast(
+        comp: MetaComp,
+        catalogRecipeKeyMap: Map<String, List<String>>
+    ): Pair<Set<String>, Set<String>> {
         val exactItemKeys = HashSet<String>()
         val componentKeys = HashSet<String>()
-        extractCompItemLabels(comp).forEach { label ->
-            val norm = normalize(label)
-            exactItemKeys.add(norm)
-            resolveComponentsForItem(label, catalogItems).forEach { component ->
-                componentKeys.add(normalize(component))
+        comp.hexPlacements.forEach { placement ->
+            placement.items.forEach { rawItem ->
+                val clean = formatRiotAssetLabel(rawItem).trim()
+                if (clean.isEmpty()) return@forEach
+                val norm = normalize(clean)
+                if (norm.isEmpty()) return@forEach
+                if (exactItemKeys.add(norm)) {
+                    resolveComponentKeysFast(clean, norm, catalogRecipeKeyMap).forEach { cKey ->
+                        componentKeys.add(cKey)
+                    }
+                }
             }
         }
         return exactItemKeys to componentKeys
+    }
+
+    /**
+     * Builds a precomputed [OverlayArmySearchIndex] once per `(comps, catalogItems)` change so
+     * filtering on every search keystroke or chip tap performs zero parsing or catalog lookups.
+     */
+    fun buildSearchIndex(
+        comps: List<MetaComp>,
+        catalogItems: List<ItemTierEntry>
+    ): OverlayArmySearchIndex {
+        if (comps.isEmpty()) return OverlayArmySearchIndex(emptyList())
+        val recipeMap = buildCatalogRecipeKeyMap(catalogItems)
+        val indexed = comps.map { comp ->
+            val champKeys = extractCompChampionKeys(comp)
+            val (exactItemKeys, componentKeys) = extractCompItemKeysAndComponentsFast(comp, recipeMap)
+            val lowerBlob = buildString(128) {
+                append(comp.title.lowercase(Locale.US))
+                append('\n')
+                append(comp.carryName.lowercase(Locale.US))
+                comp.traits.forEach { t ->
+                    append('\n')
+                    append(t.lowercase(Locale.US))
+                }
+            }
+            val normBlob = buildString(192) {
+                append(normalize(comp.title))
+                append(' ')
+                append(normalize(comp.carryName))
+                comp.traits.forEach { t ->
+                    append(' ')
+                    append(normalize(t))
+                }
+                champKeys.forEach { k ->
+                    append(' ')
+                    append(k)
+                }
+                exactItemKeys.forEach { k ->
+                    append(' ')
+                    append(k)
+                }
+                componentKeys.forEach { k ->
+                    append(' ')
+                    append(k)
+                }
+            }
+            IndexedOverlayArmy(
+                comp = comp,
+                champKeys = champKeys,
+                exactItemKeys = exactItemKeys,
+                componentKeys = componentKeys,
+                searchableLowerBlob = lowerBlob,
+                searchableNormBlob = normBlob
+            )
+        }
+        return OverlayArmySearchIndex(indexed)
+    }
+
+    /**
+     * Fast sub-millisecond filtering over a precomputed [OverlayArmySearchIndex].
+     */
+    fun filterIndexedArmies(
+        index: OverlayArmySearchIndex,
+        tierFilter: TierRank?,
+        selectedChampions: Set<String>,
+        selectedItems: Set<String>,
+        query: String
+    ): List<MetaComp> {
+        val normalizedChamps = if (selectedChampions.isEmpty()) {
+            emptyList()
+        } else {
+            selectedChampions.mapNotNull { c ->
+                val n = normalize(formatChampionDisplayName(c))
+                if (n.isNotEmpty()) n else null
+            }
+        }
+        val normalizedItems = if (selectedItems.isEmpty()) {
+            emptyList()
+        } else {
+            selectedItems.mapNotNull { item ->
+                val n = normalize(formatRiotAssetLabel(item))
+                if (n.isNotEmpty()) n to baseComponentKeys.contains(n) else null
+            }
+        }
+        val trimmedQuery = query.trim().lowercase(Locale.US)
+        val normalizedQuery = if (trimmedQuery.isEmpty()) "" else normalize(trimmedQuery)
+
+        val result = ArrayList<MetaComp>(index.entries.size)
+        for (entry in index.entries) {
+            if (tierFilter != null && entry.comp.tier != tierFilter) continue
+            if (normalizedChamps.isNotEmpty() && !normalizedChamps.all { entry.champKeys.contains(it) }) continue
+            if (normalizedItems.isNotEmpty()) {
+                var allItemsMatch = true
+                for ((wantedKey, isComp) in normalizedItems) {
+                    val matched = if (isComp) {
+                        entry.componentKeys.contains(wantedKey) || entry.exactItemKeys.contains(wantedKey)
+                    } else {
+                        entry.exactItemKeys.contains(wantedKey)
+                    }
+                    if (!matched) {
+                        allItemsMatch = false
+                        break
+                    }
+                }
+                if (!allItemsMatch) continue
+            }
+            if (trimmedQuery.isNotEmpty()) {
+                val matchesText = entry.searchableLowerBlob.contains(trimmedQuery) ||
+                    (normalizedQuery.isNotEmpty() && entry.searchableNormBlob.contains(normalizedQuery))
+                if (!matchesText) continue
+            }
+            result.add(entry.comp)
+        }
+        return result
     }
 
     fun extractChampionChoices(
@@ -237,9 +439,12 @@ object OverlayArmySearchEngine {
         catalogChampions: List<ChampionTierEntry>,
         environment: TftEnvironment
     ): List<OverlayChampionChoice> {
-        val catalogCostByKey = catalogChampions
-            .filter { it.environment == environment }
-            .associate { normalize(formatChampionDisplayName(it.name)) to it.cost }
+        val catalogCostByKey = HashMap<String, Int>(catalogChampions.size)
+        for (champ in catalogChampions) {
+            if (champ.environment == environment) {
+                catalogCostByKey[normalize(formatChampionDisplayName(champ.name))] = champ.cost
+            }
+        }
 
         val countsByKey = LinkedHashMap<String, Int>()
         val displayByKey = LinkedHashMap<String, String>()
@@ -272,16 +477,19 @@ object OverlayArmySearchEngine {
 
         return countsByKey.entries
             .map { (key, count) ->
+                val name = displayByKey[key] ?: key
                 OverlayChampionChoice(
-                    name = displayByKey[key] ?: key,
+                    name = name,
                     cost = (costByKey[key] ?: 1).coerceIn(1, 7),
-                    compCount = count
+                    compCount = count,
+                    normalizedKey = key,
+                    lowerName = name.lowercase(Locale.US)
                 )
             }
             .sortedWith(
                 compareByDescending<OverlayChampionChoice> { it.compCount }
                     .thenByDescending { it.cost }
-                    .thenBy { it.name.lowercase(Locale.US) }
+                    .thenBy { it.lowerName }
             )
     }
 
@@ -291,22 +499,32 @@ object OverlayArmySearchEngine {
         environment: TftEnvironment
     ): List<OverlayItemChoice> {
         val envCatalogItems = catalogItems.filter { it.environment == environment }
+        val recipeMap = buildCatalogRecipeKeyMap(envCatalogItems)
         val exactCounts = LinkedHashMap<String, Int>()
         val displayByKey = LinkedHashMap<String, String>()
         val componentCompCounts = LinkedHashMap<String, Int>()
 
         comps.forEach { comp ->
-            val (exactKeys, compComponentKeys) = extractCompItemKeysAndComponents(comp, envCatalogItems)
-            extractCompItemLabels(comp).forEach { label ->
-                val key = normalize(label)
-                if (key.isNotBlank()) {
-                    displayByKey.putIfAbsent(key, label)
+            val exactInComp = HashSet<String>()
+            val componentsInComp = HashSet<String>()
+            comp.hexPlacements.forEach { placement ->
+                placement.items.forEach { rawItem ->
+                    val clean = formatRiotAssetLabel(rawItem).trim()
+                    if (clean.isEmpty()) return@forEach
+                    val key = normalize(clean)
+                    if (key.isEmpty()) return@forEach
+                    displayByKey.putIfAbsent(key, clean)
+                    if (exactInComp.add(key)) {
+                        resolveComponentKeysFast(clean, key, recipeMap).forEach { cKey ->
+                            componentsInComp.add(cKey)
+                        }
+                    }
                 }
             }
-            exactKeys.forEach { key ->
+            exactInComp.forEach { key ->
                 exactCounts[key] = (exactCounts[key] ?: 0) + 1
             }
-            compComponentKeys.forEach { cKey ->
+            componentsInComp.forEach { cKey ->
                 componentCompCounts[cKey] = (componentCompCounts[cKey] ?: 0) + 1
             }
         }
@@ -315,7 +533,13 @@ object OverlayArmySearchEngine {
             val key = normalize(compName)
             val count = componentCompCounts[key] ?: 0
             if (count > 0 || comps.isNotEmpty()) {
-                OverlayItemChoice(name = compName, isComponent = true, compCount = count)
+                OverlayItemChoice(
+                    name = compName,
+                    isComponent = true,
+                    compCount = count,
+                    normalizedKey = key,
+                    lowerName = compName.lowercase(Locale.US)
+                )
             } else {
                 null
             }
@@ -324,15 +548,18 @@ object OverlayArmySearchEngine {
         val completed = exactCounts.entries
             .filterNot { baseComponentKeys.contains(it.key) }
             .map { (key, count) ->
+                val name = displayByKey[key] ?: key
                 OverlayItemChoice(
-                    name = displayByKey[key] ?: key,
+                    name = name,
                     isComponent = false,
-                    compCount = count
+                    compCount = count,
+                    normalizedKey = key,
+                    lowerName = name.lowercase(Locale.US)
                 )
             }
             .sortedWith(
                 compareByDescending<OverlayItemChoice> { it.compCount }
-                    .thenBy { it.name.lowercase(Locale.US) }
+                    .thenBy { it.lowerName }
             )
 
         return components + completed
@@ -350,57 +577,23 @@ object OverlayArmySearchEngine {
         query: String,
         catalogItems: List<ItemTierEntry> = emptyList()
     ): List<MetaComp> {
-        val normalizedChamps = selectedChampions.map { normalize(formatChampionDisplayName(it)) }.filter { it.isNotBlank() }
-        val normalizedItems = selectedItems.map { item ->
-            val clean = formatRiotAssetLabel(item)
-            val norm = normalize(clean)
-            norm to baseComponentKeys.contains(norm)
-        }.filter { it.first.isNotBlank() }
-        val trimmedQuery = query.trim().lowercase(Locale.US)
-        val normalizedQuery = normalize(trimmedQuery)
-
-        if (normalizedChamps.isEmpty() && normalizedItems.isEmpty() && trimmedQuery.isBlank()) {
+        if (selectedChampions.isEmpty() && selectedItems.isEmpty() && query.isBlank()) {
             return comps
         }
-
-        return comps.filter { comp ->
-            val champKeys = extractCompChampionKeys(comp)
-            val matchesChamps = normalizedChamps.all { wanted -> champKeys.contains(wanted) }
-            if (!matchesChamps) return@filter false
-
-            val (exactItemKeys, componentKeys) = extractCompItemKeysAndComponents(comp, catalogItems)
-            val matchesItems = normalizedItems.all { (wantedKey, isComp) ->
-                if (isComp) {
-                    componentKeys.contains(wantedKey) || exactItemKeys.contains(wantedKey)
-                } else {
-                    exactItemKeys.contains(wantedKey)
-                }
-            }
-            if (!matchesItems) return@filter false
-
-            if (trimmedQuery.isBlank()) {
-                true
-            } else {
-                val titleMatch = comp.title.lowercase(Locale.US).contains(trimmedQuery) ||
-                    normalize(comp.title).contains(normalizedQuery)
-                val carryMatch = comp.carryName.lowercase(Locale.US).contains(trimmedQuery) ||
-                    normalize(comp.carryName).contains(normalizedQuery)
-                val traitMatch = comp.traits.any {
-                    it.lowercase(Locale.US).contains(trimmedQuery) || normalize(it).contains(normalizedQuery)
-                }
-                val champMatch = champKeys.any { it.contains(normalizedQuery) }
-                val itemMatch = exactItemKeys.any { it.contains(normalizedQuery) } ||
-                    componentKeys.any { it.contains(normalizedQuery) }
-                titleMatch || carryMatch || traitMatch || champMatch || itemMatch
-            }
-        }
+        val index = buildSearchIndex(comps, catalogItems)
+        return filterIndexedArmies(
+            index = index,
+            tierFilter = null,
+            selectedChampions = selectedChampions,
+            selectedItems = selectedItems,
+            query = query
+        )
     }
 
     private fun isLikelySummonToken(normalizedKey: String): Boolean =
         summonTokenPatterns.any { normalizedKey.contains(it) }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun OverlayActiveArmyFiltersBar(
     selectedChampions: Set<String>,
@@ -551,7 +744,6 @@ private fun OverlayRemovableFilterChip(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun OverlayArmyFinderPanel(
     environment: TftEnvironment,
@@ -564,35 +756,61 @@ internal fun OverlayArmyFinderPanel(
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
+    val focusRequester = remember { FocusRequester() }
     val activeTab = sessionState.finderTab
-    val query = sessionState.finderQuery
+    val sessionQuery = sessionState.finderQuery
     val costFilter = sessionState.finderCostFilter
     val itemScope = sessionState.finderItemScope
     val selectedChampions = sessionState.selectedChampions
     val selectedItems = sessionState.selectedItems
 
-    val filteredChampions = remember(championChoices, query, costFilter) {
-        val q = query.trim().lowercase(Locale.US)
+    // Keep text input locally responsive at 60fps and debounce propagation into sessionState
+    // so rapid typing never forces full overlay comp-list recomposition on every single keystroke.
+    var localQuery by remember { mutableStateOf(sessionQuery) }
+    LaunchedEffect(sessionQuery) {
+        if (sessionQuery != localQuery) {
+            localQuery = sessionQuery
+        }
+    }
+    LaunchedEffect(localQuery) {
+        if (localQuery != sessionState.finderQuery) {
+            if (localQuery.isEmpty()) {
+                sessionState.updateFinderQuery("")
+            } else {
+                delay(90L)
+                sessionState.updateFinderQuery(localQuery)
+            }
+        }
+    }
+
+    val filteredChampions = remember(championChoices, localQuery, costFilter, activeTab) {
+        if (activeTab != OverlayFinderTab.CHAMPIONS) return@remember emptyList()
+        val q = localQuery.trim().lowercase(Locale.US)
+        val normQ = if (q.isEmpty()) "" else OverlayArmySearchEngine.normalize(q)
         championChoices.filter { c ->
             val matchesCost = when (costFilter) {
                 null -> true
                 5 -> c.cost >= 5
                 else -> c.cost == costFilter
             }
-            val matchesQ = q.isBlank() || c.name.lowercase(Locale.US).contains(q)
+            val matchesQ = q.isEmpty() || c.lowerName.contains(q) ||
+                (normQ.isNotEmpty() && c.normalizedKey.contains(normQ))
             matchesCost && matchesQ
         }
     }
 
-    val filteredItems = remember(itemChoices, query, itemScope) {
-        val q = query.trim().lowercase(Locale.US)
+    val filteredItems = remember(itemChoices, localQuery, itemScope, activeTab) {
+        if (activeTab != OverlayFinderTab.ITEMS) return@remember emptyList()
+        val q = localQuery.trim().lowercase(Locale.US)
+        val normQ = if (q.isEmpty()) "" else OverlayArmySearchEngine.normalize(q)
         itemChoices.filter { item ->
             val matchesScope = when (itemScope) {
                 OverlayItemFilterScope.ALL -> true
                 OverlayItemFilterScope.COMPONENTS -> item.isComponent
                 OverlayItemFilterScope.COMPLETED -> !item.isComponent
             }
-            val matchesQ = q.isBlank() || item.name.lowercase(Locale.US).contains(q)
+            val matchesQ = q.isEmpty() || item.lowerName.contains(q) ||
+                (normQ.isNotEmpty() && item.normalizedKey.contains(normQ))
             matchesScope && matchesQ
         }
     }
@@ -611,7 +829,7 @@ internal fun OverlayArmyFinderPanel(
                 .padding(horizontal = 9.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Search box + tabs + Done button
+            // Search box + Done button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -621,7 +839,12 @@ internal fun OverlayArmyFinderPanel(
                     shape = RoundedCornerShape(8.dp),
                     color = ObsidianVoid,
                     border = BorderStroke(1.dp, SlateElevated),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                            onSearchFocusChanged(true)
+                            runCatching { focusRequester.requestFocus() }
+                        }
                 ) {
                     Row(
                         modifier = Modifier
@@ -637,7 +860,7 @@ internal fun OverlayArmyFinderPanel(
                             modifier = Modifier.size(14.dp)
                         )
                         Box(modifier = Modifier.weight(1f)) {
-                            if (query.isEmpty()) {
+                            if (localQuery.isEmpty()) {
                                 Text(
                                     text = "Search champion, item, or comp…",
                                     fontSize = 11.sp,
@@ -647,8 +870,8 @@ internal fun OverlayArmyFinderPanel(
                                 )
                             }
                             BasicTextField(
-                                value = query,
-                                onValueChange = { sessionState.updateFinderQuery(it) },
+                                value = localQuery,
+                                onValueChange = { localQuery = it },
                                 singleLine = true,
                                 textStyle = TextStyle(
                                     color = Color.White,
@@ -659,21 +882,26 @@ internal fun OverlayArmyFinderPanel(
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                                 keyboardActions = KeyboardActions(
                                     onSearch = {
+                                        sessionState.updateFinderQuery(localQuery)
                                         focusManager.clearFocus()
                                         onSearchFocusChanged(false)
                                     }
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .focusRequester(focusRequester)
                                     .onFocusChanged { state ->
                                         onSearchFocusChanged(state.isFocused)
                                     }
                                     .testTag("overlay_army_search_input")
                             )
                         }
-                        if (query.isNotEmpty()) {
+                        if (localQuery.isNotEmpty()) {
                             Surface(
-                                onClick = { sessionState.updateFinderQuery("") },
+                                onClick = {
+                                    localQuery = ""
+                                    sessionState.updateFinderQuery("")
+                                },
                                 shape = RoundedCornerShape(6.dp),
                                 color = SlateElevated,
                                 modifier = Modifier.testTag("overlay_army_search_clear_text")
@@ -692,6 +920,7 @@ internal fun OverlayArmyFinderPanel(
                 }
                 Surface(
                     onClick = {
+                        sessionState.updateFinderQuery(localQuery)
                         focusManager.clearFocus()
                         onSearchFocusChanged(false)
                         onClosePanel()
@@ -771,141 +1000,155 @@ internal fun OverlayArmyFinderPanel(
                 }
             }
 
-            // Tap-to-pick icon grid (works with zero keyboard over TFT!)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 136.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                if (activeTab == OverlayFinderTab.CHAMPIONS) {
-                    if (filteredChampions.isEmpty()) {
-                        Text(
-                            text = "No ${environment.label} champions match that filter.",
-                            fontSize = 10.sp,
-                            color = Color(0xFF93A1B8),
-                            modifier = Modifier.padding(vertical = 8.dp)
-                        )
-                    } else {
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            filteredChampions.forEach { choice ->
-                                val isSelected = selectedChampions.contains(choice.name)
-                                Surface(
-                                    onClick = { sessionState.toggleSelectedChampion(choice.name) },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isSelected) BrightGold.copy(alpha = 0.2f) else ObsidianVoid,
-                                    border = BorderStroke(
-                                        width = if (isSelected) 1.3.dp else 1.dp,
-                                        color = if (isSelected) BrightGold else SlateElevated
-                                    ),
-                                    modifier = Modifier.testTag(
-                                        "overlay_pick_champ_${OverlayArmySearchEngine.normalize(choice.name)}"
-                                    )
+            // Virtualized LazyVerticalGrid — only composes & loads icons for ~9-12 visible chips
+            // instead of mounting 80-120 Coil AsyncImages in a single frame!
+            if (activeTab == OverlayFinderTab.CHAMPIONS) {
+                if (filteredChampions.isEmpty()) {
+                    Text(
+                        text = "No ${environment.label} champions match that filter.",
+                        fontSize = 10.sp,
+                        color = Color(0xFF93A1B8),
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 104.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 140.dp),
+                        contentPadding = PaddingValues(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        items(
+                            items = filteredChampions,
+                            key = { it.normalizedKey },
+                            contentType = { "overlay_champ_pick" }
+                        ) { choice ->
+                            val isSelected = selectedChampions.contains(choice.name)
+                            Surface(
+                                onClick = { sessionState.toggleSelectedChampion(choice.name) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) BrightGold.copy(alpha = 0.2f) else ObsidianVoid,
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.3.dp else 1.dp,
+                                    color = if (isSelected) BrightGold else SlateElevated
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(30.dp)
+                                    .testTag("overlay_pick_champ_${choice.normalizedKey}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        TftChampionAvatar(
-                                            name = choice.name,
-                                            cost = choice.cost,
-                                            size = 20.dp,
-                                            environment = environment,
-                                            showBadge = false
+                                    TftChampionAvatar(
+                                        name = choice.name,
+                                        cost = choice.cost,
+                                        size = 20.dp,
+                                        environment = environment,
+                                        showBadge = false
+                                    )
+                                    Text(
+                                        text = choice.name,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) BrightGold else Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = "${choice.compCount}",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isSelected) BrightGold else Color(0xFF7F91AB)
+                                    )
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = BrightGold,
+                                            modifier = Modifier.size(11.dp)
                                         )
-                                        Text(
-                                            text = choice.name,
-                                            fontSize = 10.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isSelected) BrightGold else Color.White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${choice.compCount}",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isSelected) BrightGold else Color(0xFF7F91AB)
-                                        )
-                                        if (isSelected) {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = BrightGold,
-                                                modifier = Modifier.size(11.dp)
-                                            )
-                                        }
                                     }
                                 }
                             }
                         }
                     }
+                }
+            } else {
+                if (filteredItems.isEmpty()) {
+                    Text(
+                        text = "No ${environment.label} items match that filter.",
+                        fontSize = 10.sp,
+                        color = Color(0xFF93A1B8),
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
                 } else {
-                    if (filteredItems.isEmpty()) {
-                        Text(
-                            text = "No ${environment.label} items match that filter.",
-                            fontSize = 10.sp,
-                            color = Color(0xFF93A1B8),
-                            modifier = Modifier.padding(vertical = 8.dp)
-                        )
-                    } else {
-                        FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            filteredItems.forEach { choice ->
-                                val isSelected = selectedItems.contains(choice.name)
-                                val accent = if (choice.isComponent) BrightGold else ArcaneCyan
-                                Surface(
-                                    onClick = { sessionState.toggleSelectedItem(choice.name) },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isSelected) accent.copy(alpha = 0.2f) else ObsidianVoid,
-                                    border = BorderStroke(
-                                        width = if (isSelected) 1.3.dp else 1.dp,
-                                        color = if (isSelected) accent else SlateElevated
-                                    ),
-                                    modifier = Modifier.testTag(
-                                        "overlay_pick_item_${OverlayArmySearchEngine.normalize(choice.name)}"
-                                    )
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 122.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 140.dp),
+                        contentPadding = PaddingValues(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        items(
+                            items = filteredItems,
+                            key = { "${if (it.isComponent) "c_" else "f_"}${it.normalizedKey}" },
+                            contentType = { "overlay_item_pick" }
+                        ) { choice ->
+                            val isSelected = selectedItems.contains(choice.name)
+                            val accent = if (choice.isComponent) BrightGold else ArcaneCyan
+                            Surface(
+                                onClick = { sessionState.toggleSelectedItem(choice.name) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) accent.copy(alpha = 0.2f) else ObsidianVoid,
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.3.dp else 1.dp,
+                                    color = if (isSelected) accent else SlateElevated
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(30.dp)
+                                    .testTag("overlay_pick_item_${choice.normalizedKey}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        TftItemIcon(
-                                            itemName = choice.name,
-                                            size = 18.dp,
-                                            environment = environment
+                                    TftItemIcon(
+                                        itemName = choice.name,
+                                        size = 18.dp,
+                                        environment = environment
+                                    )
+                                    Text(
+                                        text = choice.name,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) accent else Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = "${choice.compCount}",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isSelected) accent else Color(0xFF7F91AB)
+                                    )
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = accent,
+                                            modifier = Modifier.size(11.dp)
                                         )
-                                        Text(
-                                            text = choice.name,
-                                            fontSize = 10.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isSelected) accent else Color.White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${choice.compCount}",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isSelected) accent else Color(0xFF7F91AB)
-                                        )
-                                        if (isSelected) {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = accent,
-                                                modifier = Modifier.size(11.dp)
-                                            )
-                                        }
                                     }
                                 }
                             }

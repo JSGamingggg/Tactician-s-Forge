@@ -318,9 +318,15 @@ class MainViewModel(
     }
 
     fun onAppResumed() {
+        val ctx = appContext
+        if (ctx != null) {
+            viewModelScope.launch {
+                AppUpdateCoordinator.onResumeHandlePendingInstall(ctx)
+            }
+        }
         // Auto-check for App Updates when opening/returning to the app (throttled in coordinator),
         // while keeping Comp Updates strictly manual via user button press.
-        if (autoCheckAppUpdateOnInit && appContext != null) {
+        if (autoCheckAppUpdateOnInit && ctx != null) {
             checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
         }
     }
@@ -338,7 +344,7 @@ class MainViewModel(
                 dispatchOsNotification = dispatchOsNotification
             )
             if (outcome.updateAvailable && outcome.release != null && (userInitiated || outcome.inAppNotificationTriggered)) {
-                _snackbarMessage.value = "App update available: ${outcome.release.displayVersionLabel} — tap Update to view the latest release."
+                _snackbarMessage.value = "App update available: ${outcome.release.displayVersionLabel} — tap Update to install in-app."
             } else if (!outcome.updateAvailable && userInitiated) {
                 val repo = AppUpdateCoordinator.uiState.value.configuredRepo
                 if (repo != null && AppUpdateCoordinator.uiState.value.status !is com.example.update.AppUpdateStatus.Error) {
@@ -365,6 +371,42 @@ class MainViewModel(
         val ctx = appContext ?: return
         viewModelScope.launch {
             AppUpdateCoordinator.setAppUpdateAlertsEnabled(ctx, enabled)
+        }
+    }
+
+    fun downloadAndInstallAppUpdate(release: GitHubReleaseInfo) {
+        val ctx = appContext ?: return
+        viewModelScope.launch {
+            val started = AppUpdateCoordinator.downloadAndInstallRelease(ctx, release)
+            val status = AppUpdateCoordinator.uiState.value.status
+            if (!started && status is com.example.update.AppUpdateStatus.Error) {
+                _snackbarMessage.value = status.message
+            } else if (status is com.example.update.AppUpdateStatus.ReadyToInstall && status.needsInstallPermission) {
+                _snackbarMessage.value = "Allow 'Install unknown apps' for TFT's Helper, then return to finish installing."
+            }
+        }
+    }
+
+    fun installReadyAppUpdate() {
+        val ctx = appContext ?: return
+        val ready = AppUpdateCoordinator.uiState.value.status as? com.example.update.AppUpdateStatus.ReadyToInstall
+            ?: return
+        viewModelScope.launch {
+            val ok = AppUpdateCoordinator.launchApkInstaller(ctx, ready.apkFilePath, ready.release)
+            if (!ok) {
+                val err = (AppUpdateCoordinator.uiState.value.status as? com.example.update.AppUpdateStatus.Error)?.message
+                if (!err.isNullOrBlank()) {
+                    _snackbarMessage.value = err
+                }
+            }
+        }
+    }
+
+    fun openInstallPermissionSettings() {
+        val ctx = appContext ?: return
+        val opened = AppUpdateCoordinator.openInstallPermissionSettings(ctx)
+        if (!opened) {
+            _snackbarMessage.value = "Unable to open Android install permission settings."
         }
     }
 

@@ -1683,13 +1683,17 @@ private fun OverlayDrawerContent(
     val envCatalogItems = remember(allItems, envFilter) {
         allItems.filter { it.environment == envFilter }
     }
-    val championChoices = remember(sessionState.isArmyFinderOpen, envAllComps, allChampions, envFilter) {
-        if (!sessionState.isArmyFinderOpen) emptyList()
-        else OverlayArmySearchEngine.extractChampionChoices(envAllComps, allChampions, envFilter)
+    val allCompsSearchIndex = remember(envAllComps, envCatalogItems) {
+        OverlayArmySearchEngine.buildSearchIndex(envAllComps, envCatalogItems)
     }
-    val itemChoices = remember(sessionState.isArmyFinderOpen, envAllComps, allItems, envFilter) {
-        if (!sessionState.isArmyFinderOpen) emptyList()
-        else OverlayArmySearchEngine.extractItemChoices(envAllComps, allItems, envFilter)
+    val favoriteCompsSearchIndex = remember(envFavoriteComps, envCatalogItems) {
+        OverlayArmySearchEngine.buildSearchIndex(envFavoriteComps, envCatalogItems)
+    }
+    val championChoices = remember(envAllComps, allChampions, envFilter) {
+        OverlayArmySearchEngine.extractChampionChoices(envAllComps, allChampions, envFilter)
+    }
+    val itemChoices = remember(envAllComps, envCatalogItems, envFilter) {
+        OverlayArmySearchEngine.extractItemChoices(envAllComps, envCatalogItems, envFilter)
     }
 
     val envScopedCompsCount = envAllComps.size
@@ -1707,25 +1711,28 @@ private fun OverlayDrawerContent(
     val displayed = remember(
         isDefaultAllCompsView,
         envAllComps,
-        envFavoriteComps,
+        allCompsSearchIndex,
+        favoriteCompsSearchIndex,
         browseMode,
         tierFilter,
         selectedChampions,
         selectedItems,
-        finderQuery,
-        envCatalogItems
+        finderQuery
     ) {
         if (isDefaultAllCompsView) {
             envAllComps
         } else {
-            val source = if (browseMode == OverlayBrowseMode.FAVORITES) envFavoriteComps else envAllComps
-            val tierFiltered = if (tierFilter == null) source else source.filter { it.tier == tierFilter }
-            OverlayArmySearchEngine.filterArmies(
-                comps = tierFiltered,
+            val activeIndex = if (browseMode == OverlayBrowseMode.FAVORITES) {
+                favoriteCompsSearchIndex
+            } else {
+                allCompsSearchIndex
+            }
+            OverlayArmySearchEngine.filterIndexedArmies(
+                index = activeIndex,
+                tierFilter = tierFilter,
                 selectedChampions = selectedChampions,
                 selectedItems = selectedItems,
-                query = finderQuery,
-                catalogItems = envCatalogItems
+                query = finderQuery
             )
         }
     }
@@ -2067,7 +2074,7 @@ private fun OverlayDrawerContent(
                                     modifier = Modifier.padding(bottom = 6.dp)
                                 )
                             }
-                            AnimatedVisibility(visible = sessionState.isArmyFinderOpen) {
+                            if (sessionState.isArmyFinderOpen) {
                                 OverlayArmyFinderPanel(
                                     environment = envFilter,
                                     sessionState = sessionState,

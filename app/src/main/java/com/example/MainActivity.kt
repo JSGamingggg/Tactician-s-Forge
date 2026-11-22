@@ -349,7 +349,9 @@ private fun AuthenticatedOrGuestWorkspace(
     val copiedCompId by mainViewModel.copiedCompId.collectAsStateWithLifecycle()
     val appUpdateState by mainViewModel.appUpdateState.collectAsStateWithLifecycle()
 
-    val hasPendingAppUpdate = appUpdateState.status is AppUpdateStatus.UpdateAvailable
+    val hasPendingAppUpdate = appUpdateState.status is AppUpdateStatus.UpdateAvailable ||
+        appUpdateState.status is AppUpdateStatus.Downloading ||
+        appUpdateState.status is AppUpdateStatus.ReadyToInstall
 
     val isOverlayRunning by OverlayController.isRunning.collectAsStateWithLifecycle()
 
@@ -537,6 +539,8 @@ private fun AuthenticatedOrGuestWorkspace(
                         AppUpdateInAppBanner(
                             updateState = appUpdateState,
                             onOpenDetails = mainViewModel::openAppUpdateDialog,
+                            onDownloadAndInstall = mainViewModel::downloadAndInstallAppUpdate,
+                            onInstallReady = mainViewModel::installReadyAppUpdate,
                             onOpenStoreUpdate = mainViewModel::openAppUpdateDestination,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -639,6 +643,9 @@ private fun AuthenticatedOrGuestWorkspace(
                                          onCheckAppUpdate = { mainViewModel.checkForAppUpdate(userInitiated = true) },
                                          onSaveGithubRepo = mainViewModel::saveGithubRepo,
                                          onToggleAppUpdateAlerts = mainViewModel::setAppUpdateAlertsEnabled,
+                                         onDownloadAndInstallUpdate = mainViewModel::downloadAndInstallAppUpdate,
+                                         onInstallReadyUpdate = mainViewModel::installReadyAppUpdate,
+                                         onOpenInstallPermission = mainViewModel::openInstallPermissionSettings,
                                          onOpenPlayStoreUpdate = mainViewModel::openPlayStorePage,
                                          onOpenGitHubReleaseUpdate = mainViewModel::openGitHubReleasePage,
                                          onOpenAppUpdateDialog = mainViewModel::openAppUpdateDialog,
@@ -675,6 +682,8 @@ private fun AuthenticatedOrGuestWorkspace(
          AppUpdatePromptDialog(
              updateState = appUpdateState,
              onDismissLater = { mainViewModel.dismissAppUpdateDialog(suppressThisReleaseOnLaunch = true) },
+             onDownloadAndInstall = mainViewModel::downloadAndInstallAppUpdate,
+             onInstallReady = mainViewModel::installReadyAppUpdate,
              onOpenPlayStore = mainViewModel::openPlayStorePage,
              onOpenGitHubUpdate = mainViewModel::openGitHubReleasePage
          )

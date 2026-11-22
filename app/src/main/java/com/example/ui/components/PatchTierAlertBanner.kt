@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -239,49 +240,74 @@ fun PatchTierDetailsDialog(
                         color = BrightGold
                     )
                     patch.balanceChanges.forEach { bc ->
+                        val prev = bc.previousValue.replace(Regex("\\s+"), " ").trim()
+                        val next = bc.newValue.replace(Regex("\\s+"), " ").trim()
+                        val diffText = when {
+                            prev.isNotBlank() && next.isNotBlank() -> "$prev → $next"
+                            next.isNotBlank() -> next
+                            prev.isNotBlank() -> prev
+                            else -> ""
+                        }
+                        val cleanSummary = bc.summary.replace(Regex("\\s+"), " ").trim()
+                        val showInlineDiff = diffText.isNotBlank() && diffText.length <= 18
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.Top
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
+                            Box(modifier = Modifier.padding(top = 2.dp)) {
                                 DeltaBadge(bc.deltaType)
-                                Column {
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
                                     Text(
                                         text = "${bc.targetName} (${bc.category})",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color.White
+                                        color = Color.White,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
                                     )
+                                    if (showInlineDiff) {
+                                        Text(
+                                            text = diffText,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = BrightGold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 116.dp)
+                                        )
+                                    }
+                                }
+                                if (diffText.isNotBlank() && !showInlineDiff) {
                                     Text(
-                                        text = bc.summary,
+                                        text = diffText,
                                         fontSize = 10.sp,
-                                        color = Color(0xFFC7D3EA),
+                                        fontWeight = FontWeight.Bold,
+                                        color = BrightGold,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                            }
-                            if (bc.previousValue.isNotBlank() && bc.newValue.isNotBlank()) {
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = "${bc.previousValue} → ${bc.newValue}",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = BrightGold
-                                )
-                            } else if (bc.newValue.isNotBlank()) {
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = bc.newValue,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = BrightGold
-                                )
+                                if (cleanSummary.isNotBlank()) {
+                                    Text(
+                                        text = cleanSummary,
+                                        fontSize = 10.sp,
+                                        color = Color(0xFFC7D3EA),
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }

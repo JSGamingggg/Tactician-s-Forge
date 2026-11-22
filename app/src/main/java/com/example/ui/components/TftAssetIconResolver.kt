@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.example.data.model.TftEnvironment
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Resolves exact Riot Data Dragon (16.22.1+) and TFTAcademy asset URLs, display names,
@@ -29,6 +30,7 @@ object TftAssetIconResolver {
     private var dynamicItemImages: Map<String, String> by mutableStateOf(emptyMap())
     private var dynamicAugmentImages: Map<String, String> by mutableStateOf(emptyMap())
     private var dynamicTraitImages: Map<String, String> by mutableStateOf(emptyMap())
+    private var dynamicApiDisplayNames: Map<String, String> = emptyMap()
 
     private var preloadedChampionImages: Map<String, String> = emptyMap()
     private var preloadedItemImages: Map<String, String> = emptyMap()
@@ -46,6 +48,8 @@ object TftAssetIconResolver {
     private var pbeChampionCosts: Map<String, Int> = emptyMap()
     private var pbeChampionTraits: Map<String, List<String>> = emptyMap()
 
+    private val scrapedItemImages = ConcurrentHashMap<String, String>()
+
     @Volatile
     private var preloadedCatalogLoaded: Boolean = false
 
@@ -57,7 +61,8 @@ object TftAssetIconResolver {
         val championImages: Map<String, String>?,
         val itemImages: Map<String, String>?,
         val augmentImages: Map<String, String>?,
-        val traitImages: Map<String, String>? = null
+        val traitImages: Map<String, String>? = null,
+        val apiDisplayNames: Map<String, String> = emptyMap()
     )
 
     data class ParsedPreloadedSetCatalog(
@@ -204,13 +209,69 @@ object TftAssetIconResolver {
                 }
             }
 
+            val apiNamesMap = HashMap<String, String>(2048)
+            apiNamesMap.putAll(readStringMap(root.optJSONObject("apiIdToName")))
+
+            fun isCleanHumanLabel(raw: String): Boolean {
+                val trimmed = raw.trim()
+                if (trimmed.length < 2) return false
+                if (trimmed.contains('_')) return false
+                if (trimmed.startsWith("TFT", ignoreCase = true) ||
+                    trimmed.startsWith("DA_", ignoreCase = true) ||
+                    trimmed.startsWith("DA18", ignoreCase = true) ||
+                    trimmed.startsWith("DA19", ignoreCase = true) ||
+                    trimmed.startsWith("Set", ignoreCase = true)
+                ) {
+                    return false
+                }
+                return trimmed.any { it.isLetter() }
+            }
+
+            fun crossIndexDisplayNamesFromIconObject(obj: JSONObject?) {
+                if (obj == null) return
+                val byUrl = HashMap<String, MutableList<String>>(obj.length())
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = obj.optString(k)
+                    if (v.isNotBlank()) {
+                        byUrl.getOrPut(v) { mutableListOf() }.add(k)
+                    }
+                }
+                byUrl.values.forEach { groupKeys ->
+                    if (groupKeys.size < 2) return@forEach
+                    val preferredHuman = groupKeys
+                        .filter { isCleanHumanLabel(it) }
+                        .maxByOrNull { label ->
+                            var score = 0
+                            if (label.contains(' ')) score += 10
+                            if (label.contains('\'')) score += 4
+                            if (label.first().isUpperCase()) score += 3
+                            score += label.length.coerceAtMost(24)
+                            score
+                        }
+                        ?: return@forEach
+                    groupKeys.forEach { rawKey ->
+                        // Only map raw internal Riot API IDs (e.g. TFT_Item_*, DA_*) to human names;
+                        // never remap an already human-readable label onto a sibling sharing an icon URL.
+                        if (isCleanHumanLabel(rawKey)) return@forEach
+                        val normKey = normalizeLookupKey(rawKey)
+                        if (normKey.isNotEmpty() && !apiNamesMap.containsKey(normKey)) {
+                            apiNamesMap[normKey] = preferredHuman
+                        }
+                    }
+                }
+            }
+
+            crossIndexDisplayNamesFromIconObject(root.optJSONObject("itemIcons"))
+
             ParsedPreloadedSetCatalog(
                 version = version,
                 championImages = readStringMap(root.optJSONObject("championIcons")),
                 itemImages = readStringMap(root.optJSONObject("itemIcons")),
                 augmentImages = readStringMap(root.optJSONObject("augmentIcons")),
                 traitImages = readStringMap(root.optJSONObject("traitIcons")),
-                apiDisplayNames = readStringMap(root.optJSONObject("apiIdToName")),
+                apiDisplayNames = apiNamesMap,
                 championTraits = traitsMap,
                 championCosts = costsMap,
                 traitDescriptions = traitDescMap
@@ -234,6 +295,25 @@ object TftAssetIconResolver {
         catalogRevision += 1
     }
 
+    fun registerScrapedItemIcon(nameOrId: String, rawUrl: String?) {
+        val url = rawUrl?.trim().orEmpty()
+        if (!url.startsWith("https://", ignoreCase = true)) return
+        val raw = nameOrId.trim()
+        if (raw.isEmpty()) return
+        val norm = normalizeLookupKey(raw)
+        val cleanNorm = normalizeLookupKey(formatRiotAssetLabel(raw))
+        var updated = false
+        if (norm.isNotEmpty() && scrapedItemImages.putIfAbsent(norm, url) == null) {
+            updated = true
+        }
+        if (cleanNorm.isNotEmpty() && cleanNorm != norm && scrapedItemImages.putIfAbsent(cleanNorm, url) == null) {
+            updated = true
+        }
+        if (updated) {
+            catalogRevision += 1
+        }
+    }
+
     fun parseDdragonCatalogInBackground(
         version: String?,
         championJson: String? = null,
@@ -241,26 +321,29 @@ object TftAssetIconResolver {
         augmentJson: String? = null,
         traitJson: String? = null
     ): ParsedDdragonCatalog {
+        val namesOut = HashMap<String, String>(1024)
         val champs = championJson?.takeIf { it.isNotBlank() }
-            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-champion").takeIf { m -> m.isNotEmpty() } }
+            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-champion", displayNamesOut = namesOut).takeIf { m -> m.isNotEmpty() } }
         val items = itemJson?.takeIf { it.isNotBlank() }
-            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-item").takeIf { m -> m.isNotEmpty() } }
+            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-item", displayNamesOut = namesOut).takeIf { m -> m.isNotEmpty() } }
         val augments = augmentJson?.takeIf { it.isNotBlank() }
             ?.let {
                 parseDdragonAssetJson(
                     jsonText = it,
                     defaultGroup = "tft-augment",
-                    skipMissingPlaceholderImages = true
+                    skipMissingPlaceholderImages = true,
+                    displayNamesOut = namesOut
                 ).takeIf { m -> m.isNotEmpty() }
             }
         val traits = traitJson?.takeIf { it.isNotBlank() }
-            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-trait").takeIf { m -> m.isNotEmpty() } }
+            ?.let { parseDdragonAssetJson(it, defaultGroup = "tft-trait", displayNamesOut = namesOut).takeIf { m -> m.isNotEmpty() } }
         return ParsedDdragonCatalog(
             version = version?.takeIf { it.isNotBlank() },
             championImages = champs,
             itemImages = items,
             augmentImages = augments,
-            traitImages = traits
+            traitImages = traits,
+            apiDisplayNames = namesOut
         )
     }
 
@@ -294,6 +377,10 @@ object TftAssetIconResolver {
                 changed = true
             }
         }
+        if (parsed.apiDisplayNames.isNotEmpty() && parsed.apiDisplayNames != dynamicApiDisplayNames) {
+            dynamicApiDisplayNames = parsed.apiDisplayNames
+            changed = true
+        }
         if (changed) {
             catalogRevision += 1
         }
@@ -317,19 +404,60 @@ object TftAssetIconResolver {
         )
     }
 
+    private fun lookupCleanCatalogDisplayName(normKey: String): String? {
+        if (normKey.isEmpty()) return null
+        BUILTIN_DISPLAY_NAME_OVERRIDES[normKey]?.let { return it }
+        dynamicApiDisplayNames[normKey]
+            ?.takeIf { isValidResolvedDisplayName(it) }
+            ?.let { return it }
+        apiDisplayNameMap[normKey]
+            ?.takeIf { isValidResolvedDisplayName(it) }
+            ?.let { return it }
+        return null
+    }
+
+    private fun isValidResolvedDisplayName(candidate: String): Boolean {
+        return candidate.isNotBlank() &&
+            !candidate.contains('_') &&
+            !candidate.startsWith("TFT", ignoreCase = true) &&
+            !candidate.startsWith("DA_", ignoreCase = true) &&
+            !candidate.startsWith("DA18", ignoreCase = true) &&
+            !candidate.startsWith("DA19", ignoreCase = true)
+    }
+
     fun resolveDisplayName(rawId: String): String? {
         val raw = rawId.trim()
         if (raw.isEmpty()) return null
+        // Never strip '+' / '++' tier suffixes from human-readable augment names (e.g. "Advanced Loan+")
+        if (raw.endsWith("+") && !raw.contains('_')) return null
         val norm = normalizeLookupKey(raw)
-        BUILTIN_DISPLAY_NAME_OVERRIDES[norm]?.let { return it }
-        apiDisplayNameMap[norm]
-            ?.takeIf { candidate ->
-                candidate.isNotBlank() &&
-                    !candidate.contains('_') &&
-                    !candidate.startsWith("TFT", ignoreCase = true) &&
-                    !candidate.startsWith("DA_", ignoreCase = true)
+        lookupCleanCatalogDisplayName(norm)?.let { return it }
+
+        // Resolve Radiant item variants (e.g. TFT5_Item_RapidFirecannonRadiant -> Radiant Red Buff,
+        // DA_BlueBuffRadiant -> Radiant Blue Buff, radiant-jeweled-gauntlet -> Radiant Jeweled Gauntlet)
+        val isRadiantVariant = (norm.endsWith("radiant") && norm.length > 9) ||
+            (norm.startsWith("radiant") && norm.length > 9 && !norm.startsWith("radiantvirtue"))
+        if (isRadiantVariant) {
+            val baseNorm = norm
+                .removePrefix("tft5item")
+                .removePrefix("tftitem")
+                .removePrefix("da18")
+                .removePrefix("da19")
+                .removePrefix("da")
+                .removePrefix("radiant")
+                .removeSuffix("radiant")
+            if (baseNorm.isNotEmpty()) {
+                val baseResolved = lookupCleanCatalogDisplayName("tftitem$baseNorm")
+                    ?: lookupCleanCatalogDisplayName(baseNorm)
+                if (!baseResolved.isNullOrBlank()) {
+                    return if (baseResolved.startsWith("Radiant ", ignoreCase = true)) {
+                        baseResolved
+                    } else {
+                        "Radiant $baseResolved"
+                    }
+                }
             }
-            ?.let { return it }
+        }
         return null
     }
 
@@ -571,65 +699,113 @@ object TftAssetIconResolver {
         return resolveChampionIconUrl(nameOrId, environment)
     }
 
-    fun resolveItemIconUrl(nameOrId: String, environment: TftEnvironment? = null): String? {
+    fun resolveItemIconUrl(nameOrId: String, environment: TftEnvironment? = null): String? =
+        resolveItemIconFallbackUrls(nameOrId, environment).firstOrNull()
+
+    fun resolveItemIconFallbackUrls(nameOrId: String, environment: TftEnvironment? = null): List<String> {
         val raw = nameOrId.trim()
-        if (raw.isEmpty()) return null
+        if (raw.isEmpty()) return emptyList()
 
         val norm = normalizeLookupKey(raw)
         val cleanName = formatRiotAssetLabel(raw)
         val cleanNorm = normalizeLookupKey(cleanName)
-        val candidateKeys = buildList {
+
+        val candidateKeys = LinkedHashSet<String>(16).apply {
             if (cleanNorm.isNotEmpty()) {
                 add(cleanNorm)
                 add("da$cleanNorm")
                 add("da18$cleanNorm")
+                add("daartifact$cleanNorm")
                 add("tftitem$cleanNorm")
+                add("tftitemartifact$cleanNorm")
+                if (cleanNorm.startsWith("radiant") && cleanNorm.length > 7) {
+                    val base = cleanNorm.removePrefix("radiant")
+                    add("${base}radiant")
+                    add("da${base}radiant")
+                    add("tft5item${base}radiant")
+                }
+                if (cleanNorm.endsWith("emblem") && cleanNorm.length > 6) {
+                    val trait = cleanNorm.removeSuffix("emblem")
+                    add("da18emblem$trait")
+                    add("da19emblem$trait")
+                    add("tft18item${trait}emblemitem")
+                    add("tft19item${trait}emblemitem")
+                }
             }
             if (norm.isNotEmpty() && norm != cleanNorm) {
                 add(norm)
             }
         }
 
+        val urls = LinkedHashSet<String>(6)
+        fun addUrl(url: String?) {
+            if (!url.isNullOrBlank() && url.startsWith("https://", ignoreCase = true)) {
+                urls.add(url)
+            }
+        }
+
         // 0. For PBE items, prefer TFTactics Set 19 SunderArmor item icons
         if (environment == TftEnvironment.PBE) {
             for (k in candidateKeys) {
-                val pbeUrl = pbeItemImages[k]
-                if (!pbeUrl.isNullOrBlank()) return pbeUrl
+                addUrl(pbeItemImages[k])
             }
         }
 
-        // 1. Check dynamically fetched Riot tft-item.json map (prefer resolved official name first)
+        // 1. Dynamically fetched Riot tft-item.json map (prefer resolved official name first)
         for (k in candidateKeys) {
-            val dynamicPath = dynamicItemImages[k]
-            if (!dynamicPath.isNullOrBlank()) return toDdragonImgUrl(dynamicPath)
+            dynamicItemImages[k]?.takeIf { it.isNotBlank() }?.let { addUrl(toDdragonImgUrl(it)) }
         }
 
-        // 2. Check preloaded Set 18 exact DDragon/TFTAcademy item icon catalog (prefer resolved official name first)
+        // 2. Preloaded Set 18 exact DDragon/TFTAcademy item icon catalog
         for (k in candidateKeys) {
-            val preloaded = preloadedItemImages[k]
-            if (!preloaded.isNullOrBlank()) return preloaded
+            addUrl(preloadedItemImages[k])
         }
 
-        // 3. Check exact Data Dragon TFT item filename map
-        val staticFile = ITEM_FILENAME_MAP[cleanNorm] ?: ITEM_FILENAME_MAP[norm]
-        if (!staticFile.isNullOrBlank()) {
-            return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/$staticFile"
+        // 3. Exact Data Dragon TFT item filename map
+        for (k in candidateKeys) {
+            ITEM_FILENAME_MAP[k]?.takeIf { it.isNotBlank() }?.let { staticFile ->
+                addUrl("https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/$staticFile")
+            }
         }
 
-        // 4. Fallback if raw API ID is already like TFT_Item_Something
+        // 4. PBE SunderArmor fallback when environment wasn't PBE
+        if (environment != TftEnvironment.PBE) {
+            for (k in candidateKeys) {
+                addUrl(pbeItemImages[k])
+            }
+        }
+
+        // 5. Real scraped item icon URLs from tft.ninja (handles brand-new set items/emblems)
+        for (k in candidateKeys) {
+            addUrl(scrapedItemImages[k])
+        }
+
+        // 6. Structured Data Dragon filename fallback
+        if (cleanNorm.startsWith("radiant") && cleanNorm.length > 7) {
+            val baseNorm = cleanNorm.removePrefix("radiant")
+            val mappedBaseFile = ITEM_FILENAME_MAP[baseNorm]
+            if (!mappedBaseFile.isNullOrBlank()) {
+                val radiantFile = mappedBaseFile
+                    .replace("TFT_Item_", "TFT5_Item_")
+                    .replace(".png", "Radiant.png")
+                addUrl("https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/$radiantFile")
+            }
+        }
         if (raw.startsWith("TFT", ignoreCase = true)) {
             val suffix = raw.substringAfterLast("_").replace(Regex("[^A-Za-z0-9]"), "")
             if (suffix.isNotBlank()) {
-                return "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/TFT_Item_$suffix.png"
+                addUrl("https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/TFT_Item_$suffix.png")
             }
         }
-
         val pascal = cleanName.split(Regex("[^A-Za-z0-9]+"))
             .filter { it.isNotBlank() }
             .joinToString("") { part -> part.replaceFirstChar { c -> c.uppercaseChar() } }
-        return if (pascal.isNotBlank()) {
-            "https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/TFT_Item_$pascal.png"
-        } else null
+        if (pascal.isNotBlank()) {
+            addUrl("https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/tft-item/TFT_Item_$pascal.png")
+            addUrl("https://sunderarmor.com/items/$pascal.png")
+        }
+
+        return urls.toList()
     }
 
     fun resolveAugmentIconUrl(nameOrId: String): String? {
@@ -701,7 +877,8 @@ object TftAssetIconResolver {
     private fun parseDdragonAssetJson(
         jsonText: String,
         defaultGroup: String,
-        skipMissingPlaceholderImages: Boolean = false
+        skipMissingPlaceholderImages: Boolean = false,
+        displayNamesOut: MutableMap<String, String>? = null
     ): Map<String, String> {
         val map = mutableMapOf<String, String>()
         runCatching {
@@ -712,7 +889,15 @@ object TftAssetIconResolver {
                 val mapKey = keys.next()
                 val obj = data.optJSONObject(mapKey) ?: continue
                 val apiId = obj.optString("id")
-                val name = obj.optString("name")
+                val name = obj.optString("name").trim()
+                if (displayNamesOut != null && isValidResolvedDisplayName(name)) {
+                    val normMapKey = normalizeLookupKey(mapKey)
+                    if (normMapKey.isNotEmpty()) displayNamesOut.putIfAbsent(normMapKey, name)
+                    if (apiId.isNotBlank()) {
+                        val normApiId = normalizeLookupKey(apiId)
+                        if (normApiId.isNotEmpty()) displayNamesOut.putIfAbsent(normApiId, name)
+                    }
+                }
                 val imageObj = obj.optJSONObject("image")
                 val fullImg = imageObj?.optString("full").orEmpty()
                 if (fullImg.isNotBlank()) {
@@ -798,37 +983,60 @@ object TftAssetIconResolver {
         "danestingdolls" to "Nesting Dolls",
         "danestingdollsplus" to "Nesting Dolls+",
         "danestingdollsplusplus" to "Nesting Dolls++",
-        // Official Riot internal TFT item codenames -> modern TFT display names
+        // Official Riot internal TFT item codenames -> modern TFT in-game display names
         "tftitemredbuff" to "Sunfire Cape",
         "tftitemrapidfirecannon" to "Red Buff",
-        "rapidfirecannon" to "Red Buff",
+        "rapidfirecannon" to "Rapid Firecannon",
+        "daartifactrapidfirecannon" to "Rapid Firecannon",
+        "tftitemartifactrapidfirecannon" to "Rapid Firecannon",
+        "tft9itemornnrapidfirecannon" to "Rapid Firecannon",
         "tftitemleviathan" to "Nashor's Tooth",
         "leviathan" to "Nashor's Tooth",
+        "nashorstooth" to "Nashor's Tooth",
         "tftitemguardianangel" to "Edge of Night",
         "guardianangel" to "Edge of Night",
+        "edgeofnight" to "Edge of Night",
         "tftitemunstableconcoction" to "Hand of Justice",
         "unstableconcoction" to "Hand of Justice",
+        "handofjustice" to "Hand of Justice",
         "tftitemfrozenheart" to "Protector's Vow",
         "frozenheart" to "Protector's Vow",
+        "protectorsvow" to "Protector's Vow",
         "tftitemnightharvester" to "Steadfast Heart",
         "nightharvester" to "Steadfast Heart",
+        "steadfastheart" to "Steadfast Heart",
         "tftitemmadredsbloodrazor" to "Giant Slayer",
         "madredsbloodrazor" to "Giant Slayer",
+        "giantslayer" to "Giant Slayer",
         "tftitemspectralgauntlet" to "Evenshroud",
         "spectralgauntlet" to "Evenshroud",
+        "evenshroud" to "Evenshroud",
         "tftitempowergauntlet" to "Striker's Flail",
         "powergauntlet" to "Striker's Flail",
         "guardbreaker" to "Striker's Flail",
+        "strikersflail" to "Striker's Flail",
+        "dastrikersflail" to "Striker's Flail",
         "tftitemforceofnature" to "Tactician's Crown",
         "forceofnature" to "Tactician's Crown",
+        "tacticianscrown" to "Tactician's Crown",
         "tftitemstatikkshiv" to "Void Staff",
         "statikkshiv" to "Void Staff",
+        "voidstaff" to "Void Staff",
+        "davoidstaff" to "Void Staff",
         "tftitemredemption" to "Spirit Visage",
         "redemption" to "Spirit Visage",
+        "spiritvisage" to "Spirit Visage",
+        "daspiritvisage" to "Spirit Visage",
         "tftitemrunaanshurricane" to "Kraken's Fury",
         "runaanshurricane" to "Kraken's Fury",
+        "krakensfury" to "Kraken's Fury",
+        "dakrakensfury" to "Kraken's Fury",
         "tftitembfsword" to "B.F. Sword",
         "bfsword" to "B.F. Sword",
+        "tftitemtearofthegoddess" to "Tear of the Goddess",
+        "tearofthegoddess" to "Tear of the Goddess",
+        "tftitemspearofshojin" to "Spear of Shojin",
+        "spearofshojin" to "Spear of Shojin",
         "tftitemtacticianscape" to "Tactician's Cape",
         "tacticianscape" to "Tactician's Cape",
         "tftitemtacticiansring" to "Tactician's Cape",
@@ -838,18 +1046,196 @@ object TftAssetIconResolver {
         "tftitemtacticiansscepter" to "Tactician's Shield",
         "tacticiansscepter" to "Tactician's Shield",
         "tftitemjeweledgauntlet" to "Jeweled Gauntlet",
+        "jeweledgauntlet" to "Jeweled Gauntlet",
         "tftitemwarmogsarmor" to "Warmog's Armor",
+        "warmogsarmor" to "Warmog's Armor",
         "tftitemguinsoosrageblade" to "Guinsoo's Rageblade",
+        "guinsoosrageblade" to "Guinsoo's Rageblade",
         "tftitemrabadonsdeathcap" to "Rabadon's Deathcap",
+        "rabadonsdeathcap" to "Rabadon's Deathcap",
         "tftitemarchangelsstaff" to "Archangel's Staff",
+        "archangelsstaff" to "Archangel's Staff",
         "tftitemdragonsclaw" to "Dragon's Claw",
+        "dragonsclaw" to "Dragon's Claw",
         "tftitemtitansresolve" to "Titan's Resolve",
+        "titansresolve" to "Titan's Resolve",
         "tftitemsteraksgage" to "Sterak's Gage",
+        "steraksgage" to "Sterak's Gage",
         "tftitemthiefsgloves" to "Thief's Gloves",
+        "thiefsgloves" to "Thief's Gloves",
         "tftitemgiantsbelt" to "Giant's Belt",
+        "giantsbelt" to "Giant's Belt",
         "tftitemspatula" to "Spatula",
         "tftitemfryingpan" to "Frying Pan",
-        "dacomponentfryingpan" to "Frying Pan"
+        "dacomponentfryingpan" to "Frying Pan",
+        "aegisofdawn" to "Aegis of Dawn",
+        "aegisofdusk" to "Aegis of Dusk",
+        // Artifacts & Ornn Items (exact official Riot TFT in-game names)
+        "tft4itemornnmuramana" to "Manazane",
+        "ornnmuramana" to "Manazane",
+        "manazane" to "Manazane",
+        "daartifactmanazane" to "Manazane",
+        "tft4itemornnthecollector" to "Gold Collector",
+        "ornnthecollector" to "Gold Collector",
+        "thecollector" to "Gold Collector",
+        "goldcollector" to "Gold Collector",
+        "daartifactgoldcollector" to "Gold Collector",
+        "tft9itemornnhullbreaker" to "Hullcrusher",
+        "ornnhullbreaker" to "Hullcrusher",
+        "hullbreaker" to "Hullcrusher",
+        "hullcrusher" to "Hullcrusher",
+        "daartifacthullcrusher" to "Hullcrusher",
+        "tft4itemornndeathsdefiance" to "Death's Defiance",
+        "ornndeathsdefiance" to "Death's Defiance",
+        "deathsdefiance" to "Death's Defiance",
+        "daartifactdeathsdefiance" to "Death's Defiance",
+        "tft4itemornninfinityforce" to "Infinity Force",
+        "ornninfinityforce" to "Infinity Force",
+        "infinityforce" to "Infinity Force",
+        "daartifactinfinityforce" to "Infinity Force",
+        "tft4itemornnzhonyasparadox" to "Zhonya's Paradox",
+        "ornnzhonyasparadox" to "Zhonya's Paradox",
+        "zhonyasparadox" to "Zhonya's Paradox",
+        "daartifactzhonyasparadox" to "Zhonya's Paradox",
+        "tft4itemornnanimavisage" to "Anima Visage",
+        "ornnanimavisage" to "Anima Visage",
+        "animavisage" to "Anima Visage",
+        "daartifactanimavisage" to "Anima Visage",
+        "tft4itemornneternalwinter" to "Eternal Winter",
+        "ornneternalwinter" to "Eternal Winter",
+        "eternalwinter" to "Eternal Winter",
+        "daartifacteternalwinter" to "Eternal Winter",
+        "tft4itemornnobsidiancleaver" to "Obsidian Cleaver",
+        "obsidiancleaver" to "Obsidian Cleaver",
+        "tft9itemornnhorizonfocus" to "Sniper's Focus",
+        "ornnhorizonfocus" to "Sniper's Focus",
+        "snipersfocus" to "Sniper's Focus",
+        "tftitemartifactsnipersfocus" to "Sniper's Focus",
+        "daartifactsnipersfocus" to "Sniper's Focus",
+        "tft9itemornntrickstersglass" to "Trickster's Glass",
+        "ornntrickstersglass" to "Trickster's Glass",
+        "trickstersglass" to "Trickster's Glass",
+        "daartifacttrickstersglass" to "Trickster's Glass",
+        "tft9itemornndeathfiregrasp" to "Deathfire Grasp",
+        "ornndeathfiregrasp" to "Deathfire Grasp",
+        "deathfiregrasp" to "Deathfire Grasp",
+        "daartifactdeathfiregrasp" to "Deathfire Grasp",
+        "tft9itemornnblacksmithsgloves" to "Blacksmith's Gloves",
+        "ornnblacksmithsgloves" to "Blacksmith's Gloves",
+        "blacksmithsgloves" to "Blacksmith's Gloves",
+        "daartifactblacksmithsgloves" to "Blacksmith's Gloves",
+        "tftitemartifactnavoriflickerblades" to "Flickerblades",
+        "daartifactnavoriflickerblade" to "Flickerblades",
+        "daartifactnavoriflickerblades" to "Flickerblades",
+        "navoriflickerblade" to "Flickerblades",
+        "navoriflickerblades" to "Flickerblades",
+        "flickerblade" to "Flickerblades",
+        "flickerblades" to "Flickerblades",
+        "tftitemartifactwitsend" to "Wit's End",
+        "daartifactwitsend" to "Wit's End",
+        "witsend" to "Wit's End",
+        "tftitemartifactlichbane" to "Lich Bane",
+        "daartifactlichbane" to "Lich Bane",
+        "lichbane" to "Lich Bane",
+        "tftitemartifactludenstempest" to "Luden's Tempest",
+        "tftitemartifactludensecho" to "Luden's Tempest",
+        "daartifactludenstempest" to "Luden's Tempest",
+        "ludenstempest" to "Luden's Tempest",
+        "tftitemartifacttalismanofascension" to "Talisman of Ascension",
+        "daartifacttalismanofascension" to "Talisman of Ascension",
+        "talismanofascension" to "Talisman of Ascension",
+        "tftitemartifactfishbones" to "Fishbones",
+        "daartifactfishbones" to "Fishbones",
+        "fishbones" to "Fishbones",
+        "tftitemartifactmittens" to "Mittens",
+        "daartifactmittens" to "Mittens",
+        "mittens" to "Mittens",
+        "tftitemartifactprowlersclaw" to "Prowler's Claw",
+        "daartifactprowlersclaw" to "Prowler's Claw",
+        "prowlersclaw" to "Prowler's Claw",
+        "tftitemartifactseekersarmguard" to "Seeker's Armguard",
+        "daartifactseekersarmguard" to "Seeker's Armguard",
+        "seekersarmguard" to "Seeker's Armguard",
+        "tftitemartifactsilvermeredawn" to "Silvermere Dawn",
+        "daartifactsilvermeredawn" to "Silvermere Dawn",
+        "silvermeredawn" to "Silvermere Dawn",
+        "tftitemartifactsuspicioustrenchcoat" to "Suspicious Trench Coat",
+        "daartifactsuspicioustrenchcoat" to "Suspicious Trench Coat",
+        "suspicioustrenchcoat" to "Suspicious Trench Coat",
+        "tftitemartifactunendingdespair" to "Unending Despair",
+        "daartifactunendingdespair" to "Unending Despair",
+        "unendingdespair" to "Unending Despair",
+        "tftitemartifactblightingjewel" to "Blighting Jewel",
+        "daartifactblightingjewel" to "Blighting Jewel",
+        "blightingjewel" to "Blighting Jewel",
+        "tftitemartifactforbiddenidol" to "Forbidden Idol",
+        "daartifactforbiddenidol" to "Forbidden Idol",
+        "forbiddenidol" to "Forbidden Idol",
+        "tftitemartifactinnervatinglocket" to "Innervating Locket",
+        "daartifactinnervatinglocket" to "Innervating Locket",
+        "innervatinglocket" to "Innervating Locket",
+        "tftitemartifactlightshieldcrest" to "Lightshield Crest",
+        "daartifactlightshieldcrest" to "Lightshield Crest",
+        "lightshieldcrest" to "Lightshield Crest",
+        "tftitemartifactmogulsmail" to "Mogul's Mail",
+        "daartifactmogulsmail" to "Mogul's Mail",
+        "mogulsmail" to "Mogul's Mail",
+        "tftitemartifactgamblersblade" to "Gambler's Blade",
+        "daartifactgamblersblade" to "Gambler's Blade",
+        "gamblersblade" to "Gambler's Blade",
+        "tftitemartifactdiamondhands" to "Diamond Hands",
+        "daartifactdiamondhands" to "Diamond Hands",
+        "diamondhands" to "Diamond Hands",
+        "tftitemartifactdawncore" to "Dawncore",
+        "daartifactdawncore" to "Dawncore",
+        "dawncore" to "Dawncore",
+        "tftitemartifactstatikkshiv" to "Statikk Shiv",
+        "daartifactstatikkshiv" to "Statikk Shiv",
+        "tftitemartifacttheindomitable" to "The Indomitable",
+        "daartifacttheindomitable" to "The Indomitable",
+        "theindomitable" to "The Indomitable",
+        "tftitemartifacttitanichydra" to "Titanic Hydra",
+        "daartifacttitanichydra" to "Titanic Hydra",
+        "titanichydra" to "Titanic Hydra",
+        "tftitemartifactspectralcutlass" to "Spectral Cutlass",
+        "daartifactspectralcutlass" to "Spectral Cutlass",
+        "spectralcutlass" to "Spectral Cutlass",
+        "tftitemartifactcorruptvampiricscepter" to "Corrupt Vampiric Scepter",
+        "corruptvampiricscepter" to "Corrupt Vampiric Scepter",
+        // Support Items
+        "tftitemshroud" to "Shroud of Stillness",
+        "shroud" to "Shroud of Stillness",
+        "shroudofstillness" to "Shroud of Stillness",
+        "tftitemchalice" to "Chalice of Power",
+        "chalice" to "Chalice of Power",
+        "chaliceofpower" to "Chalice of Power",
+        "tftitemlocketoftheironsolari" to "Locket of the Iron Solari",
+        "locketoftheironsolari" to "Locket of the Iron Solari",
+        "tftitemzekesherald" to "Zeke's Herald",
+        "zekesherald" to "Zeke's Herald",
+        "tftitemaegisofthelegion" to "Aegis of the Legion",
+        "aegisofthelegion" to "Aegis of the Legion",
+        "tftitemmoonstone" to "Moonstone Renewer",
+        "moonstonerenewer" to "Moonstone Renewer",
+        "tftitemvirtueofthemartyr" to "Virtue of the Martyr",
+        "virtueofthemartyr" to "Virtue of the Martyr",
+        "tftitemranduinssanctum" to "Randuin's Omen",
+        "tft4itemornnranduinssanctum" to "Randuin's Omen",
+        "randuinssanctum" to "Randuin's Omen",
+        "randuinsomen" to "Randuin's Omen",
+        "tftitemneedlesslybiggem" to "Needlessly Big Gem",
+        "needlesslybiggem" to "Needlessly Big Gem",
+        "tftitembansheesveil" to "Banshee's Veil",
+        "bansheesveil" to "Banshee's Veil",
+        "tftitemzephyr" to "Zephyr",
+        "zephyr" to "Zephyr",
+        "tftitemspite" to "Spite",
+        "tftitemtheeternalflame" to "The Eternal Flame",
+        "theeternalflame" to "The Eternal Flame",
+        "tftitemknightsvow" to "Knight's Vow",
+        "knightsvow" to "Knight's Vow",
+        "tftitemunstabletreasurechest" to "Unstable Treasure Chest",
+        "unstabletreasurechest" to "Unstable Treasure Chest"
     )
 
     private val NON_LOL_CHAMPION_KEYS: Set<String> = setOf(
@@ -1004,7 +1390,8 @@ object TftAssetIconResolver {
         "unstableconcoction" to "TFT_Item_UnstableConcoction.png",
         "protectorsvow" to "TFT_Item_FrozenHeart.png",
         "redbuff" to "TFT_Item_RapidFireCannon.png",
-        "rapidfirecannon" to "TFT_Item_RapidFireCannon.png",
+        "tftitemrapidfirecannon" to "TFT_Item_RapidFireCannon.png",
+        "rapidfirecannon" to "TFT_Item_Artifact_RapidFirecannon.png",
         "sunfirecape" to "TFT_Item_RedBuff.png",
         "ionicspark" to "TFT_Item_IonicSpark.png",
         "morellonomicon" to "TFT_Item_Morellonomicon.png",
@@ -1039,6 +1426,57 @@ object TftAssetIconResolver {
         "krakensfury" to "TFT_Item_RunaansHurricane.png",
         "strikersflail" to "TFT_Item_PowerGauntlet.png",
         "guardbreaker" to "TFT_Item_PowerGauntlet.png",
+        // Artifacts & Ornn Items
+        "manazane" to "TFT4_Item_OrnnMuramana.png",
+        "goldcollector" to "TFT4_Item_OrnnTheCollector.png",
+        "hullcrusher" to "TFT9_Item_OrnnHullbreaker.png",
+        "deathsdefiance" to "TFT4_Item_OrnnDeathsDefiance.png",
+        "infinityforce" to "TFT4_Item_OrnnInfinityForce.png",
+        "zhonyasparadox" to "TFT4_Item_OrnnZhonyasParadox.png",
+        "animavisage" to "TFT4_Item_OrnnAnimaVisage.png",
+        "eternalwinter" to "TFT4_Item_OrnnEternalWinter.png",
+        "snipersfocus" to "TFT9_Item_OrnnHorizonFocus.png",
+        "trickstersglass" to "TFT9_Item_OrnnTrickstersGlass.png",
+        "deathfiregrasp" to "TFT9_Item_OrnnDeathfireGrasp.png",
+        "blacksmithsgloves" to "TFT9_Item_OrnnBlacksmithsGloves.png",
+        "flickerblades" to "TFT_Item_Artifact_NavoriFlickerblades.png",
+        "witsend" to "TFT_Item_Artifact_WitsEnd.png",
+        "lichbane" to "TFT_Item_Artifact_LichBane.png",
+        "ludenstempest" to "TFT_Item_Artifact_LudensTempest.png",
+        "talismanofascension" to "TFT_Item_Artifact_TalismanOfAscension.png",
+        "fishbones" to "TFT_Item_Artifact_Fishbones.png",
+        "mittens" to "TFT_Item_Artifact_Mittens.png",
+        "prowlersclaw" to "TFT_Item_Artifact_ProwlersClaw.png",
+        "seekersarmguard" to "TFT_Item_Artifact_SeekersArmguard.png",
+        "silvermeredawn" to "TFT_Item_Artifact_SilvermereDawn.png",
+        "suspicioustrenchcoat" to "TFT_Item_Artifact_SuspiciousTrenchCoat.png",
+        "unendingdespair" to "TFT_Item_Artifact_UnendingDespair.png",
+        "blightingjewel" to "TFT_Item_Artifact_BlightingJewel.png",
+        "forbiddenidol" to "TFT_Item_Artifact_ForbiddenIdol.png",
+        "innervatinglocket" to "TFT_Item_Artifact_InnervatingLocket.png",
+        "lightshieldcrest" to "TFT_Item_Artifact_LightshieldCrest.png",
+        "mogulsmail" to "TFT_Item_Artifact_MogulsMail.png",
+        "gamblersblade" to "TFT_Item_Artifact_GamblersBlade.png",
+        "diamondhands" to "TFT_Item_Artifact_DiamondHands.png",
+        "dawncore" to "TFT_Item_Artifact_Dawncore.png",
+        "titanichydra" to "TFT_Item_Artifact_TitanicHydra.png",
+        "spectralcutlass" to "TFT_Item_Artifact_SpectralCutlass.png",
+        // Support Items
+        "shroudofstillness" to "TFT_Item_Shroud.png",
+        "chaliceofpower" to "TFT_Item_Chalice.png",
+        "locketoftheironsolari" to "TFT_Item_LocketOfTheIronSolari.png",
+        "zekesherald" to "TFT_Item_ZekesHerald.png",
+        "aegisofthelegion" to "TFT_Item_AegisOfTheLegion.png",
+        "moonstonerenewer" to "TFT_Item_Moonstone.png",
+        "virtueofthemartyr" to "TFT_Item_RadiantVirtue.png",
+        "randuinsomen" to "TFT4_Item_OrnnRanduinsSanctum.png",
+        "needlesslybiggem" to "TFT_Item_NeedlesslyBigGem.png",
+        "bansheesveil" to "TFT_Item_BansheesVeil.png",
+        "zephyr" to "TFT_Item_Zephyr.png",
+        "spite" to "TFT_Item_Spite.png",
+        "theeternalflame" to "TFT_Item_TheEternalFlame.png",
+        "knightsvow" to "TFT_Item_KnightsVow.png",
+        "unstabletreasurechest" to "TFT_Item_UnstableTreasureChest.png",
         // Base Components
         "bfsword" to "TFT_Item_BFSword.png",
         "recurvebow" to "TFT_Item_RecurveBow.png",

@@ -1117,8 +1117,19 @@ class TftNinjaCompsScraper(
                         is String -> cleanItemLabel(elem).takeIf { it.isNotBlank() }?.let { items.add(it) }
                         is JSONObject -> {
                             val label = firstNonBlankString(elem, "name", "itemName", "label", "apiName", "id", "item")
+                            val iconCandidate = firstNonBlankString(elem, "icon", "image", "imageUrl", "img", "src", "iconUrl")
                             if (!label.isNullOrBlank()) {
-                                cleanItemLabel(label).takeIf { it.isNotBlank() }?.let { items.add(it) }
+                                val cleaned = cleanItemLabel(label)
+                                if (cleaned.isNotBlank()) {
+                                    items.add(cleaned)
+                                    val resolvedIcon = resolveScrapedImageUrl(iconCandidate.orEmpty())
+                                    if (!resolvedIcon.isNullOrBlank()) {
+                                        TftAssetIconResolver.registerScrapedItemIcon(cleaned, resolvedIcon)
+                                        if (label != cleaned) {
+                                            TftAssetIconResolver.registerScrapedItemIcon(label, resolvedIcon)
+                                        }
+                                    }
+                                }
                             } else {
                                 // Nested build object: { items: [...] }
                                 elem.optJSONArray("items")?.let { nested ->
@@ -1669,6 +1680,13 @@ class TftNinjaCompsScraper(
                         val itemRaw = alt.ifBlank { fileNameToken }
                         val item = cleanItemLabel(itemRaw)
                         if (item.isNotBlank() && !TftAssetIconResolver.isKnownChampion(item, targetEnv)) {
+                            val scrapedIconUrl = resolveScrapedImageUrl(decodedSrc)
+                            if (!scrapedIconUrl.isNullOrBlank()) {
+                                TftAssetIconResolver.registerScrapedItemIcon(item, scrapedIconUrl)
+                                if (fileNameToken.isNotBlank()) {
+                                    TftAssetIconResolver.registerScrapedItemIcon(fileNameToken, scrapedIconUrl)
+                                }
+                            }
                             val owner = lastSeenChampion
                             if (owner != null) {
                                 val bucket = itemsByUnit.getOrPut(owner) { mutableListOf() }
@@ -2204,6 +2222,20 @@ class TftNinjaCompsScraper(
             .substringAfterLast('/')
             .substringBeforeLast('.')
             .trim()
+    }
+
+    private fun resolveScrapedImageUrl(decodedSrc: String): String? {
+        val trimmed = decodedSrc.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("data:", ignoreCase = true)) return null
+        val embeddedUrl = Regex("""[?&]url=([^&]+)""", RegexOption.IGNORE_CASE)
+            .find(trimmed)?.groupValues?.getOrNull(1)?.trim()
+        val effective = embeddedUrl?.takeIf { it.isNotBlank() } ?: trimmed
+        return when {
+            effective.startsWith("https://", ignoreCase = true) -> effective
+            effective.startsWith("//") -> "https:$effective"
+            effective.startsWith("/") -> "$TFTNINJA_ORIGIN$effective"
+            else -> null
+        }
     }
 
     private fun isPlausibleUnitName(name: String, targetEnv: TftEnvironment? = null): Boolean {

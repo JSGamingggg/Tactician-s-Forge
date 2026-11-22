@@ -23,7 +23,8 @@ data class TeamPlannerChampionEntry(
     val displayName: String,
     val plannerCodeInt: Int,
     val slotHex: String,
-    val isVariant: Boolean = false
+    val isVariant: Boolean = false,
+    val isPlayableShopUnit: Boolean = true
 )
 
 data class TeamPlannerSetMapping(
@@ -103,7 +104,7 @@ object TftTeamPlannerCodeEncoder {
         "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36"
 
     private const val LIVE_CACHE_FILE = "tft_teamplanner_live_v5.json"
-    private const val PBE_CACHE_FILE = "tft_teamplanner_pbe_v7.json"
+    private const val PBE_CACHE_FILE = "tft_teamplanner_pbe_v8.json"
     private const val PRELOAD_SET18_ASSET = "set18_catalog_preload.json"
     private const val PRELOAD_SET19_ASSET = "set19_pbe_catalog_preload.json"
     private const val LIVE_CACHE_TTL_MS = 6L * 60L * 60L * 1000L // 6 hours
@@ -204,6 +205,8 @@ object TftTeamPlannerCodeEncoder {
         "yunara" to listOf("yunara", "tft19yunara", "da18yunara", "tft18yunara"),
         "alune" to listOf("alune", "tft19alune", "da18alune", "tft18alune"),
         "kobuko" to listOf("kobuko", "tft19kobuko", "da18kobuko", "tft18kobuko"),
+        "graves" to listOf("graves", "tft19graves", "da19graves", "dagraves19"),
+        "mordekaiser" to listOf("mordekaiser", "tft19mordekaiser", "da19mordekaiser", "damordekaiser19"),
         "mel" to listOf("mel", "tft19mel"),
         "aurora" to listOf("aurora", "tft19aurora"),
         "jarvaniv" to listOf("jarvaniv", "jarvan", "tft19jarvaniv"),
@@ -255,6 +258,23 @@ object TftTeamPlannerCodeEncoder {
     }
 
     /**
+     * Extracts the set of non-empty 3-hex-digit champion slot IDs from a v02 Team Planner code.
+     */
+    internal fun extractNonEmptySlotHexes(code: String): Set<String> {
+        val trimmed = code.trim()
+        if (!VALID_V02_CODE_REGEX.matches(trimmed)) return emptySet()
+        val slots = LinkedHashSet<String>(MAX_PLANNER_SLOTS)
+        for (slot in 0 until MAX_PLANNER_SLOTS) {
+            val start = 2 + slot * 3
+            val hex = trimmed.substring(start, start + 3).lowercase(Locale.US)
+            if (hex != EMPTY_SLOT_HEX_V2) {
+                slots.add(hex)
+            }
+        }
+        return slots
+    }
+
+    /**
      * Checks that every non-empty 3-hex-digit champion slot in a v02 Team Planner code
      * exists in [setMapping] (prevents pasting stale champion IDs after a PBE game update).
      */
@@ -275,6 +295,32 @@ object TftTeamPlannerCodeEncoder {
             if (!validSlots.contains(hex)) return false
         }
         return nonEmptyCount > 0
+    }
+
+    /**
+     * Verifies that a direct/cached v02 Team Planner code BOTH uses only valid slot IDs from [setMapping]
+     * AND decodes to the exact same champion set as [unitCandidates].
+     *
+     * This catches subtle PBE renumbering / third-party site mismatches where a champion's old hex ID
+     * (e.g. Graves) was reassigned to a different valid Set 19 champion (e.g. Mordekaiser).
+     */
+    internal fun doesCodeMatchCompUnits(
+        code: String,
+        unitCandidates: List<String>,
+        setMapping: TeamPlannerSetMapping
+    ): Boolean {
+        if (!isCodeCompatibleWithSetMapping(code, setMapping)) return false
+        val codeSlots = extractNonEmptySlotHexes(code)
+        if (codeSlots.isEmpty()) return false
+
+        val expectedSlots = LinkedHashSet<String>(MAX_PLANNER_SLOTS)
+        for (unitName in unitCandidates) {
+            if (expectedSlots.size >= MAX_PLANNER_SLOTS) break
+            val entry = matchChampionInSet(unitName, setMapping) ?: continue
+            expectedSlots.add(entry.slotHex)
+        }
+        if (expectedSlots.isEmpty()) return true
+        return codeSlots == expectedSlots
     }
 
     /**
@@ -397,9 +443,10 @@ object TftTeamPlannerCodeEncoder {
         if (officialCatalog != null && officialSetMapping != null) {
             return@withContext comps.map { comp ->
                 val targetSetNum = extractTargetSetNumber(comp)
+                val unitCandidates = buildOrderedUnitCandidates(comp)
                 val existing = comp.teamPlannerCode.trim()
                 if (isValidTeamPlannerCode(existing, expectedSetNumber = targetSetNum) &&
-                    isCodeCompatibleWithSetMapping(existing, officialSetMapping)
+                    doesCodeMatchCompUnits(existing, unitCandidates, officialSetMapping)
                 ) {
                     val synced = normalizeCodeForTarget(
                         rawCode = existing,
@@ -414,7 +461,9 @@ object TftTeamPlannerCodeEncoder {
                     if (encoded.isSuccess && isValidTeamPlannerCode(encoded.code, expectedSetNumber = targetSetNum)) {
                         directCompCodeCache[comp.id] = encoded.code
                         comp.copy(teamPlannerCode = encoded.code)
-                    } else if (isValidTeamPlannerCode(existing, expectedSetNumber = targetSetNum)) {
+                    } else if (isValidTeamPlannerCode(existing, expectedSetNumber = targetSetNum) &&
+                        isCodeCompatibleWithSetMapping(existing, officialSetMapping)
+                    ) {
                         val synced = normalizeCodeForTarget(
                             rawCode = existing,
                             environment = environment,
@@ -620,24 +669,25 @@ object TftTeamPlannerCodeEncoder {
             pbeOutcome.catalog?.let { pbeCatalog ->
                 val riotSet = selectStrictSetMapping(pbeCatalog, targetSetNum, unitCandidates)
                 if (riotSet != null) {
-                    // If we have a site/cached code whose champion hex IDs all exist in Riot's live PBE build,
-                    // preserve its exact unit selection while stamping Riot's live PBE set suffix!
-                    if (directCandidate != null && isCodeCompatibleWithSetMapping(directCandidate, riotSet)) {
+                    // Only reuse a site/cached PBE code when its decoded champion slots match this comp's exact units
+                    // under Riot's live PBE build (prevents stale/swapped IDs like Mordekaiser replacing Graves).
+                    if (directCandidate != null && doesCodeMatchCompUnits(directCandidate, unitCandidates, riotSet)) {
                         val synced = normalizeCodeForTarget(
                             rawCode = directCandidate,
                             environment = TftEnvironment.PBE,
                             targetSetNum = targetSetNum,
                             authoritativeSetKey = riotSet.setKey
                         )
+                        directCompCodeCache[comp.id] = synced
                         return@withContext TeamPlannerCodeResult(
                             code = synced,
                             setKey = extractSetKeyFromCode(synced) ?: riotSet.setKey,
-                            matchedChampions = comp.coreUnits.distinct().take(MAX_PLANNER_SLOTS),
+                            matchedChampions = unitCandidates.take(MAX_PLANNER_SLOTS),
                             skippedUnits = emptyList(),
                             isVerifiedRiotMapping = true
                         )
                     }
-                    // Otherwise encode fresh from Riot's live PBE build (handles renumbered champion IDs after game updates!)
+                    // Otherwise encode fresh from Riot's live PBE build (handles renumbered or swapped champion IDs!)
                     val encoded = encodeCompWithCatalog(comp, pbeCatalog)
                     if (encoded.isSuccess) {
                         directCompCodeCache[comp.id] = encoded.code
@@ -1121,8 +1171,9 @@ object TftTeamPlannerCodeEncoder {
             val isVariant = isChampionTraitVariant(charId, enrichedDisplayName)
             val traitsArr = rec.optJSONArray("traits")
             val costVal = if (rec.has("cost")) rec.optInt("cost", -1) else -1
+            val tierVal = if (rec.has("tier")) rec.optInt("tier", -1) else -1
             val hasExplicitEmptyTraits = traitsArr != null && traitsArr.length() == 0
-            val hasInvalidCost = costVal == 0 || costVal >= 11
+            val hasInvalidCost = costVal == 0 || costVal >= 11 || tierVal == 0 || tierVal >= 11
             val isNonShopProp = NON_PLAYABLE_UNIT_REGEX.containsMatchIn(charId) && (traitsArr == null || traitsArr.length() == 0)
             val isPlayableShopUnit = !hasExplicitEmptyTraits && !hasInvalidCost && !isNonShopProp
             rawEntries.add(
@@ -1142,10 +1193,11 @@ object TftTeamPlannerCodeEncoder {
         // Detect whether string `team_planner_code` values in this set are hex strings (e.g. "3f7", "429", "01a", "04a2")
         // vs decimal strings (e.g. "1015", "1065") so all-digit hex strings like "429" are never misread as base 10!
         val stringCodeSamples = rawEntries.mapNotNull { (it.rawCodeValue as? String)?.trim()?.takeIf { s -> s.isNotEmpty() } }
+        val allStringsCompactHexLength = stringCodeSamples.isNotEmpty() && stringCodeSamples.all { it.length <= 3 }
         val stringsAreHex = stringCodeSamples.any { s ->
             s.startsWith("0x", ignoreCase = true) ||
                 s.any { ch -> ch.lowercaseChar() in 'a'..'f' } ||
-                (s.length in 2..4 && s.startsWith('0'))
+                (allStringsCompactHexLength && s.length in 2..3 && s.startsWith('0'))
         }
 
         val parsedExplicitCodes = rawEntries.map { raw ->
@@ -1187,18 +1239,20 @@ object TftTeamPlannerCodeEncoder {
                     displayName = raw.displayName,
                     plannerCodeInt = codeInt,
                     slotHex = slotHex,
-                    isVariant = raw.isVariant
+                    isVariant = raw.isVariant,
+                    isPlayableShopUnit = raw.isPlayableShopUnit
                 )
             )
         }
 
         if (entries.isEmpty()) return null
 
-        // Index base champions FIRST so base Lux (DA_Lux18_Base) and base Seraphine (TFT19_Seraphine_Indie)
-        // always take precedence over upgraded/trait forms.
+        // Index playable base champions FIRST so real shop units always take precedence over
+        // non-shop props/summons and upgraded/trait forms (e.g. DA_Lux18_Base, TFT19_Seraphine_Indie).
         val lookup = HashMap<String, TeamPlannerChampionEntry>(entries.size * 8)
         val orderedForIndexing = entries.sortedWith(
-            compareBy<TeamPlannerChampionEntry> { it.isVariant }
+            compareByDescending<TeamPlannerChampionEntry> { it.isPlayableShopUnit }
+                .thenBy { it.isVariant }
                 .thenByDescending {
                     it.characterId.contains("base", ignoreCase = true) ||
                         it.characterId.endsWith("_indie", ignoreCase = true)

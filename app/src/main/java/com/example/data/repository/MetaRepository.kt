@@ -473,18 +473,35 @@ class MetaRepository(
         incoming: List<PatchUpdateRecord>,
         existing: List<PatchUpdateRecord>
     ): List<PatchUpdateRecord> {
-        if (incoming.isEmpty()) return existing
+        fun normVersionKey(rec: PatchUpdateRecord): String =
+            "${rec.environment.name}_${rec.version.lowercase().replace(Regex("[^a-z0-9]"), "")}"
+
         val byVersionKey = LinkedHashMap<String, PatchUpdateRecord>()
+        val seenIds = HashSet<String>()
+        if (incoming.isEmpty()) {
+            existing.forEach { rec ->
+                val verKey = normVersionKey(rec)
+                val idKey = rec.id.trim().lowercase()
+                if (!byVersionKey.containsKey(verKey) && (idKey.isEmpty() || seenIds.add(idKey))) {
+                    byVersionKey[verKey] = rec
+                }
+            }
+            return byVersionKey.values.toList()
+        }
         incoming.forEach { rec ->
-            val key = "${rec.environment.name}_${rec.version.uppercase()}"
-            byVersionKey[key] = rec
+            val verKey = normVersionKey(rec)
+            val idKey = rec.id.trim().lowercase()
+            if (idKey.isEmpty() || seenIds.add(idKey)) {
+                byVersionKey[verKey] = rec
+            }
         }
         existing
             .filter { it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true) }
             .forEach { old ->
-                val key = "${old.environment.name}_${old.version.uppercase()}"
-                if (!byVersionKey.containsKey(key)) {
-                    byVersionKey[key] = old
+                val verKey = normVersionKey(old)
+                val idKey = old.id.trim().lowercase()
+                if (!byVersionKey.containsKey(verKey) && (idKey.isEmpty() || seenIds.add(idKey))) {
+                    byVersionKey[verKey] = old
                 }
             }
         return byVersionKey.values.toList()

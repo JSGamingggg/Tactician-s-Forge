@@ -56,6 +56,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -152,21 +153,39 @@ fun formatRiotAssetLabel(rawId: String): String {
         return resolved
     }
 
+    val isHyphenSlug = trimmed.contains('-') && !trimmed.contains(' ') &&
+        trimmed.any { it.isLowerCase() }
+    val isAllLowerSingleToken = !trimmed.contains(' ') && !trimmed.contains('_') &&
+        trimmed.length >= 2 && trimmed.all { it.isLowerCase() || it.isDigit() }
+
     // Fast path for ordinary human-readable names like "Jeweled Gauntlet" or "Ahri"
     val startsWithRiotPrefix = trimmed.startsWith("DA", ignoreCase = false) ||
         trimmed.startsWith("TFT", ignoreCase = false) ||
         trimmed.startsWith("Set", ignoreCase = false)
-    if (!trimmed.contains('_') && !startsWithRiotPrefix) {
+    if (!trimmed.contains('_') && !startsWithRiotPrefix && !isHyphenSlug && !isAllLowerSingleToken) {
         if (trimmed.any { it == ' ' } || !REGEX_CAMEL.containsMatchIn(trimmed)) {
-            if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = trimmed
-            return trimmed
+            val normalizedHuman = normalizeInGamePrepositions(trimmed)
+            if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = normalizedHuman
+            return normalizedHuman
         }
     }
     if (!trimmed.contains("_") && trimmed.any { it == ' ' }) {
-        if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = trimmed
-        return trimmed
+        val normalizedHuman = normalizeInGamePrepositions(trimmed)
+        if (formattedLabelCache.size < 1200) formattedLabelCache[trimmed] = normalizedHuman
+        return normalizedHuman
     }
-    val withoutPrefixAndRole = trimmed
+
+    val working = if (isHyphenSlug) {
+        trimmed.split('-')
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { part -> part.replaceFirstChar { it.uppercaseChar() } }
+    } else if (isAllLowerSingleToken) {
+        trimmed.replaceFirstChar { it.uppercaseChar() }
+    } else {
+        trimmed
+    }
+
+    val withoutPrefixAndRole = working
         .replace(REGEX_PREFIX_TFT, "")
         .replace(REGEX_PREFIX_SET, "")
         .replace(REGEX_SUFFIX_ROLE, "")
@@ -177,14 +196,28 @@ fun formatRiotAssetLabel(rawId: String): String {
     }
         .replace(REGEX_SUFFIX_SMALL, "")
         .replace(REGEX_SUFFIX_DIGITS, "$1")
-    if (stripped.startsWith("Emblem") && stripped.length > 6) {
+
+    var radiantPrefix = false
+    if (stripped.endsWith("Radiant", ignoreCase = true) && stripped.length > 7) {
+        stripped = stripped.dropLast(7).trim()
+        radiantPrefix = true
+    } else if (stripped.startsWith("Radiant ", ignoreCase = true) && stripped.length > 8) {
+        stripped = stripped.drop(8).trim()
+        radiantPrefix = true
+    }
+
+    if (stripped.endsWith("EmblemItem", ignoreCase = true) && stripped.length > 10) {
+        stripped = stripped.dropLast(4)
+    } else if (stripped.startsWith("Emblem") && stripped.length > 6) {
         stripped = stripped.removePrefix("Emblem") + "Emblem"
     }
-    val formatted = stripped
+
+    val spaced = stripped
         .replace(REGEX_CAMEL, "$1 $2")
         .replace(REGEX_ALPHA_DIGIT, "$1 $2")
         .replace(REGEX_ROMAN, " $1")
         .replace("B F Sword", "B.F. Sword")
+        .replace("Bf Sword", "B.F. Sword")
         .replace("BFSword", "B.F. Sword")
         .replace("Guinsoos", "Guinsoo's")
         .replace("Dragons", "Dragon's")
@@ -208,6 +241,15 @@ fun formatRiotAssetLabel(rawId: String): String {
         .replace("Moguls", "Mogul's")
         .replace("Tricksters", "Trickster's")
         .replace("Zhonyas", "Zhonya's")
+        .replace("Ludens", "Luden's")
+        .replace("Prowlers", "Prowler's")
+        .replace("Seekers", "Seeker's")
+        .replace("Blacksmiths", "Blacksmith's")
+        .replace("Gamblers", "Gambler's")
+        .replace("Randuins", "Randuin's")
+        .replace("Banshees", "Banshee's")
+        .replace("Zekes", "Zeke's")
+        .replace("Knights", "Knight's")
         .replace("Kha Zix", "Kha'Zix")
         .replace("Vel Koz", "Vel'Koz")
         .replace("Cho Gath", "Cho'Gath")
@@ -218,10 +260,26 @@ fun formatRiotAssetLabel(rawId: String): String {
         .replace("K Sante", "K'Sante")
         .trim()
         .ifBlank { trimmed }
+
+    val baseResolved = TftAssetIconResolver.resolveDisplayName(spaced)
+        ?: normalizeInGamePrepositions(spaced)
+    val formatted = if (radiantPrefix && !baseResolved.startsWith("Radiant ", ignoreCase = true)) {
+        "Radiant $baseResolved"
+    } else {
+        baseResolved
+    }
     if (formattedLabelCache.size < 1200) {
         formattedLabelCache[trimmed] = formatted
     }
     return formatted
+}
+
+private fun normalizeInGamePrepositions(label: String): String {
+    if (!label.contains(' ')) return label
+    return label
+        .replace(" Of The ", " of the ")
+        .replace(" Of ", " of ")
+        .replace(" The ", " the ")
 }
 
 /**
@@ -802,11 +860,13 @@ fun TftItemIcon(
     val category = remember(cleanName, categoryOverride) { categoryOverride ?: inferItemCategory(cleanName) }
     val tint = itemCategoryColor(category)
     val fallbackIcon = remember(cleanName, category) { inferItemFallbackIcon(cleanName, category) }
-    val iconUrl = remember(itemName, environment, TftAssetIconResolver.ddragonVersion, rev) {
-        TftAssetIconResolver.resolveItemIconUrl(itemName, environment)
+    val fallbackUrls = remember(itemName, environment, TftAssetIconResolver.ddragonVersion, rev) {
+        TftAssetIconResolver.resolveItemIconFallbackUrls(itemName, environment)
     }
     val targetPx = with(LocalDensity.current) { size.roundToPx().coerceAtLeast(36) }
-    var imageLoaded by remember(iconUrl) { mutableStateOf(false) }
+    var attemptIndex by remember(fallbackUrls) { mutableIntStateOf(0) }
+    val activeIconUrl = fallbackUrls.getOrNull(attemptIndex)
+    var imageLoaded by remember(activeIconUrl) { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -824,10 +884,10 @@ fun TftItemIcon(
                 modifier = Modifier.size(size * 0.72f)
             )
         }
-        if (iconUrl != null) {
-            val request = remember(iconUrl, targetPx, context) {
+        if (activeIconUrl != null) {
+            val request = remember(activeIconUrl, targetPx, context) {
                 ImageRequest.Builder(context)
-                    .data(iconUrl)
+                    .data(activeIconUrl)
                     .size(targetPx)
                     .crossfade(false)
                     .build()
@@ -837,7 +897,12 @@ fun TftItemIcon(
                 contentDescription = "$cleanName item icon",
                 contentScale = ContentScale.Crop,
                 onSuccess = { imageLoaded = true },
-                onError = { imageLoaded = false },
+                onError = {
+                    imageLoaded = false
+                    if (attemptIndex + 1 < fallbackUrls.size) {
+                        attemptIndex += 1
+                    }
+                },
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(RoundedCornerShape(4.dp))

@@ -3524,13 +3524,14 @@ class ExampleRobolectricTest {
         assertTrue(viewModel.autoCheckAppUpdateOnInitEnabled)
         assertFalse(viewModel.isRefreshingVersions.value)
 
-        // 2. AndroidManifest must NOT request prohibited REQUEST_INSTALL_PACKAGES permission
+        // 2. AndroidManifest declares REQUEST_INSTALL_PACKAGES for requested in-app GitHub APK updates
+        //    while never requesting broad external storage permissions
         val pkgInfo = context.packageManager.getPackageInfo(
             context.packageName,
             android.content.pm.PackageManager.GET_PERMISSIONS
         )
         val requestedPerms = pkgInfo.requestedPermissions?.toList().orEmpty()
-        assertFalse(requestedPerms.contains(android.Manifest.permission.REQUEST_INSTALL_PACKAGES))
+        assertTrue(requestedPerms.contains(android.Manifest.permission.REQUEST_INSTALL_PACKAGES))
         assertFalse(requestedPerms.contains(android.Manifest.permission.READ_EXTERNAL_STORAGE))
         assertFalse(requestedPerms.contains(android.Manifest.permission.WRITE_EXTERNAL_STORAGE))
 
@@ -4136,9 +4137,350 @@ class ExampleRobolectricTest {
         assertEquals(liveResolved.code, enrichedLive.first().teamPlannerCode)
         assertEquals(pbeResolved.code, enrichedPbe.first().teamPlannerCode)
     }
+
+    @Test
+    fun `in-app github updater validates allowed https hosts confines apk cache and builds fileprovider install intent`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Strict HTTPS GitHub download host allowlist
+        assertTrue(
+            com.example.update.AppUpdateCoordinator.isAllowedGitHubDownloadUrl(
+                "https://github.com/JSGamingggg/Tactician-s-Forge/releases/download/v2.0.0/app-release.apk"
+            )
+        )
+        assertTrue(
+            com.example.update.AppUpdateCoordinator.isAllowedGitHubDownloadUrl(
+                "https://objects.githubusercontent.com/github-production-release-asset-2e65be/release.apk"
+            )
+        )
+        assertFalse(
+            com.example.update.AppUpdateCoordinator.isAllowedGitHubDownloadUrl(
+                "http://github.com/JSGamingggg/Tactician-s-Forge/releases/download/v2.0.0/app-release.apk"
+            )
+        )
+        assertFalse(
+            com.example.update.AppUpdateCoordinator.isAllowedGitHubDownloadUrl(
+                "https://evil.example.com/app-release.apk"
+            )
+        )
+        assertFalse(
+            com.example.update.AppUpdateCoordinator.isAllowedGitHubDownloadUrl(
+                "https://127.0.0.1/app-release.apk"
+            )
+        )
+
+        // 2. Confined cache file path blocks path traversal
+        val safeApk = com.example.update.AppUpdateCoordinator.resolveSafeUpdateApkFile(
+            context = context,
+            rawFileName = "../../evil/../escape/app-release.apk"
+        )
+        val expectedDir = java.io.File(context.cacheDir, "app_updates").canonicalFile
+        assertEquals(expectedDir, safeApk.parentFile?.canonicalFile)
+        assertTrue(safeApk.name.endsWith(".apk"))
+        assertFalse(safeApk.name.contains(".."))
+
+        // 3. FileProvider install intent uses application/vnd.android.package-archive and read permission flag
+        safeApk.parentFile?.mkdirs()
+        safeApk.writeBytes(byteArrayOf(0x50, 0x4B, 0x03, 0x04, 0x14, 0x00))
+        val installIntent = com.example.update.AppUpdateCoordinator.buildInstallApkIntent(context, safeApk)
+        assertEquals(android.content.Intent.ACTION_VIEW, installIntent.action)
+        assertEquals("application/vnd.android.package-archive", installIntent.type)
+        assertEquals("content", installIntent.data?.scheme)
+        assertTrue((installIntent.flags and android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0)
+        safeApk.delete()
+    }
+
+    @Test
+    fun `comp item resolver maps official riot in-game item names artifacts radiants emblems slugs and fallback icons`() {
+        // Standard items vs Artifacts vs Radiants vs Support vs Emblems vs Hyphenated slugs
+        assertEquals("Red Buff", com.example.ui.components.formatRiotAssetLabel("TFT_Item_RapidFireCannon"))
+        assertEquals("Rapid Firecannon", com.example.ui.components.formatRiotAssetLabel("Rapid Firecannon"))
+        assertEquals("Flickerblades", com.example.ui.components.formatRiotAssetLabel("DA_Artifact_NavoriFlickerblade"))
+        assertEquals("Manazane", com.example.ui.components.formatRiotAssetLabel("TFT4_Item_OrnnMuramana"))
+        assertEquals("Gold Collector", com.example.ui.components.formatRiotAssetLabel("TFT4_Item_OrnnTheCollector"))
+        assertEquals("Hullcrusher", com.example.ui.components.formatRiotAssetLabel("TFT9_Item_OrnnHullbreaker"))
+        assertEquals("Shroud of Stillness", com.example.ui.components.formatRiotAssetLabel("TFT_Item_Shroud"))
+        assertEquals("Radiant Red Buff", com.example.ui.components.formatRiotAssetLabel("TFT5_Item_RapidFirecannonRadiant"))
+        assertEquals("Radiant Blue Buff", com.example.ui.components.formatRiotAssetLabel("DA_BlueBuffRadiant"))
+        assertEquals("Elderwood Emblem", com.example.ui.components.formatRiotAssetLabel("TFT18_Item_ElderwoodEmblemItem"))
+        assertEquals("Striker's Flail", com.example.ui.components.formatRiotAssetLabel("strikers-flail"))
+        assertEquals("Jeweled Gauntlet", com.example.ui.components.formatRiotAssetLabel("jeweled-gauntlet"))
+        assertEquals("B.F. Sword", com.example.ui.components.formatRiotAssetLabel("bf-sword"))
+
+        // Scraped item icon registration & ordered fallback chain
+        com.example.ui.components.TftAssetIconResolver.registerScrapedItemIcon(
+            "Custom Artifact Blade",
+            "https://tft.ninja/items/custom_artifact_blade.png"
+        )
+        val scrapedUrls = com.example.ui.components.TftAssetIconResolver.resolveItemIconFallbackUrls(
+            "Custom Artifact Blade",
+            TftEnvironment.PBE
+        )
+        assertTrue(scrapedUrls.contains("https://tft.ninja/items/custom_artifact_blade.png"))
+
+        val ieUrls = com.example.ui.components.TftAssetIconResolver.resolveItemIconFallbackUrls(
+            "Infinity Edge",
+            TftEnvironment.PBE
+        )
+        assertTrue("Infinity Edge should have multiple ordered HTTPS icon fallbacks", ieUrls.size >= 2)
+        assertTrue(ieUrls.all { it.startsWith("https://") })
+    }
+
+    @Test
+    fun `pbe patch notes keep long prose diffs out of compact previous and new stat pills while preserving short stat diffs`() {
+        val scraper = com.example.data.network.TftipsPatchScraper()
+        val detailHtml = """
+            <html><body>
+              <h2>Modified</h2>
+              <h3 class="text-sm font-bold leading-tight">Graves</h3>
+              <p>Ability: <del class="tft-diff-del">Fires a narrow cone of bullets dealing physical damage to enemies in front of him.</del> <ins class="tft-diff-ins">Dashes toward targets and fires a wide cone of bullets dealing physical damage, empowering an extra attack on kill.</ins></p>
+              <h2>Buffs</h2>
+              <h3 class="text-sm font-bold leading-tight">Ziggs</h3>
+              <p>Spell Damage: <del class="tft-diff-del">280/420/650</del> <ins class="tft-diff-ins">300/450/700</ins></p>
+            </body></html>
+        """.trimIndent()
+
+        val details = scraper.parseDetailTargetChanges(detailHtml)
+        val gravesDetail = details["graves"]
+        assertNotNull("Graves long PBE prose change should still parse", gravesDetail)
+        assertEquals("", gravesDetail!!.previousValue)
+        assertEquals("", gravesDetail.newValue)
+        assertTrue(gravesDetail.summary.contains("Dashes toward targets", ignoreCase = true))
+
+        val ziggsDetail = details["ziggs"]
+        assertNotNull("Ziggs short numeric PBE stat diff should parse", ziggsDetail)
+        assertEquals("280/420/650", ziggsDetail!!.previousValue)
+        assertEquals("300/450/700", ziggsDetail.newValue)
+    }
+
+    @Test
+    fun `pbe team code rejects stale code that swaps Graves for Mordekaiser and re-encodes Graves from live Riot PBE mapping`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        context.filesDir.listFiles()?.filter { it.name.startsWith("tft_teamplanner_") }?.forEach { it.delete() }
+
+        // Riot live PBE Set 19 mapping: Graves = 0x495 (1173), Mordekaiser = 0x480 (1152)
+        val livePbeMappingJson = """
+            {
+              "TFTSet19": [
+                {"character_id": "TFT19_Graves", "display_name": "Graves", "tier": 4, "traits": ["Beach Pop", "Renegade"], "team_planner_code": 1173},
+                {"character_id": "TFT19_Mordekaiser", "display_name": "Mordekaiser", "tier": 5, "traits": ["Pentakill"], "team_planner_code": 1152},
+                {"character_id": "TFT19_Renekton", "display_name": "Renekton", "tier": 2, "traits": ["Beach Pop", "Frontman"], "team_planner_code": 1160},
+                {"character_id": "TFT19_Taric", "display_name": "Taric", "tier": 1, "traits": ["Beach Pop", "Juggernaut"], "team_planner_code": 1161},
+                {"character_id": "TFT19_Syndra", "display_name": "Syndra", "tier": 3, "traits": ["Beach Pop", "Choreographer"], "team_planner_code": 1162}
+              ]
+            }
+        """.trimIndent()
+
+        // Stale/buggy code from a site or old PBE build that put Mordekaiser (480) instead of Graves (495)!
+        val staleCodeWithMordekaiser = "0248048848948a000000000000000000TFTSet19"
+        val gravesPbeComp = MetaComp(
+            id = "tftninja_pbe_beach_pop_graves",
+            title = "Beach Pop Graves",
+            tier = TierRank.S,
+            environment = TftEnvironment.PBE,
+            setName = "Set 19",
+            patchTag = "19.1-PBE",
+            playstyle = "Fast 8",
+            avgPlacement = 3.55,
+            top4Rate = 61.0,
+            winRate = 17.5,
+            pickRate = 5.2,
+            trendDelta = "Top Meta",
+            isTrending = true,
+            carryName = "Graves",
+            coreUnits = listOf("Graves", "Renekton", "Taric", "Syndra"),
+            traits = listOf("Beach Pop", "Renegade"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Fast 8",
+            notes = "",
+            sourceUrl = "https://tft.ninja/comps?e=pbe",
+            teamPlannerCode = staleCodeWithMordekaiser
+        )
+
+        val pbeClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, livePbeMappingJson))
+                    .build()
+            }
+            .build()
+
+        // 1. resolveTeamCode rejects stale Mordekaiser slot (480) and encodes Graves (495)
+        val resolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, gravesPbeComp, pbeClient)
+        }
+        assertTrue(resolved.isSuccess)
+        val resolvedSlots = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.extractNonEmptySlotHexes(resolved.code)
+        assertTrue("Encoded code must contain Graves (495)", resolvedSlots.contains("495"))
+        assertFalse("Encoded code must NOT contain Mordekaiser (480)", resolvedSlots.contains("480"))
+
+        // 2. enrichCompsWithTeamCodes also detects and repairs the stale Mordekaiser code automatically
+        val enriched = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                context = context,
+                comps = listOf(gravesPbeComp),
+                environment = TftEnvironment.PBE,
+                client = pbeClient
+            )
+        }
+        val enrichedSlots = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.extractNonEmptySlotHexes(enriched.first().teamPlannerCode)
+        assertTrue("Enriched code must contain Graves (495)", enrichedSlots.contains("495"))
+        assertFalse("Enriched code must NOT contain Mordekaiser (480)", enrichedSlots.contains("480"))
+    }
+
+    @Test
+    fun `overlay precomputed search index filters champions items components and queries accurately without regex allocations`() {
+        val comps = listOf(
+            MetaComp(
+                id = "c1",
+                title = "Beach Pop Graves",
+                tier = TierRank.S,
+                environment = TftEnvironment.PBE,
+                setName = "Set 19",
+                patchTag = "19.1-PBE",
+                playstyle = "Fast 8",
+                avgPlacement = 3.5,
+                top4Rate = 60.0,
+                winRate = 17.0,
+                pickRate = 5.0,
+                trendDelta = "",
+                isTrending = true,
+                carryName = "Graves",
+                coreUnits = listOf("Graves", "Renekton", "Taric"),
+                traits = listOf("Beach Pop", "Renegade"),
+                hexPlacements = listOf(
+                    HexUnitPlacement(
+                        unitName = "Graves",
+                        row = 0,
+                        col = 3,
+                        cost = 4,
+                        items = listOf("Bloodthirster", "Sterak's Gage"),
+                        isCarry = true,
+                        stars = 2
+                    )
+                ),
+                augmentPriorities = emptyList(),
+                levelingGuide = "Fast 8",
+                notes = ""
+            ),
+            MetaComp(
+                id = "c2",
+                title = "Pentakill Mordekaiser",
+                tier = TierRank.A,
+                environment = TftEnvironment.PBE,
+                setName = "Set 19",
+                patchTag = "19.1-PBE",
+                playstyle = "Fast 9",
+                avgPlacement = 3.9,
+                top4Rate = 54.0,
+                winRate = 14.0,
+                pickRate = 3.0,
+                trendDelta = "",
+                isTrending = false,
+                carryName = "Mordekaiser",
+                coreUnits = listOf("Mordekaiser", "Karthus", "Yorick"),
+                traits = listOf("Pentakill"),
+                hexPlacements = listOf(
+                    HexUnitPlacement(
+                        unitName = "Mordekaiser",
+                        row = 0,
+                        col = 3,
+                        cost = 5,
+                        items = listOf("Jeweled Gauntlet", "Hand of Justice"),
+                        isCarry = true,
+                        stars = 2
+                    )
+                ),
+                augmentPriorities = emptyList(),
+                levelingGuide = "Fast 9",
+                notes = ""
+            )
+        )
+
+        val index = com.example.overlay.OverlayArmySearchEngine.buildSearchIndex(comps, emptyList())
+        assertEquals(2, index.entries.size)
+
+        // Filter by champion
+        val gravesMatches = com.example.overlay.OverlayArmySearchEngine.filterIndexedArmies(
+            index = index,
+            tierFilter = null,
+            selectedChampions = setOf("Graves"),
+            selectedItems = emptySet(),
+            query = ""
+        )
+        assertEquals(listOf("c1"), gravesMatches.map { it.id })
+
+        // Filter by base component (B.F. Sword builds Bloodthirster / Sterak's Gage)
+        val bfSwordMatches = com.example.overlay.OverlayArmySearchEngine.filterIndexedArmies(
+            index = index,
+            tierFilter = null,
+            selectedChampions = emptySet(),
+            selectedItems = setOf("B.F. Sword"),
+            query = ""
+        )
+        assertEquals(listOf("c1"), bfSwordMatches.map { it.id })
+
+        // Filter by query + tier
+        val pentakillMatches = com.example.overlay.OverlayArmySearchEngine.filterIndexedArmies(
+            index = index,
+            tierFilter = TierRank.A,
+            selectedChampions = emptySet(),
+            selectedItems = emptySet(),
+            query = "pentakill"
+        )
+        assertEquals(listOf("c2"), pentakillMatches.map { it.id })
+    }
+
+    @Test
+    fun `pbe patches deduplicate identical patch ids and punctuation variants to prevent lazy column duplicate key crash`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = OfflineMetaCacheStore(context)
+        val seeded = store.readOrSeedBundle()
+
+        val pbePatchA = com.example.data.model.PatchUpdateRecord(
+            id = "tftips_pbe_19_1_PBE",
+            environment = TftEnvironment.PBE,
+            version = "19.1-PBE",
+            title = "TFT Patch 19.1-PBE",
+            releaseDate = "Latest",
+            isMajorPatch = true,
+            headline = "Set 19 PBE balance update",
+            highlights = listOf("Buffs (2): Graves, Ziggs"),
+            balanceChanges = emptyList(),
+            trendingCompIds = emptyList(),
+            sourceUrl = "https://tftips.app/en/patches/pbe"
+        )
+        val pbePatchDup = pbePatchA.copy(version = "19.1 PBE", title = "TFT Patch 19.1 PBE")
+
+        assertTrue(store.writeBundle(seeded.copy(pbePatches = listOf(pbePatchA, pbePatchDup))))
+        val reloaded = store.readOrSeedBundle()
+        assertEquals(1, reloaded.pbePatches.count { it.id == "tftips_pbe_19_1_PBE" })
+
+        val htmlWithDupPbe = """
+            <html><body>
+              <a href="/en/patches/pbe">19.1 PBE</a><time>Today</time>
+              <a href="/en/patches/pbe-2">19.1-PBE</a><time>Yesterday</time>
+            </body></html>
+        """.trimIndent()
+        val mockClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, htmlWithDupPbe))
+                    .build()
+            }
+            .build()
+        val fetched = TftipsPatchScraper(mockClient).fetchPatchesFromTftips()
+        assertEquals(1, fetched.pbePatchRecords.count { it.id == "tftips_pbe_19_1_PBE" })
+        assertEquals(fetched.pbePatchRecords.size, fetched.pbePatchRecords.map { it.id }.distinct().size)
+    }
 }
-
-
-
-
-

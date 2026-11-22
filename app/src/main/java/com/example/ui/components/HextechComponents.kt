@@ -497,51 +497,373 @@ fun resolveFullBoardRosterUnits(
 }
 
 /**
- * Resolves a structured stage-by-stage Level & Transition Guide (what to play and when to transition)
- * for a composition, using explicit website stage boards when present or deriving an accurate
- * gameplan from the composition's playstyle, roster costs, carry, and leveling notes.
+ * Resolves a structured stage-by-stage Level & Transition Guide (what to play at each level and
+ * when to transition / roll) for a composition.
+ *
+ * - Preserves genuinely progressive explicit website stages when present (rejecting degenerate
+ *   scraped boards that repeat the exact same champions across levels).
+ * - Derives authentic TFT stage boards (Early Lv 4–5 -> Mid Lv 6–7 -> Final Lv 8–9) using
+ *   legally obtainable low-cost units from the comp plus real same-set, trait-matching 1–2g
+ *   openers/item holders and 3g mid-game bridges when the final board is 4–5 cost heavy.
  */
-fun resolveCompLevelGuideStages(comp: MetaComp): List<LevelTransitionStage> {
+fun resolveCompLevelGuideStages(
+    comp: MetaComp,
+    champions: List<ChampionTierEntry> = emptyList()
+): List<LevelTransitionStage> {
+    fun normUnitKey(raw: String): String =
+        formatChampionDisplayName(raw)
+            .lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]"), "")
+
+    fun normTraitKey(raw: String): String =
+        raw.replace(Regex("""^\d+\s+"""), "")
+            .trim()
+            .lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]"), "")
+
     if (comp.levelGuideStages.isNotEmpty()) {
-        return comp.levelGuideStages.map { stage ->
+        val cleaned = comp.levelGuideStages.map { stage ->
             stage.copy(
-                units = stage.units.filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
+                units = stage.units
+                    .filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
+                    .distinctBy { normUnitKey(it) }
             )
+        }
+        val nonEmptySets = cleaned
+            .map { stage -> stage.units.map(::normUnitKey).filter { it.isNotEmpty() }.toSet() }
+            .filter { it.isNotEmpty() }
+        val hasGenuineProgression = when {
+            cleaned.size == 1 -> nonEmptySets.size == 1
+            nonEmptySets.size >= 2 -> nonEmptySets.distinct().size == nonEmptySets.size
+            else -> false
+        }
+        if (hasGenuineProgression) {
+            return cleaned
         }
     }
 
-    val roster = resolveFullBoardRosterUnits(comp)
-    val sortedByCost = roster.sortedWith(compareBy<HexUnitPlacement> { it.cost }.thenByDescending { it.isCarry })
-    val allNames = sortedByCost.map { it.unitName }
+    val roster = resolveFullBoardRosterUnits(comp = comp, champions = champions)
+    val sortedByCost = roster
+        .sortedWith(
+            compareBy<HexUnitPlacement> { it.cost }
+                .thenByDescending { it.isCarry }
+                .thenBy { it.unitName }
+        )
+        .distinctBy { normUnitKey(it.unitName) }
+    val lateUnits = sortedByCost.map { it.unitName }
+    if (lateUnits.isEmpty()) return emptyList()
 
-    val lowCostUnits = sortedByCost.filter { it.cost <= 2 }.map { it.unitName }
-    val midCostUnits = sortedByCost.filter { it.cost <= 3 }.map { it.unitName }
-    val highCostUnits = sortedByCost.filter { it.cost >= 4 }.map { it.unitName }
-
-    val earlyUnits = when {
-        lowCostUnits.size >= 3 -> lowCostUnits.take(5)
-        midCostUnits.isNotEmpty() -> midCostUnits.take(4)
-        else -> allNames.take(4)
-    }
-    val midUnits = when {
-        midCostUnits.size >= 4 -> midCostUnits.take(7)
-        else -> allNames.take(6)
-    }
-    val lateUnits = if (highCostUnits.isNotEmpty()) {
-        (highCostUnits + allNames).distinct()
-    } else {
-        allNames
+    val costByKey = HashMap<String, Int>(sortedByCost.size * 2)
+    sortedByCost.forEach { u ->
+        costByKey[normUnitKey(u.unitName)] = u.cost
     }
 
-    val carry = comp.carryName.ifBlank { roster.firstOrNull { it.isCarry }?.unitName ?: "Main Carry" }
-    val carryCost = resolveCompUnitCost(carry, comp)
+    // Build same-set champion pool (combining passed ChampionTierEntry list + preloaded set catalog)
+    val catalogPoolMap = LinkedHashMap<String, TftAssetIconResolver.CatalogChampionInfo>()
+    champions
+        .filter { it.environment == comp.environment && it.cost in 1..9 && it.traits.isNotEmpty() }
+        .forEach { champ ->
+            val key = normUnitKey(champ.name)
+            if (key.isNotEmpty() && !champ.name.contains("(") && !catalogPoolMap.containsKey(key)) {
+                catalogPoolMap[key] = TftAssetIconResolver.CatalogChampionInfo(
+                    name = champ.name,
+                    cost = champ.cost,
+                    traits = champ.traits
+                )
+            }
+        }
+    TftAssetIconResolver.getCatalogChampions(comp.environment).forEach { champ ->
+        val key = normUnitKey(champ.name)
+        if (key.isNotEmpty() && !champ.name.contains("(") && !catalogPoolMap.containsKey(key)) {
+            catalogPoolMap[key] = champ
+        }
+    }
+    val catalogPool = catalogPoolMap.values.toList()
+
+    fun traitsForUnit(unitName: String): List<String> {
+        val key = normUnitKey(unitName)
+        return catalogPoolMap[key]?.traits?.takeIf { it.isNotEmpty() }
+            ?: TftAssetIconResolver.getChampionTraits(unitName, comp.environment)
+    }
+
+    fun costForUnit(unitName: String): Int {
+        val key = normUnitKey(unitName)
+        return costByKey[key]
+            ?: catalogPoolMap[key]?.cost
+            ?: resolveCompUnitCost(unitName, comp)
+    }
+
+    val carry = comp.carryName.ifBlank {
+        roster.firstOrNull { it.isCarry }?.unitName ?: lateUnits.last()
+    }
+    val carryKey = normUnitKey(carry)
+    val carryCost = costForUnit(carry)
     val styleLower = comp.playstyle.lowercase(Locale.US)
     val primaryTrait = comp.traits.firstOrNull()?.replace(Regex("""^\d+\s+"""), "")?.trim().orEmpty()
     val traitHint = if (primaryTrait.isNotBlank()) "$primaryTrait opener" else "strongest early opener"
 
+    val isSlowRollLow = styleLower.contains("slow roll") || styleLower.contains("hyper") ||
+        (styleLower.contains("reroll") && carryCost <= 2)
+    val isThreeCostReroll = !isSlowRollLow &&
+        (styleLower.contains("7") || (styleLower.contains("reroll") && carryCost == 3))
+    val isFast9 = !isSlowRollLow && !isThreeCostReroll &&
+        (styleLower.contains("fast 9") || styleLower.contains("fast9") || carryCost >= 5)
+
+    // Gather normalized trait keys for the comp and for the main carry
+    val compTraitKeys = LinkedHashSet<String>()
+    comp.traits.forEach { t ->
+        val k = normTraitKey(t)
+        if (k.isNotEmpty()) compTraitKeys.add(k)
+    }
+    sortedByCost.forEach { u ->
+        traitsForUnit(u.unitName).forEach { t ->
+            val k = normTraitKey(t)
+            if (k.isNotEmpty()) compTraitKeys.add(k)
+        }
+    }
+    val carryTraitKeys = traitsForUnit(carry).map(::normTraitKey).filter { it.isNotEmpty() }.toSet()
+
+    fun pickSynergyBridges(
+        initial: List<String>,
+        maxCost: Int,
+        targetSize: Int,
+        preferCarryTrait: Boolean,
+        preferMidCost: Boolean = false,
+        excludeKeys: Set<String> = emptySet()
+    ): List<String> {
+        val result = initial.distinctBy(::normUnitKey).toMutableList()
+        if (result.size >= targetSize || catalogPool.isEmpty()) return result
+
+        while (result.size < targetSize) {
+            val currentKeys = result.map(::normUnitKey).toSet()
+            val boardTraitCounts = HashMap<String, Int>()
+            result.forEach { u ->
+                traitsForUnit(u).forEach { t ->
+                    val tk = normTraitKey(t)
+                    if (tk.isNotEmpty()) boardTraitCounts[tk] = (boardTraitCounts[tk] ?: 0) + 1
+                }
+            }
+
+            val best = catalogPool
+                .asSequence()
+                .filter { c ->
+                    val ck = normUnitKey(c.name)
+                    c.cost in 1..maxCost && ck.isNotEmpty() && ck !in currentKeys && ck !in excludeKeys
+                }
+                .maxWithOrNull(
+                    compareBy<TftAssetIconResolver.CatalogChampionInfo> { c ->
+                        val cTraits = c.traits.map(::normTraitKey).filter { it.isNotEmpty() }
+                        var score = 0
+                        cTraits.forEach { tk ->
+                            if (preferCarryTrait && tk in carryTraitKeys) score += 7
+                            if (tk in compTraitKeys) score += 4
+                            if ((boardTraitCounts[tk] ?: 0) > 0) score += 3
+                        }
+                        if (preferMidCost && c.cost == 3) score += 4
+                        if (!preferMidCost && c.cost <= 2) score += 2
+                        score
+                    }.thenBy { c ->
+                        if (preferMidCost) -c.cost else c.cost
+                    }.thenByDescending { c ->
+                        // Deterministic tie-breaker
+                        -c.name.hashCode()
+                    }
+                ) ?: break
+
+            result.add(best.name)
+        }
+        return result
+    }
+
+    val compLowUnits = sortedByCost.filter { it.cost <= 2 }.map { it.unitName }
+    val compThreeUnits = sortedByCost.filter { it.cost == 3 }.map { it.unitName }
+    val compFourUnits = sortedByCost.filter { it.cost == 4 }.map { it.unitName }
+    val compHighKeys = sortedByCost.filter { it.cost >= 4 }.map { normUnitKey(it.unitName) }.toSet()
+    val lateKeys = lateUnits.map(::normUnitKey).toSet()
+
+    // --- STAGE 1: Early Opener (Level 4-5, max 2-cost units when set catalog is available) ---
+    val earlyTarget = if (lateUnits.size >= 5) 4 else maxOf(2, lateUnits.size - 2)
+    val earlyCoreCap = minOf(earlyTarget, maxOf(1, lateUnits.size - 2))
+    val earlyCoreSeed = buildList {
+        if (carryCost <= 2) {
+            compLowUnits.firstOrNull { normUnitKey(it) == carryKey }?.let { add(it) }
+        }
+        compLowUnits.forEach { u ->
+            if (size < earlyCoreCap && none { normUnitKey(it) == normUnitKey(u) }) {
+                add(u)
+            }
+        }
+    }
+    var earlyUnits = if (catalogPool.isNotEmpty()) {
+        pickSynergyBridges(
+            initial = earlyCoreSeed,
+            maxCost = 2,
+            targetSize = earlyTarget,
+            preferCarryTrait = carryCost >= 3,
+            preferMidCost = false,
+            excludeKeys = compHighKeys
+        )
+    } else {
+        // Fallback when no set catalog is loaded (e.g. isolated unit test with synthetic names)
+        val fallbackSeed = (earlyCoreSeed + compThreeUnits).distinctBy(::normUnitKey)
+        if (fallbackSeed.size >= 2) {
+            fallbackSeed.take(earlyCoreCap)
+        } else {
+            lateUnits.take(earlyCoreCap)
+        }
+    }
+    if (earlyUnits.isEmpty()) {
+        earlyUnits = lateUnits.take(earlyTarget)
+    }
+    earlyUnits = earlyUnits.distinctBy(::normUnitKey)
+        .sortedWith(compareBy<String> { costForUnit(it) }.thenBy { it })
+
+    // Identify the best Early item holder when the main carry is a 3/4/5-cost unit not yet on board
+    val earlyKeys = earlyUnits.map(::normUnitKey).toSet()
+    val earlyItemHolder: String? = if (carryKey !in earlyKeys) {
+        earlyUnits.maxWithOrNull(
+            compareBy<String> { u ->
+                val uTraits = traitsForUnit(u).map(::normTraitKey).toSet()
+                uTraits.intersect(carryTraitKeys).size * 10 + costForUnit(u)
+            }
+        )
+    } else {
+        null
+    }
+
+    // --- STAGE 2: Mid-Game / Roll Board (Level 6-7, adds 3-cost core/bridges; never full 5-cost cap) ---
+    val midTarget = when {
+        lateUnits.size <= 4 -> maxOf(earlyUnits.size + 1, lateUnits.size - 1)
+        isSlowRollLow -> minOf(6, maxOf(earlyUnits.size + 1, lateUnits.size - 1))
+        isThreeCostReroll -> minOf(7, maxOf(earlyUnits.size + 2, lateUnits.size - 1))
+        isFast9 -> minOf(7, maxOf(earlyUnits.size + 2, lateUnits.size - 1))
+        else -> minOf(6, maxOf(earlyUnits.size + 2, lateUnits.size - 1))
+    }
+
+    val midSeed = mutableListOf<String>()
+    fun addUniqueToMid(unit: String) {
+        val k = normUnitKey(unit)
+        if (k.isNotEmpty() && midSeed.none { normUnitKey(it) == k }) {
+            midSeed.add(unit)
+        }
+    }
+
+    // Carry enters in Mid for 1-2g Slow Roll and 3g Reroll; for Fast 8 / Fast 9 keep the item holder until transition
+    if (isSlowRollLow || isThreeCostReroll) {
+        sortedByCost.filter { it.cost <= 3 }.forEach { addUniqueToMid(it.unitName) }
+    } else if (isFast9) {
+        // Keep early item holder + comp 1-3g units + at most 1-2 comp 4-cost stabilizers (never 5-costs!)
+        earlyItemHolder?.let { addUniqueToMid(it) }
+        compLowUnits.forEach { addUniqueToMid(it) }
+        compThreeUnits.forEach { addUniqueToMid(it) }
+        // Keep one additional trait-linked early opener if we have few comp low-cost units
+        earlyUnits.take(2).forEach { addUniqueToMid(it) }
+        compFourUnits
+            .filter { normUnitKey(it) != carryKey }
+            .take(if (midSeed.size <= 4) 2 else 1)
+            .forEach { addUniqueToMid(it) }
+    } else {
+        // Fast 8 / Standard: keep item holder + comp 1-3g core + at most 1 non-carry 4g frontline
+        earlyItemHolder?.let { addUniqueToMid(it) }
+        compLowUnits.forEach { addUniqueToMid(it) }
+        compThreeUnits.forEach { addUniqueToMid(it) }
+        earlyUnits.take(2).forEach { addUniqueToMid(it) }
+        if (midSeed.size < midTarget) {
+            compFourUnits
+                .firstOrNull { normUnitKey(it) != carryKey }
+                ?.let { addUniqueToMid(it) }
+        }
+    }
+
+    var midUnits = if (midSeed.size > midTarget) {
+        midSeed.take(midTarget)
+    } else if (catalogPool.isNotEmpty()) {
+        // Fill remaining Level 6-7 slots with real 2-3g trait bridges from the same set
+        pickSynergyBridges(
+            initial = midSeed,
+            maxCost = 3,
+            targetSize = midTarget,
+            preferCarryTrait = carryCost >= 4,
+            preferMidCost = true,
+            excludeKeys = compHighKeys
+        )
+    } else {
+        // Synthetic fallback without loaded set catalog
+        val nextCompUnits = lateUnits.filter { normUnitKey(it) !in midSeed.map(::normUnitKey).toSet() }
+        (midSeed + nextCompUnits).take(minOf(midTarget, maxOf(earlyUnits.size + 1, lateUnits.size - 1)))
+    }
+
+    // Guarantee Stage 1 != Stage 2 != Stage 3 (no two levels ever show the identical champion set)
+    var midKeys = midUnits.map(::normUnitKey).toSet()
+    if (midKeys == lateKeys && lateUnits.size >= 3) {
+        val trimCount = if (midUnits.size > earlyUnits.size + 1) 1 else 1
+        midUnits = midUnits
+            .sortedWith(compareBy<String> { costForUnit(it) }.thenBy { it })
+            .dropLast(trimCount)
+        midKeys = midUnits.map(::normUnitKey).toSet()
+    }
+    if (midKeys == earlyKeys) {
+        val extraFromComp = lateUnits.firstOrNull {
+            val k = normUnitKey(it)
+            k !in earlyKeys && (lateUnits.size <= earlyUnits.size + 1 || (earlyKeys + k) != lateKeys)
+        }
+        val extraFromCatalog = if (extraFromComp == null && catalogPool.isNotEmpty()) {
+            pickSynergyBridges(
+                initial = midUnits,
+                maxCost = 3,
+                targetSize = midUnits.size + 1,
+                preferCarryTrait = true,
+                preferMidCost = true,
+                excludeKeys = lateKeys
+            ).firstOrNull { normUnitKey(it) !in earlyKeys }
+        } else {
+            null
+        }
+        val extra = extraFromComp ?: extraFromCatalog
+        if (extra != null) {
+            midUnits = (midUnits + extra).distinctBy(::normUnitKey)
+            midKeys = midUnits.map(::normUnitKey).toSet()
+        } else if (earlyUnits.size >= 3) {
+            earlyUnits = earlyUnits.dropLast(1)
+        }
+    }
+    if (midKeys == lateKeys && lateUnits.size >= 3 && catalogPool.isNotEmpty()) {
+        // Swap out the priciest cap unit in Mid for a temporary 3-cost bridge so Final is a real transition
+        val withoutCap = midUnits.sortedBy { costForUnit(it) }.dropLast(1)
+        val bridge = pickSynergyBridges(
+            initial = withoutCap,
+            maxCost = 3,
+            targetSize = withoutCap.size + 1,
+            preferCarryTrait = true,
+            preferMidCost = true,
+            excludeKeys = lateKeys
+        )
+        if (bridge.map(::normUnitKey).toSet() != earlyUnits.map(::normUnitKey).toSet()) {
+            midUnits = bridge
+        }
+    }
+
+    earlyUnits = earlyUnits.distinctBy(::normUnitKey)
+        .sortedWith(compareBy<String> { costForUnit(it) }.thenBy { it })
+    midUnits = midUnits.distinctBy(::normUnitKey)
+        .sortedWith(compareBy<String> { costForUnit(it) }.thenBy { it })
+    val finalUnits = lateUnits.distinctBy(::normUnitKey)
+        .sortedWith(compareBy<String> { costForUnit(it) }.thenBy { it })
+
+    val finalEarlyKeys = earlyUnits.map(::normUnitKey).toSet()
+    val finalMidKeys = midUnits.map(::normUnitKey).toSet()
+    val finalLateKeys = finalUnits.map(::normUnitKey).toSet()
+
+    val addedInMid = midUnits.filter { normUnitKey(it) !in finalEarlyKeys }
+    val addedInLate = finalUnits.filter { normUnitKey(it) !in finalMidKeys }
+    val swappedOutInLate = midUnits.filter { normUnitKey(it) !in finalLateKeys }
+
+    val midAddHint = addedInMid.take(3).joinToString(", ")
+    val lateAddHint = addedInLate.take(3).joinToString(", ")
+    val lateSwapHint = swappedOutInLate.take(2).joinToString(", ")
+
     return when {
-        styleLower.contains("slow roll") || styleLower.contains("hyper") ||
-            (styleLower.contains("reroll") && carryCost <= 2) -> {
+        isSlowRollLow -> {
             val rollLevel = if (carryCost <= 1) "Level 5" else "Level 6"
             listOf(
                 LevelTransitionStage(
@@ -554,57 +876,100 @@ fun resolveCompLevelGuideStages(comp: MetaComp): List<LevelTransitionStage> {
                     levelLabel = "$rollLevel • Transition & Roll",
                     stageTiming = "Stage 3-2 → 4-1",
                     units = midUnits,
-                    actionTip = "Transition onto core synergies and slow-roll above 50g at $rollLevel until $carry hits 3★."
+                    actionTip = buildString {
+                        if (midAddHint.isNotBlank()) append("Add $midAddHint and ") else append("Transition onto core synergies and ")
+                        append("slow-roll above 50g at $rollLevel until $carry hits 3★.")
+                    }
                 ),
                 LevelTransitionStage(
                     levelLabel = "Level 7–8 • Cap Board",
                     stageTiming = "Stage 4-5+",
-                    units = lateUnits,
-                    actionTip = "Once $carry is 3★, push levels to slot remaining high-cost units and finish trait breakpoints."
+                    units = finalUnits,
+                    actionTip = buildString {
+                        append("Once $carry is 3★, push levels")
+                        if (lateAddHint.isNotBlank()) append(" to add $lateAddHint")
+                        if (lateSwapHint.isNotBlank()) append(" (drop $lateSwapHint)")
+                        append(" and finish late-game traits.")
+                    }
                 )
             )
         }
-        styleLower.contains("7") || (styleLower.contains("reroll") && carryCost == 3) -> {
+        isThreeCostReroll -> {
             listOf(
                 LevelTransitionStage(
                     levelLabel = "Level 4–5 • Early",
                     stageTiming = "Stage 2-1 → 2-6",
                     units = earlyUnits,
-                    actionTip = "Level to 4 on 2-1, play $traitHint, and slam carry items on a temporary holder to save HP."
+                    actionTip = buildString {
+                        append("Level to 4 on 2-1 and play $traitHint. ")
+                        if (earlyItemHolder != null) {
+                            append("Slam $carry's items on $earlyItemHolder to save HP.")
+                        } else {
+                            append("Slam carry items on a temporary holder to save HP.")
+                        }
+                    }
                 ),
                 LevelTransitionStage(
                     levelLabel = "Level 6–7 • Transition & Roll",
                     stageTiming = "Stage 3-2 → 4-1",
                     units = midUnits,
-                    actionTip = "Push Level 7 on 3-5 / 4-1, roll to stabilize 2★ board & move items onto $carry, then slow-roll above 50g for 3★."
+                    actionTip = buildString {
+                        append("Push Level 7 on 3-5 / 4-1")
+                        if (midAddHint.isNotBlank()) append(" to add $midAddHint")
+                        append(", move items onto $carry, and slow-roll above 50g for 3★.")
+                    }
                 ),
                 LevelTransitionStage(
                     levelLabel = "Level 8–9 • Cap Board",
                     stageTiming = "Stage 5-1+",
-                    units = lateUnits,
-                    actionTip = "After hitting 3★ $carry, push Level 8/9 to add late-game frontline and trait finishers."
+                    units = finalUnits,
+                    actionTip = buildString {
+                        append("After hitting 3★ $carry, push Level 8/9")
+                        if (lateAddHint.isNotBlank()) append(" to slot $lateAddHint")
+                        if (lateSwapHint.isNotBlank()) append(" and swap out $lateSwapHint")
+                        append(".")
+                    }
                 )
             )
         }
-        styleLower.contains("fast 9") || styleLower.contains("fast9") || carryCost >= 5 -> {
+        isFast9 -> {
             listOf(
                 LevelTransitionStage(
                     levelLabel = "Level 4–6 • Early Tempo",
                     stageTiming = "Stage 2-1 → 3-5",
                     units = earlyUnits,
-                    actionTip = "Level aggressively on 2-1 / 2-5 / 3-2 with $traitHint. Slam flexible items on an early item holder to preserve HP."
+                    actionTip = buildString {
+                        append("Level aggressively on 2-1 / 2-5 / 3-2 with $traitHint. ")
+                        if (earlyItemHolder != null) {
+                            append("Hold $carry's items on $earlyItemHolder to preserve HP.")
+                        } else {
+                            append("Slam flexible items on an early holder to preserve HP.")
+                        }
+                    }
                 ),
                 LevelTransitionStage(
                     levelLabel = "Level 7–8 • Stabilize",
                     stageTiming = "Stage 4-1 → 4-5",
                     units = midUnits,
-                    actionTip = "Roll lightly at Level 8 only if below 50 HP; keep economy healthy to push Level 9 cleanly."
+                    actionTip = buildString {
+                        if (midAddHint.isNotBlank()) append("Add $midAddHint to stabilize mid-game. ")
+                        append("Roll lightly at Level 8 only if below 50 HP; protect econ to push Level 9 cleanly.")
+                    }
                 ),
                 LevelTransitionStage(
                     levelLabel = "Level 9 • Full Transition",
                     stageTiming = "Stage 5-1+",
-                    units = lateUnits,
-                    actionTip = "Transition at Level 9: sell your item holder, transfer BIS items onto $carry, and cap with 5-cost units."
+                    units = finalUnits,
+                    actionTip = buildString {
+                        append("Transition at Level 9: ")
+                        if (lateSwapHint.isNotBlank()) {
+                            append("sell $lateSwapHint to move items onto $carry")
+                        } else {
+                            append("transfer BIS items onto $carry")
+                        }
+                        if (lateAddHint.isNotBlank()) append(" and slot $lateAddHint")
+                        append(".")
+                    }
                 )
             )
         }
@@ -614,19 +979,35 @@ fun resolveCompLevelGuideStages(comp: MetaComp): List<LevelTransitionStage> {
                     levelLabel = "Level 4–5 • Early",
                     stageTiming = "Stage 2-1 → 2-6",
                     units = earlyUnits,
-                    actionTip = "Level to 4 on 2-1 and 5 on 2-5. Play $traitHint and use an early item holder for $carry's items."
+                    actionTip = buildString {
+                        append("Level to 4 on 2-1 and 5 on 2-5 with $traitHint. ")
+                        if (earlyItemHolder != null) {
+                            append("Hold $carry's items on $earlyItemHolder to save HP.")
+                        } else {
+                            append("Use an early item holder for $carry's items.")
+                        }
+                    }
                 ),
                 LevelTransitionStage(
                     levelLabel = "Level 6–7 • Mid Game",
                     stageTiming = "Stage 3-2 → 3-5",
                     units = midUnits,
-                    actionTip = "Level to 6 on 3-2 and 7 on 3-5. Hold 50g econ and add mid-game synergies without over-rolling."
+                    actionTip = buildString {
+                        append("Level to 6 on 3-2 and 7 on 3-5")
+                        if (midAddHint.isNotBlank()) append(", adding $midAddHint")
+                        append(". Hold 50g econ without over-rolling.")
+                    }
                 ),
                 LevelTransitionStage(
                     levelLabel = "Level 8–9 • Transition",
                     stageTiming = "Stage 4-1 / 4-2",
-                    units = lateUnits,
-                    actionTip = "Push Level 8 on 4-1/4-2 and roll down to hit 2★ $carry & frontline; sell item holder and cap at Level 9."
+                    units = finalUnits,
+                    actionTip = buildString {
+                        append("Push Level 8 on 4-1/4-2 and roll down")
+                        if (lateAddHint.isNotBlank()) append(" for $lateAddHint")
+                        if (lateSwapHint.isNotBlank()) append("; sell $lateSwapHint to move items onto $carry")
+                        append(" and cap at Level 9.")
+                    }
                 )
             )
         }
@@ -641,6 +1022,7 @@ fun resolveCompLevelGuideStages(comp: MetaComp): List<LevelTransitionStage> {
 @Composable
 fun CompLevelTransitionGuideSection(
     comp: MetaComp,
+    champions: List<ChampionTierEntry> = emptyList(),
     onChampionClick: ((String, Int) -> Unit)? = null,
     compact: Boolean = false,
     modifier: Modifier = Modifier
@@ -648,8 +1030,29 @@ fun CompLevelTransitionGuideSection(
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
     val outline = MaterialTheme.colorScheme.outline
-    val stages = remember(comp.id, comp.levelGuideStages, comp.playstyle, comp.coreUnits, comp.hexPlacements, comp.carryName) {
-        resolveCompLevelGuideStages(comp)
+    val hextech = LocalHextechColors.current
+    val catalogRev = TftAssetIconResolver.catalogRevision
+    val stages = remember(
+        comp.id,
+        comp.levelGuideStages,
+        comp.playstyle,
+        comp.coreUnits,
+        comp.hexPlacements,
+        comp.carryName,
+        comp.traits,
+        comp.environment,
+        champions,
+        catalogRev
+    ) {
+        resolveCompLevelGuideStages(comp = comp, champions = champions)
+    }
+    val champCostLookup = remember(champions, comp.environment) {
+        champions
+            .filter { it.environment == comp.environment && it.cost > 0 }
+            .associateBy(
+                keySelector = { formatChampionDisplayName(it.name).lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "") },
+                valueTransform = { it.cost }
+            )
     }
     val cleanSiteGuide = remember(comp.levelingGuide) {
         sanitizeExternalSourceMentions(comp.levelingGuide).trim()
@@ -702,6 +1105,28 @@ fun CompLevelTransitionGuideSection(
                     isTransitionStep -> primary
                     else -> MaterialTheme.colorScheme.tertiary
                 }
+                val prevUnits = if (idx > 0) stages[idx - 1].units else emptyList()
+                val prevKeySet = prevUnits
+                    .map { formatChampionDisplayName(it).lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "") }
+                    .toSet()
+                val currKeySet = stage.units
+                    .map { formatChampionDisplayName(it).lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "") }
+                    .toSet()
+                val addedUnits = if (idx > 0) {
+                    stage.units.filter {
+                        formatChampionDisplayName(it).lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "") !in prevKeySet
+                    }
+                } else {
+                    emptyList()
+                }
+                val swappedOutUnits = if (idx > 0) {
+                    prevUnits.filter {
+                        formatChampionDisplayName(it).lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "") !in currKeySet
+                    }
+                } else {
+                    emptyList()
+                }
+
                 Surface(
                     shape = RoundedCornerShape(if (compact) 10.dp else 12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isTransitionStep) 0.68f else 0.48f),
@@ -780,19 +1205,72 @@ fun CompLevelTransitionGuideSection(
                         }
 
                         if (stage.units.isNotEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "What to Play:",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = stepAccent,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val boardLabel = when (idx) {
+                                        0 -> "Early Board (${stage.units.size} units)"
+                                        stages.lastIndex -> "Final Board (${stage.units.size} units)"
+                                        else -> "Mid Board (${stage.units.size} units)"
+                                    }
+                                    Text(
+                                        text = boardLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = stepAccent,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+
+                                if (addedUnits.isNotEmpty() || swappedOutUnits.isNotEmpty()) {
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        if (addedUnits.isNotEmpty()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = hextech.buff.copy(alpha = 0.16f),
+                                                border = BorderStroke(0.8.dp, hextech.buff.copy(alpha = 0.65f))
+                                            ) {
+                                                Text(
+                                                    text = "+ Add: ${addedUnits.joinToString(", ")}",
+                                                    fontSize = if (compact) 9.5.sp else 11.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = hextech.buff,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        if (swappedOutUnits.isNotEmpty()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = primary.copy(alpha = 0.15f),
+                                                border = BorderStroke(0.8.dp, primary.copy(alpha = 0.65f))
+                                            ) {
+                                                Text(
+                                                    text = "Swap out: ${swappedOutUnits.joinToString(", ")}",
+                                                    fontSize = if (compact) 9.5.sp else 11.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = primary,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
                                 FlowRow(
                                     horizontalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp),
                                     verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 7.dp)
                                 ) {
                                     stage.units.forEach { unitName ->
-                                        val cost = resolveCompUnitCost(unitName, comp)
+                                        val normU = formatChampionDisplayName(unitName)
+                                            .lowercase(Locale.US)
+                                            .replace(Regex("[^a-z0-9]"), "")
+                                        val cost = champCostLookup[normU] ?: resolveCompUnitCost(unitName, comp)
                                         val isCarry = unitName.equals(comp.carryName, ignoreCase = true)
                                         TftChampionTile(
                                             name = unitName,

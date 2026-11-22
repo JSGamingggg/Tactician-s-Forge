@@ -1460,6 +1460,18 @@ class TftNinjaCompsScraper(
             }
         }
 
+        val nonEmptySets = stages
+            .map { stage ->
+                stage.units
+                    .map { it.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "") }
+                    .filter { it.isNotEmpty() }
+                    .toSet()
+            }
+            .filter { it.isNotEmpty() }
+        if (nonEmptySets.size >= 2 && nonEmptySets.distinct().size < nonEmptySets.size) {
+            return emptyList()
+        }
+
         return stages
     }
 

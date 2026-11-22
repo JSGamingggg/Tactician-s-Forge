@@ -116,10 +116,10 @@ jobs:
           echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
           echo "build_ts_ms=${BUILD_TS_MS}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Gradle 9.3.1
+      - name: Set up Gradle 9.9.2
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '9.9.2'
 
       - name: Build Debug APK
         env:

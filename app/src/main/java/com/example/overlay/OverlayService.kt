@@ -3094,6 +3094,7 @@ private fun OverlayCompCard(
                         }
                         CompLevelTransitionGuideSection(
                             comp = comp,
+                            champions = champions,
                             onChampionClick = onChampionClick,
                             compact = true,
                             modifier = Modifier.weight(0.95f)
@@ -3110,6 +3111,7 @@ private fun OverlayCompCard(
                         )
                         CompLevelTransitionGuideSection(
                             comp = comp,
+                            champions = champions,
                             onChampionClick = onChampionClick,
                             compact = true
                         )

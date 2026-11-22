@@ -1227,6 +1227,7 @@ fun CompDetailSheetContent(
 
         CompLevelTransitionGuideSection(
             comp = comp,
+            champions = champions,
             onChampionClick = onChampionClick
         )
 

@@ -48,6 +48,8 @@ object TftAssetIconResolver {
     private var pbeAugmentImages: Map<String, String> = emptyMap()
     private var pbeChampionCosts: Map<String, Int> = emptyMap()
     private var pbeChampionTraits: Map<String, List<String>> = emptyMap()
+    private var liveCatalogChampions: List<CatalogChampionInfo> = emptyList()
+    private var pbeCatalogChampions: List<CatalogChampionInfo> = emptyList()
 
     private val scrapedItemImages = ConcurrentHashMap<String, String>()
 
@@ -56,6 +58,12 @@ object TftAssetIconResolver {
 
     @Volatile
     private var pbeCatalogLoaded: Boolean = false
+
+    data class CatalogChampionInfo(
+        val name: String,
+        val cost: Int,
+        val traits: List<String>
+    )
 
     data class ParsedDdragonCatalog(
         val version: String?,
@@ -75,7 +83,8 @@ object TftAssetIconResolver {
         val apiDisplayNames: Map<String, String>,
         val championTraits: Map<String, List<String>>,
         val championCosts: Map<String, Int>,
-        val traitDescriptions: Map<String, String>
+        val traitDescriptions: Map<String, String>,
+        val catalogChampions: List<CatalogChampionInfo> = emptyList()
     )
 
     fun isPreloadedCatalogApplied(): Boolean = preloadedCatalogLoaded
@@ -152,6 +161,36 @@ object TftAssetIconResolver {
         if (normChampTraits.isNotEmpty() && normChampTraits != pbeChampionTraits) {
             pbeChampionTraits = normChampTraits
             changed = true
+        }
+        val builtPbeCatalog = LinkedHashMap<String, CatalogChampionInfo>()
+        championCosts.forEach { (rawName, cost) ->
+            val clean = rawName.trim()
+            if (clean.length < 2 || cost !in 1..9) return@forEach
+            if (clean.contains('_') || clean.startsWith("TFT", ignoreCase = true) ||
+                clean.startsWith("DA_", ignoreCase = true) || clean.startsWith("DA18", ignoreCase = true) ||
+                clean.startsWith("DA19", ignoreCase = true)
+            ) {
+                return@forEach
+            }
+            val normKey = normalizeLookupKey(clean)
+            if (normKey.isEmpty() || builtPbeCatalog.containsKey(normKey)) return@forEach
+            val traits = championTraits[rawName]
+                ?: normChampTraits[normKey]
+                ?: emptyList()
+            if (traits.isNotEmpty()) {
+                builtPbeCatalog[normKey] = CatalogChampionInfo(
+                    name = clean,
+                    cost = cost,
+                    traits = traits
+                )
+            }
+        }
+        if (builtPbeCatalog.isNotEmpty()) {
+            val nextList = builtPbeCatalog.values.toList()
+            if (nextList != pbeCatalogChampions) {
+                pbeCatalogChampions = nextList
+                changed = true
+            }
         }
         pbeCatalogLoaded = true
         if (changed) {
@@ -275,6 +314,32 @@ object TftAssetIconResolver {
 
             crossIndexDisplayNamesFromIconObject(root.optJSONObject("itemIcons"))
 
+            val parsedCatalogChamps = LinkedHashMap<String, CatalogChampionInfo>()
+            root.optJSONArray("champions")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val name = obj.optString("name").trim()
+                    val cost = obj.optInt("cost", 0)
+                    if (name.length < 2 || cost !in 1..7 || name.contains("(")) continue
+                    val traitsArr = obj.optJSONArray("traits")
+                    val traits = if (traitsArr != null) {
+                        (0 until traitsArr.length()).mapNotNull { tIdx ->
+                            traitsArr.optString(tIdx).trim().takeIf { it.isNotEmpty() }
+                        }
+                    } else {
+                        emptyList()
+                    }
+                    val normKey = normalizeLookupKey(name)
+                    if (normKey.isNotEmpty() && traits.isNotEmpty() && !parsedCatalogChamps.containsKey(normKey)) {
+                        parsedCatalogChamps[normKey] = CatalogChampionInfo(
+                            name = name,
+                            cost = cost,
+                            traits = traits
+                        )
+                    }
+                }
+            }
+
             ParsedPreloadedSetCatalog(
                 version = version,
                 championImages = readStringMap(root.optJSONObject("championIcons")),
@@ -284,7 +349,8 @@ object TftAssetIconResolver {
                 apiDisplayNames = apiNamesMap,
                 championTraits = traitsMap,
                 championCosts = costsMap,
-                traitDescriptions = traitDescMap
+                traitDescriptions = traitDescMap,
+                catalogChampions = parsedCatalogChamps.values.toList()
             )
         }.getOrNull()
     }
@@ -301,6 +367,9 @@ object TftAssetIconResolver {
         championTraitsCatalog = parsed.championTraits
         championCostsCatalog = parsed.championCosts
         traitDescriptionCatalog = parsed.traitDescriptions
+        if (parsed.catalogChampions.isNotEmpty()) {
+            liveCatalogChampions = parsed.catalogChampions
+        }
         preloadedCatalogLoaded = true
         catalogRevision += 1
     }
@@ -495,6 +564,12 @@ object TftAssetIconResolver {
             ?: pbeChampionCosts[norm]
             ?: pbeChampionCosts[cleanNorm]
     }
+
+    fun getCatalogChampions(environment: TftEnvironment): List<CatalogChampionInfo> =
+        when (environment) {
+            TftEnvironment.LIVE -> liveCatalogChampions
+            TftEnvironment.PBE -> pbeCatalogChampions
+        }
 
     fun isKnownChampion(nameOrId: String, environment: TftEnvironment? = null): Boolean {
         val raw = nameOrId.trim()

@@ -4576,4 +4576,169 @@ class ExampleRobolectricTest {
             com.example.ui.components.sanitizeTftDescription("Deal 120 %i:scaleAP% magic damage<br>and gain @Gold@ 10 Gold.")
         )
     }
+
+    @Test
+    fun `level guide produces distinct progressive early mid and final boards for live fast8 pbe fast9 reroll and duplicate stages`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheStore = OfflineMetaCacheStore(context)
+        val seeded = cacheStore.readOrSeedBundle()
+        assertTrue(seeded.liveChampions.isNotEmpty())
+        assertTrue(seeded.pbeChampions.isNotEmpty())
+        assertTrue(
+            "LIVE catalog champions should be populated in TftAssetIconResolver",
+            com.example.ui.components.TftAssetIconResolver.getCatalogChampions(TftEnvironment.LIVE).size >= 50
+        )
+        assertTrue(
+            "PBE catalog champions should be populated in TftAssetIconResolver",
+            com.example.ui.components.TftAssetIconResolver.getCatalogChampions(TftEnvironment.PBE).size >= 70
+        )
+
+        fun normSet(units: List<String>): Set<String> =
+            units.map { it.lowercase().replace(Regex("[^a-z0-9]"), "") }.toSet()
+
+        // 1. LIVE Set 18 Fast 8 comp with ONLY 4-cost and 5-cost units on the final board
+        val liveFast8 = MetaComp(
+            id = "live_fast8_ahri",
+            title = "Blossom Spellweaver Ahri",
+            environment = TftEnvironment.LIVE,
+            setName = "Set 18",
+            patchTag = "16.23",
+            tier = TierRank.S,
+            playstyle = "Fast 8",
+            carryName = "Ahri",
+            traits = listOf("4 Blossom", "2 Spellweaver", "2 Brawler"),
+            coreUnits = listOf("Ahri", "Sett", "Zyra", "Lillia", "Sentinel", "Taric", "Ivern", "Alune"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Ahri", 3, 6, 4, items = listOf("Spear of Shojin", "Jeweled Gauntlet", "Striker's Flail"), isCarry = true),
+                HexUnitPlacement("Sett", 0, 3, 4),
+                HexUnitPlacement("Zyra", 3, 5, 4),
+                HexUnitPlacement("Lillia", 0, 4, 4),
+                HexUnitPlacement("Sentinel", 0, 2, 4),
+                HexUnitPlacement("Taric", 0, 5, 5),
+                HexUnitPlacement("Ivern", 1, 3, 5),
+                HexUnitPlacement("Alune", 3, 1, 5)
+            ),
+            avgPlacement = 3.72,
+            top4Rate = 62.0,
+            winRate = 17.5,
+            pickRate = 1.2,
+            trendDelta = "+0.2",
+            isTrending = true,
+            augmentPriorities = emptyList(),
+            levelingGuide = "",
+            notes = ""
+        )
+        val liveStages = com.example.ui.components.resolveCompLevelGuideStages(liveFast8, seeded.liveChampions)
+        assertEquals(3, liveStages.size)
+        val liveEarlySet = normSet(liveStages[0].units)
+        val liveMidSet = normSet(liveStages[1].units)
+        val liveFinalSet = normSet(liveStages[2].units)
+        assertNotEquals("Early and Mid boards must differ", liveEarlySet, liveMidSet)
+        assertNotEquals("Mid and Final boards must differ", liveMidSet, liveFinalSet)
+        assertNotEquals("Early and Final boards must differ", liveEarlySet, liveFinalSet)
+        assertTrue("Early board should have 4 low-cost units", liveStages[0].units.size == 4)
+        liveStages[0].units.forEach { u ->
+            val cost = com.example.ui.components.TftAssetIconResolver.getChampionCost(u, TftEnvironment.LIVE) ?: 0
+            assertTrue("Early Lv 4-5 unit $u must be 1-2 cost, got $cost", cost in 1..2)
+        }
+        assertFalse("Ahri (4g carry) should not appear in Level 4-5 early board", "ahri" in liveEarlySet)
+        assertEquals(normSet(liveFast8.coreUnits), liveFinalSet)
+
+        // 2. PBE Set 19 Fast 9 comp with mostly 4-5 cost units
+        val pbeFast9 = MetaComp(
+            id = "pbe_fast9_morde",
+            title = "Pentakill Mordekaiser Fast 9",
+            environment = TftEnvironment.PBE,
+            setName = "Set 19 PBE",
+            patchTag = "PBE",
+            tier = TierRank.S,
+            playstyle = "Fast 9",
+            carryName = "Mordekaiser",
+            traits = listOf("5 Pentakill", "2 Juggernaut", "2 Swiftstriker"),
+            coreUnits = listOf("Mordekaiser", "Janna", "Lee Sin", "Vladimir", "Kayle", "Yorick", "Graves", "Wukong"),
+            hexPlacements = listOf(
+                HexUnitPlacement("Mordekaiser", 0, 3, 5, items = listOf("Hand of Justice", "Sterak's Gage", "Titan's Resolve"), isCarry = true),
+                HexUnitPlacement("Janna", 3, 6, 5),
+                HexUnitPlacement("Lee Sin", 0, 2, 5),
+                HexUnitPlacement("Vladimir", 1, 4, 5),
+                HexUnitPlacement("Kayle", 3, 0, 4),
+                HexUnitPlacement("Yorick", 0, 4, 4),
+                HexUnitPlacement("Graves", 1, 2, 4),
+                HexUnitPlacement("Wukong", 0, 5, 4)
+            ),
+            avgPlacement = 3.55,
+            top4Rate = 65.0,
+            winRate = 21.0,
+            pickRate = 1.1,
+            trendDelta = "+0.3",
+            isTrending = true,
+            augmentPriorities = emptyList(),
+            levelingGuide = "",
+            notes = ""
+        )
+        val pbeStages = com.example.ui.components.resolveCompLevelGuideStages(pbeFast9, seeded.pbeChampions)
+        assertEquals(3, pbeStages.size)
+        val pbeEarlySet = normSet(pbeStages[0].units)
+        val pbeMidSet = normSet(pbeStages[1].units)
+        val pbeFinalSet = normSet(pbeStages[2].units)
+        assertNotEquals("PBE Early and Mid must differ", pbeEarlySet, pbeMidSet)
+        assertNotEquals("PBE Mid and Final must differ", pbeMidSet, pbeFinalSet)
+        assertNotEquals("PBE Early and Final must differ", pbeEarlySet, pbeFinalSet)
+        pbeStages[0].units.forEach { u ->
+            val cost = com.example.ui.components.TftAssetIconResolver.getChampionCost(u, TftEnvironment.PBE) ?: 0
+            assertTrue("PBE Early unit $u must be 1-2 cost, got $cost", cost in 1..2)
+        }
+        pbeStages[1].units.forEach { u ->
+            val cost = com.example.ui.components.TftAssetIconResolver.getChampionCost(u, TftEnvironment.PBE) ?: 0
+            assertTrue("PBE Mid unit $u must be <= 4 cost (no 5-cost legendaries), got $cost", cost in 1..4)
+        }
+        assertEquals(normSet(pbeFast9.coreUnits), pbeFinalSet)
+
+        // 3. Slow Roll 1-2 cost comp should progress from Early -> Mid -> Cap without repeating boards
+        val slowRollComp = MetaComp(
+            id = "live_slowroll_veigar",
+            title = "Sprykin Veigar Reroll",
+            environment = TftEnvironment.LIVE,
+            setName = "Set 18",
+            patchTag = "16.23",
+            tier = TierRank.A,
+            playstyle = "Slow Roll",
+            carryName = "Veigar",
+            traits = listOf("4 Sprykin", "3 Blackthorn", "2 Spellweaver"),
+            coreUnits = listOf("Veigar", "Kobuko", "Rek'Sai", "Teemo", "Rammus", "Azir", "Malphite", "Gnar"),
+            hexPlacements = emptyList(),
+            avgPlacement = 3.95,
+            top4Rate = 56.0,
+            winRate = 14.0,
+            pickRate = 0.8,
+            trendDelta = "0.0",
+            isTrending = false,
+            augmentPriorities = emptyList(),
+            levelingGuide = "",
+            notes = ""
+        )
+        val slowRollStages = com.example.ui.components.resolveCompLevelGuideStages(slowRollComp, seeded.liveChampions)
+        assertEquals(3, slowRollStages.size)
+        assertTrue("Slow roll carry Veigar should appear in Early", "veigar" in normSet(slowRollStages[0].units))
+        assertTrue("Slow roll board should grow Early < Mid < Final", slowRollStages[0].units.size < slowRollStages[1].units.size && slowRollStages[1].units.size < slowRollStages[2].units.size)
+        assertEquals(3, slowRollStages.map { normSet(it.units) }.distinct().size)
+
+        // 4. Degenerate scraped stages that repeat the exact same champions at all levels must be replaced
+        val duplicateUnits = listOf("Ahri", "Sett", "Zyra", "Lillia", "Sentinel", "Taric")
+        val degenerateComp = liveFast8.copy(
+            levelGuideStages = listOf(
+                com.example.data.model.LevelTransitionStage("Level 4-5", "Stage 2-1", duplicateUnits, "Early"),
+                com.example.data.model.LevelTransitionStage("Level 6-7", "Stage 3-2", duplicateUnits, "Mid"),
+                com.example.data.model.LevelTransitionStage("Level 8-9", "Stage 4-2", duplicateUnits, "Late")
+            )
+        )
+        val repairedStages = com.example.ui.components.resolveCompLevelGuideStages(degenerateComp, seeded.liveChampions)
+        assertEquals(3, repairedStages.size)
+        assertEquals(
+            "Degenerate identical stages must be replaced with 3 distinct progressive boards",
+            3,
+            repairedStages.map { normSet(it.units) }.distinct().size
+        )
+    }
 }
+

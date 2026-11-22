@@ -833,8 +833,13 @@ class MainViewModel(
                 }
                 if (copiedOk) {
                     _copiedCompId.value = comp.id
+                    val skippedSuffix = if (result.skippedUnits.isNotEmpty()) {
+                        " • Skipped: ${result.skippedUnits.joinToString(", ")}"
+                    } else {
+                        ""
+                    }
                     _snackbarMessage.value =
-                        "Copied ${comp.environment.label} (${result.setKey}) code • ${result.matchedChampions.size} units • Paste in TFT"
+                        "Copied ${comp.environment.label} (${result.setKey}) code • ${result.matchedChampions.size} units$skippedSuffix • Paste in TFT"
                     copiedCompClearJob?.cancel()
                     copiedCompClearJob = viewModelScope.launch {
                         delay(3000L)

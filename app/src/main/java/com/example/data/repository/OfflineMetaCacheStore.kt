@@ -93,7 +93,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 25
+        const val CURRENT_CACHE_VERSION = 26
     }
 }
 

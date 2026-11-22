@@ -4740,5 +4740,188 @@ class ExampleRobolectricTest {
             repairedStages.map { normSet(it.units) }.distinct().size
         )
     }
+
+    @Test
+    fun `pbe Graves never maps to Mordekaiser via placeholder pathSlug, site fallback cache, decimal codes, stale disk cache, or flex slot overflow`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.clearMemoryCacheForTests()
+        context.filesDir.listFiles()?.filter { it.name.startsWith("tft_teamplanner_") }?.forEach { it.delete() }
+
+        // 1. Placeholder asset `path` on TFT19_Mordekaiser containing `graves` before TFT19_Graves MUST NOT hijack "graves"
+        //    AND an unrelated string `"code": "promo"` on a prop MUST NOT flip decimal string codes ("1173") into hex!
+        val pathCollisionJson = """
+            {
+              "TFTSet19": [
+                {
+                  "character_id": "TFT19_Mordekaiser",
+                  "path": "/lol-game-data/assets/characters/tft19_mordekaiser/hud/tft19_graves_square.tft_set19.png",
+                  "tier": 5,
+                  "traits": ["Pentakill"],
+                  "team_planner_code": "1152"
+                },
+                {
+                  "character_id": "TFT19_TrainingDummy",
+                  "code": "abcdef",
+                  "tier": 0,
+                  "traits": []
+                },
+                {
+                  "character_id": "TFT19_Graves_Old",
+                  "disabled": true,
+                  "tier": 4,
+                  "traits": ["Beach Pop"],
+                  "team_planner_code": "1152"
+                },
+                {
+                  "character_id": "TFT19_Graves",
+                  "path": "/lol-game-data/assets/characters/tft19_graves/hud/tft19_graves_square.tft_set19.png",
+                  "tier": 4,
+                  "traits": ["Beach Pop", "Renegade"],
+                  "team_planner_code": "1173"
+                },
+                {
+                  "character_id": "TFT19_Renekton",
+                  "tier": 2,
+                  "traits": ["Beach Pop", "Frontman"],
+                  "team_planner_code": "1160"
+                },
+                {
+                  "character_id": "TFT19_Taric",
+                  "tier": 1,
+                  "traits": ["Beach Pop", "Juggernaut"],
+                  "team_planner_code": "1161"
+                },
+                {
+                  "character_id": "TFT19_Syndra",
+                  "tier": 3,
+                  "traits": ["Beach Pop", "Choreographer"],
+                  "team_planner_code": "1162"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(pathCollisionJson)
+        assertNotNull("Catalog with placeholder path and decimal codes must parse cleanly", parsed)
+
+        val beachPopGravesComp = MetaComp(
+            id = "tftninja_pbe_beach_pop_graves_2",
+            title = "Beach Pop Graves",
+            tier = TierRank.S,
+            environment = TftEnvironment.PBE,
+            setName = "Set 19",
+            patchTag = "19.1-PBE",
+            playstyle = "Fast 8",
+            avgPlacement = 3.55,
+            top4Rate = 61.0,
+            winRate = 17.5,
+            pickRate = 5.2,
+            trendDelta = "Top Meta",
+            isTrending = true,
+            carryName = "Graves",
+            coreUnits = listOf("Graves", "Renekton", "Taric", "Syndra"),
+            traits = listOf("Beach Pop", "Renegade"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "Fast 8",
+            notes = "",
+            sourceUrl = "https://tft.ninja/comps?e=pbe",
+            teamPlannerCode = "0248048848948a000000000000000000TFTSet19" // Stale Mordekaiser (480) instead of Graves (495)
+        )
+
+        val encodedDirect = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(beachPopGravesComp, parsed!!)
+        assertTrue(encodedDirect.isSuccess)
+        val directSlots = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.extractNonEmptySlotHexes(encodedDirect.code)
+        assertTrue("Graves must encode to 0x495 (1173), got $directSlots", directSlots.contains("495"))
+        assertFalse("Mordekaiser (0x480) must NEVER be encoded in place of Graves", directSlots.contains("480"))
+
+        // 2. Third-party site catalog with wrong Graves=480 MUST NOT override or block Riot's official CDragon PBE fetch
+        val poisonedSiteCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(
+            rawJson = """
+                {
+                  "TFTSet19": [
+                    {"character_id": "TFT19_Graves", "display_name": "Graves", "team_planner_code": 1152},
+                    {"character_id": "TFT19_Renekton", "display_name": "Renekton", "team_planner_code": 1160},
+                    {"character_id": "TFT19_Taric", "display_name": "Taric", "team_planner_code": 1161},
+                    {"character_id": "TFT19_Syndra", "display_name": "Syndra", "team_planner_code": 1162}
+                  ]
+                }
+            """.trimIndent(),
+            isThirdPartySiteFallback = true
+        )!!
+        com.example.data.teamplanner.TftTeamPlannerCodeEncoder.cacheVerifiedCatalogFromSite(TftEnvironment.PBE, poisonedSiteCatalog)
+
+        // Create a legacy v8 cache file to verify it gets purged automatically
+        val legacyV8File = java.io.File(context.filesDir, "tft_teamplanner_pbe_v8.json")
+        legacyV8File.writeText("""{"TFTSet19":[{"character_id":"TFT19_Graves","team_planner_code":1152}]}""", Charsets.UTF_8)
+        assertTrue(legacyV8File.exists())
+
+        val liveRiotClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, pathCollisionJson))
+                    .build()
+            }
+            .build()
+
+        val resolved = kotlinx.coroutines.runBlocking {
+            com.example.data.teamplanner.TftTeamPlannerCodeEncoder.resolveTeamCode(context, beachPopGravesComp, liveRiotClient)
+        }
+        assertTrue(resolved.isSuccess)
+        assertFalse("Legacy v8 PBE cache file must be purged", legacyV8File.exists())
+        val resolvedSlots = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.extractNonEmptySlotHexes(resolved.code)
+        assertTrue("Resolved PBE code must contain Graves (495), got $resolvedSlots", resolvedSlots.contains("495"))
+        assertFalse("Resolved PBE code must NOT contain Mordekaiser (480)", resolvedSlots.contains("480"))
+
+        // 3. Primary board 4-cost Graves (within first 10 hex placements) MUST NOT be pushed out by a late-appended 5-cost flex Mordekaiser
+        val elevenUnitJson = """
+            {
+              "TFTSet19": [
+                {"character_id": "TFT19_Taric", "team_planner_code": 1161},
+                {"character_id": "TFT19_Zoe", "team_planner_code": 1162},
+                {"character_id": "TFT19_Ashe", "team_planner_code": 1163},
+                {"character_id": "TFT19_Renekton", "team_planner_code": 1164},
+                {"character_id": "TFT19_Syndra", "team_planner_code": 1165},
+                {"character_id": "TFT19_Zac", "team_planner_code": 1166},
+                {"character_id": "TFT19_Taliyah", "team_planner_code": 1167},
+                {"character_id": "TFT19_Kaisa", "team_planner_code": 1168},
+                {"character_id": "TFT19_Akali", "team_planner_code": 1169},
+                {"character_id": "TFT19_Graves", "team_planner_code": 1173},
+                {"character_id": "TFT19_Mordekaiser", "team_planner_code": 1152}
+              ]
+            }
+        """.trimIndent()
+        val elevenCatalog = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.parseCommunityDragonJson(elevenUnitJson)!!
+        val elevenPlacements = listOf(
+            HexUnitPlacement("Taliyah", 3, 6, cost = 5, isCarry = true, items = listOf("Jeweled Gauntlet")),
+            HexUnitPlacement("Taric", 0, 1, cost = 1),
+            HexUnitPlacement("Zoe", 3, 0, cost = 1),
+            HexUnitPlacement("Ashe", 3, 1, cost = 2),
+            HexUnitPlacement("Renekton", 0, 2, cost = 2),
+            HexUnitPlacement("Syndra", 3, 2, cost = 3),
+            HexUnitPlacement("Zac", 0, 3, cost = 4),
+            HexUnitPlacement("Kai'Sa", 3, 4, cost = 4),
+            HexUnitPlacement("Akali", 1, 5, cost = 4),
+            HexUnitPlacement("Graves", 1, 2, cost = 4),
+            // Late-appended 5-cost flex unit at index 10 (11th unit)
+            HexUnitPlacement("Mordekaiser", 0, 5, cost = 5)
+        )
+        val overflowComp = beachPopGravesComp.copy(
+            carryName = "Taliyah",
+            coreUnits = elevenPlacements.map { it.unitName },
+            hexPlacements = elevenPlacements,
+            teamPlannerCode = ""
+        )
+        val overflowRes = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.encodeCompWithCatalog(overflowComp, elevenCatalog)
+        assertTrue(overflowRes.isSuccess)
+        val overflowSlots = com.example.data.teamplanner.TftTeamPlannerCodeEncoder.extractNonEmptySlotHexes(overflowRes.code)
+        assertTrue("Primary board Graves (495) must stay in the 10 planner slots", overflowSlots.contains("495"))
+        assertFalse("11th flex unit Mordekaiser (480) must NOT bump core Graves out", overflowSlots.contains("480"))
+    }
 }
+
 

@@ -745,8 +745,13 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                 if (copiedOk) {
                     copiedCompIdState.value = comp.id
                     copyBannerIsErrorState.value = false
+                    val skippedSuffix = if (result.skippedUnits.isNotEmpty()) {
+                        " • Skipped: ${result.skippedUnits.joinToString(", ")}"
+                    } else {
+                        ""
+                    }
                     copyBannerMessageState.value =
-                        "Copied ${comp.environment.label} (${result.setKey}) code (${result.matchedChampions.size} units) • Paste in TFT"
+                        "Copied ${comp.environment.label} (${result.setKey}) code (${result.matchedChampions.size} units$skippedSuffix) • Paste in TFT"
                 } else {
                     copiedCompIdState.value = null
                     copyBannerIsErrorState.value = true

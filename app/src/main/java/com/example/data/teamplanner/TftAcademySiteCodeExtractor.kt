@@ -164,7 +164,8 @@ object TftAcademySiteCodeExtractor {
                             rawJson = jsonText,
                             isFromRiotCommunityDragon = true,
                             extraDisplayNameByNormalizedId = extraDisplayNames,
-                            requireExplicitCodes = true
+                            requireExplicitCodes = true,
+                            isThirdPartySiteFallback = true
                         )
                     )
                 }
@@ -620,7 +621,8 @@ object TftAcademySiteCodeExtractor {
             rawJson = wrapper.toString(),
             isFromRiotCommunityDragon = true,
             extraDisplayNameByNormalizedId = extraDisplayNames,
-            requireExplicitCodes = true
+            requireExplicitCodes = true,
+            isThirdPartySiteFallback = true
         )
     }
 

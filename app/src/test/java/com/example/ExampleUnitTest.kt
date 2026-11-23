@@ -107,6 +107,16 @@ class ExampleUnitTest {
             "Deal (AP) magic damage and stun.",
             sanitizeTftDescription("Deal %i:scaleAP% magic damage and stun. @Damage@")
         )
+
+        // HTML entities from scraped DOM attributes (e.g. &#x27;, &#39;, &apos;, &amp;#x27;) must decode cleanly
+        assertEquals("K'Sante", formatChampionDisplayName("K&#x27;Sante"))
+        assertEquals("Kai'Sa", formatChampionDisplayName("Kai&#39;Sa"))
+        assertEquals("Guinsoo's Rageblade", formatRiotAssetLabel("Guinsoo&#x27;s Rageblade"))
+        assertEquals("Rabadon's Deathcap", formatRiotAssetLabel("Rabadon&#x27;s Deathcap"))
+        assertEquals("Kraken's Fury", formatRiotAssetLabel("Kraken&#x27;s Fury"))
+        assertEquals("Warmog's Armor", formatRiotAssetLabel("Warmog&#x27;s Armor"))
+        assertEquals("Thief's Gloves", formatRiotAssetLabel("Thief&amp;#x27;s Gloves"))
+        assertEquals("K'Sante's Shield", sanitizeTftDescription("K&#x27;Sante&#x2019;s Shield"))
     }
 }
 

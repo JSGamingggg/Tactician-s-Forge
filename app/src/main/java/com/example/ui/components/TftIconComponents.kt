@@ -130,13 +130,72 @@ private val formattedLabelCache = ConcurrentHashMap<String, String>(512)
 @Volatile
 private var formattedLabelCacheRevision: Int = -1
 
+private val REGEX_HTML_HEX_ENTITY = Regex("""&#[xX]([0-9a-fA-F]{1,6});""")
+private val REGEX_HTML_DEC_ENTITY = Regex("""&#(\d{1,7});""")
+
+/**
+ * Decodes HTML named, decimal, and hexadecimal character references (e.g. `&#x27;`, `&#39;`,
+ * `&apos;`, `&amp;`, `&quot;`, `&nbsp;`, `&#8217;`) so scraped labels like `Guinsoo&#x27;s Rageblade`
+ * and `K&#x27;Sante` always resolve to clean apostrophes and punctuation.
+ */
+fun decodeHtmlEntities(raw: String): String {
+    if (raw.isEmpty() || !raw.contains('&')) return raw
+    var current = raw
+    repeat(2) {
+        if (!current.contains('&')) return current
+        var decoded = current
+            .replace("&#x27;", "'", ignoreCase = true)
+            .replace("&#39;", "'")
+            .replace("&apos;", "'", ignoreCase = true)
+            .replace("&rsquo;", "'", ignoreCase = true)
+            .replace("&lsquo;", "'", ignoreCase = true)
+            .replace("&quot;", "\"", ignoreCase = true)
+            .replace("&rdquo;", "\"", ignoreCase = true)
+            .replace("&ldquo;", "\"", ignoreCase = true)
+            .replace("&nbsp;", " ", ignoreCase = true)
+            .replace("&ndash;", "-", ignoreCase = true)
+            .replace("&mdash;", "—", ignoreCase = true)
+            .replace("&hellip;", "...", ignoreCase = true)
+            .replace("&lt;", "<", ignoreCase = true)
+            .replace("&gt;", ">", ignoreCase = true)
+            .replace("&amp;", "&", ignoreCase = true)
+        if (decoded.contains("&#")) {
+            decoded = REGEX_HTML_HEX_ENTITY.replace(decoded) { m ->
+                val cp = m.groupValues[1].toIntOrNull(16)
+                when {
+                    cp == null -> m.value
+                    cp == 0x2019 || cp == 0x2018 -> "'"
+                    cp == 0x201C || cp == 0x201D -> "\""
+                    cp == 0x00A0 -> " "
+                    Character.isValidCodePoint(cp) -> String(Character.toChars(cp))
+                    else -> m.value
+                }
+            }
+            decoded = REGEX_HTML_DEC_ENTITY.replace(decoded) { m ->
+                val cp = m.groupValues[1].toIntOrNull(10)
+                when {
+                    cp == null -> m.value
+                    cp == 8217 || cp == 8216 -> "'"
+                    cp == 8220 || cp == 8221 -> "\""
+                    cp == 160 -> " "
+                    Character.isValidCodePoint(cp) -> String(Character.toChars(cp))
+                    else -> m.value
+                }
+            }
+        }
+        if (decoded == current) return decoded
+        current = decoded
+    }
+    return current
+}
+
 /**
  * Formats raw Riot Data/API identifiers (e.g. "TFT18_Item_JeweledGauntlet",
  * "TFT19_Seraphine_Indie", "TFT18_Augment_ElderwoodCrest", "Set18_Elderwood")
  * into readable display labels.
  */
 fun formatRiotAssetLabel(rawId: String): String {
-    val trimmed = rawId.trim()
+    val trimmed = decodeHtmlEntities(rawId).trim()
     if (trimmed.isEmpty()) return ""
     val rev = TftAssetIconResolver.catalogRevision
     if (formattedLabelCacheRevision != rev) {
@@ -1052,7 +1111,7 @@ private val REGEX_PUNCT_SPACE = Regex("\\s+([.,;:])")
  */
 fun sanitizeTftDescription(raw: String): String {
     if (raw.isBlank()) return ""
-    var out = raw
+    var out = decodeHtmlEntities(raw)
         .replace(REGEX_HTML_BR, "\n")
         .replace(REGEX_HTML_TAG, "")
         .replace(REGEX_BRACE_MACRO, "")

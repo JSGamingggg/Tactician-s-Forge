@@ -619,7 +619,7 @@ object TftAssetIconResolver {
     }
 
     fun resolveDisplayName(rawId: String): String? {
-        val raw = rawId.trim()
+        val raw = decodeHtmlEntities(rawId).trim()
         if (raw.isEmpty()) return null
         // Never strip '+' / '++' tier suffixes from human-readable augment names (e.g. "Advanced Loan+")
         if (raw.endsWith("+") && !raw.contains('_')) return null
@@ -1311,9 +1311,10 @@ object TftAssetIconResolver {
 
     private fun normalizeLookupKey(raw: String): String {
         if (raw.isEmpty()) return ""
-        val sb = StringBuilder(raw.length)
-        for (i in 0 until raw.length) {
-            val ch = raw[i]
+        val decoded = if (raw.contains('&')) decodeHtmlEntities(raw) else raw
+        val sb = StringBuilder(decoded.length)
+        for (i in 0 until decoded.length) {
+            val ch = decoded[i]
             when (ch) {
                 in 'a'..'z', in '0'..'9' -> sb.append(ch)
                 in 'A'..'Z' -> sb.append((ch.code + 32).toChar())
@@ -1323,7 +1324,8 @@ object TftAssetIconResolver {
     }
 
     private fun toChampionKey(displayName: String): String {
-        return displayName
+        val decoded = if (displayName.contains('&')) decodeHtmlEntities(displayName) else displayName
+        return decoded
             .replace("'", "")
             .replace(".", "")
             .replace("&", "")

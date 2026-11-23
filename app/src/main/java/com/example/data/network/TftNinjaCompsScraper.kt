@@ -7,6 +7,7 @@ import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.data.teamplanner.TftTeamPlannerCodeEncoder
 import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.decodeHtmlEntities
 import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
 import org.json.JSONArray
@@ -721,7 +722,7 @@ class TftNinjaCompsScraper(
             ?.let { parseTierValue(it) }
             ?: inheritedTier
 
-        val avgPlacement = rawAvg?.coerceIn(1.5, 7.5)?.let { round2(it) }
+        val avgPlacement = rawAvg?.takeIf { it in 2.0..7.5 }?.let { round2(it) }
             ?: when (explicitTier) {
                 TierRank.S -> 3.82
                 TierRank.A -> 4.18
@@ -1643,7 +1644,7 @@ class TftNinjaCompsScraper(
                 val tag = imgMatch.value
                 val alt = ATTR_ALT_REGEX.find(tag)?.let { m ->
                     m.groupValues.getOrNull(1)?.ifEmpty { m.groupValues.getOrNull(2).orEmpty() }
-                }?.trim().orEmpty()
+                }?.let { decodeHtmlEntities(it) }?.trim().orEmpty()
                 val rawSrc = ATTR_SRC_REGEX.find(tag)?.let { m ->
                     m.groupValues.getOrNull(1)?.ifEmpty { m.groupValues.getOrNull(2).orEmpty() }
                 }?.trim().orEmpty()
@@ -1731,19 +1732,33 @@ class TftNinjaCompsScraper(
             }
             if (units.size < 3) continue
 
-            val plainText = block
-                .replace(Regex("<script[^>]*>.*?</script>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)), " ")
-                .replace(Regex("<[^>]+>"), " ")
+            val plainText = decodeHtmlEntities(
+                block
+                    .replace(Regex("<script[^>]*>.*?</script>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)), " ")
+                    .replace(Regex("<[^>]+>"), " ")
+            )
                 .replace(Regex("\\s+"), " ")
                 .trim()
 
             val heading = HEADING_TAG_REGEX.find(block)?.groupValues?.getOrNull(1)
                 ?.replace(Regex("<[^>]+>"), "")
+                ?.let { decodeHtmlEntities(it) }
                 ?.trim()
                 ?.takeIf { it.length in 3..60 }
 
-            val avg = Regex("""(?:Avg|AVP)\s*[:#]?\s*(\d\.\d{1,2})""", RegexOption.IGNORE_CASE)
-                .find(plainText)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: 4.15
+            val explicitTier = Regex("""\b([SABCX]\+?)\s*(?:Tier)?\b""")
+                .find(plainText.take(80))?.groupValues?.getOrNull(1)?.let { parseTierValue(it) }
+
+            val avg = Regex("""(?:Avg(?:\s*Place(?:ment)?)?|AVP)\s*[:#]?\s*([2-7]\.\d{1,2})""", RegexOption.IGNORE_CASE)
+                .find(plainText)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+                ?.takeIf { it in 2.0..7.5 }
+                ?: when (explicitTier) {
+                    TierRank.S -> 3.85
+                    TierRank.A -> 4.18
+                    TierRank.B -> 4.48
+                    TierRank.C -> 4.78
+                    else -> 4.15
+                }
             val top4 = Regex("""Top\s*4\s*[:#]?\s*(\d{1,2}(?:\.\d)?)\s*%""", RegexOption.IGNORE_CASE)
                 .find(plainText)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
                 ?: round1(((100.0 - (avg - 1.5) * 18.0).coerceIn(40.0, 74.0)))
@@ -1753,8 +1768,6 @@ class TftNinjaCompsScraper(
             val pick = Regex("""(?:Pick|Play)\s*(?:Rate)?\s*[:#]?\s*(\d{1,2}(?:\.\d)?)\s*%""", RegexOption.IGNORE_CASE)
                 .find(plainText)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: 4.0
 
-            val explicitTier = Regex("""\b([SABCX]\+?)\s*(?:Tier)?\b""")
-                .find(plainText.take(80))?.groupValues?.getOrNull(1)?.let { parseTierValue(it) }
             val tier = explicitTier ?: when {
                 avg <= 4.05 -> TierRank.S
                 avg <= 4.35 -> TierRank.A
@@ -2081,7 +2094,7 @@ class TftNinjaCompsScraper(
         for (k in keys) {
             val v = obj.opt(k)
             if (v is String) {
-                val trimmed = v.trim()
+                val trimmed = decodeHtmlEntities(v).trim()
                 if (trimmed.isNotBlank() && !trimmed.equals("null", ignoreCase = true)) return trimmed
             }
         }
@@ -2146,14 +2159,14 @@ class TftNinjaCompsScraper(
     }
 
     private fun cleanUnitName(raw: String): String {
-        val stripped = raw.trim()
+        val stripped = decodeHtmlEntities(raw).trim()
             .replace(Regex("""^TFT\d+_(?:Unit|Champ(?:ion)?)?_?""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""^TFT_""", RegexOption.IGNORE_CASE), "")
         return formatChampionDisplayName(stripped).ifBlank { stripped }
     }
 
     private fun cleanItemLabel(raw: String): String {
-        val trimmed = raw.trim()
+        val trimmed = decodeHtmlEntities(raw).trim()
         if (trimmed.isEmpty()) return ""
         // Resolve official Riot codenames FIRST before stripping TFT_Item_ (e.g. TFT_Item_RedBuff -> Sunfire Cape,
         // TFT_Item_RapidFireCannon -> Red Buff, TFT_Item_Leviathan -> Nashor's Tooth)
@@ -2167,14 +2180,14 @@ class TftNinjaCompsScraper(
     }
 
     private fun cleanTraitLabel(raw: String): String {
-        val stripped = raw.trim()
+        val stripped = decodeHtmlEntities(raw).trim()
             .replace(Regex("""^Set\d+_""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""^TFT\d+_""", RegexOption.IGNORE_CASE), "")
         return stripped
     }
 
     private fun cleanCompTitle(raw: String): String {
-        return raw.trim()
+        return decodeHtmlEntities(raw).trim()
             .replace(Regex("""\s+"""), " ")
             .replace(Regex("""\s*[\-|•]\s*tft\.ninja.*$""", RegexOption.IGNORE_CASE), "")
             .trim()

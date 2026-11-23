@@ -14,6 +14,7 @@ import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.data.network.TftNinjaCompsScraper
 import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.decodeHtmlEntities
 import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
 import com.example.ui.components.sanitizeTftDescription
@@ -94,7 +95,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 27
+        const val CURRENT_CACHE_VERSION = 28
     }
 }
 
@@ -505,7 +506,13 @@ class OfflineMetaCacheStore(context: Context) {
                 .filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
                 .map { formatChampionDisplayName(it) }
                 .filter { it.isNotBlank() }
-            if (filteredUnits == stage.units) stage else stage.copy(units = filteredUnits)
+            val cleanLevel = decodeHtmlEntities(stage.levelLabel)
+            val cleanTip = decodeHtmlEntities(stage.actionTip)
+            if (filteredUnits == stage.units && cleanLevel == stage.levelLabel && cleanTip == stage.actionTip) {
+                stage
+            } else {
+                stage.copy(levelLabel = cleanLevel, units = filteredUnits, actionTip = cleanTip)
+            }
         }
         val cleanCarry = if (TftAssetIconResolver.isKnownNonChampionAsset(comp.carryName, comp.environment)) {
             cleanPlacements.firstOrNull { it.isCarry }?.unitName
@@ -514,15 +521,40 @@ class OfflineMetaCacheStore(context: Context) {
         } else {
             formatChampionDisplayName(comp.carryName).ifBlank { comp.carryName }
         }
+        val cleanTitle = decodeHtmlEntities(comp.title)
+        val cleanTraits = comp.traits.map { decodeHtmlEntities(it) }
+        val cleanNotes = decodeHtmlEntities(comp.notes)
+        val cleanLevelingGuide = decodeHtmlEntities(comp.levelingGuide)
+        val validAvg = if (comp.avgPlacement in 2.0..7.5) {
+            comp.avgPlacement
+        } else {
+            when (comp.tier) {
+                TierRank.S -> 3.85
+                TierRank.A -> 4.18
+                TierRank.B -> 4.48
+                TierRank.C -> 4.78
+                else -> 4.15
+            }
+        }
         return if (cleanCore == comp.coreUnits &&
             cleanPlacements == comp.hexPlacements &&
             cleanAugments == comp.augmentPriorities &&
             cleanStages == comp.levelGuideStages &&
-            cleanCarry == comp.carryName
+            cleanCarry == comp.carryName &&
+            cleanTitle == comp.title &&
+            cleanTraits == comp.traits &&
+            cleanNotes == comp.notes &&
+            cleanLevelingGuide == comp.levelingGuide &&
+            validAvg == comp.avgPlacement
         ) {
             comp
         } else {
             comp.copy(
+                title = cleanTitle,
+                traits = cleanTraits,
+                notes = cleanNotes,
+                levelingGuide = cleanLevelingGuide,
+                avgPlacement = validAvg,
                 coreUnits = cleanCore,
                 hexPlacements = cleanPlacements,
                 augmentPriorities = cleanAugments,

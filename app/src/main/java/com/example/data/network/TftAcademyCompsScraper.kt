@@ -1660,12 +1660,9 @@ class TftAcademyCompsScraper(
     }
 
     private fun cleanText(raw: String): String {
-        return raw
-            .replace(HTML_TAG_REGEX, " ")
-            .replace("&amp;", "&")
-            .replace("&#39;", "'")
-            .replace("&apos;", "'")
-            .replace("&quot;", "\"")
+        return com.example.ui.components.decodeHtmlEntities(
+            raw.replace(HTML_TAG_REGEX, " ")
+        )
             .replace(WHITESPACE_REGEX, " ")
             .trim()
     }

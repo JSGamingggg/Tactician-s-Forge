@@ -11,7 +11,9 @@ import com.example.data.model.TierRank
 import com.example.data.network.TftAcademyCatalogTiers
 import com.example.data.network.TftNinjaChampionRecommendation
 import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
+import com.example.ui.components.sanitizeTftDescription
 import org.json.JSONObject
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -126,25 +128,28 @@ object MetaCatalogSyncHelper {
 
         val normalizedNinjaRecs = LinkedHashMap<String, TftNinjaChampionRecommendation>()
         ninjaChampRecommendations.forEach { (rawKey, rec) ->
-            val norm = normKey(rec.championName.ifBlank { rawKey })
+            val cleanName = formatChampionDisplayName(rec.championName.ifBlank { rawKey })
+            val norm = normKey(cleanName)
             if (norm.isNotBlank()) {
                 normalizedNinjaRecs[norm] = rec
-                displayNameByUnit.putIfAbsent(norm, rec.championName.ifBlank { rawKey })
+                displayNameByUnit.putIfAbsent(norm, cleanName)
             }
         }
 
         liveComps.forEach { comp ->
             comp.coreUnits.forEach { unit ->
-                val norm = normKey(unit)
+                val cleanUnit = formatChampionDisplayName(unit)
+                val norm = normKey(cleanUnit)
                 if (norm.isNotBlank()) {
-                    displayNameByUnit.putIfAbsent(norm, unit)
+                    displayNameByUnit.putIfAbsent(norm, cleanUnit)
                     compsByUnit.getOrPut(norm) { mutableListOf() }.add(comp)
                 }
             }
             comp.hexPlacements.forEach { p ->
-                val norm = normKey(p.unitName)
+                val cleanUnit = formatChampionDisplayName(p.unitName)
+                val norm = normKey(cleanUnit)
                 if (norm.isNotBlank()) {
-                    displayNameByUnit.putIfAbsent(norm, p.unitName)
+                    displayNameByUnit.putIfAbsent(norm, cleanUnit)
                     if (p.cost in 1..5) costByUnit.putIfAbsent(norm, p.cost)
                     if (compsByUnit[norm]?.none { it.id == comp.id } != false) {
                         compsByUnit.getOrPut(norm) { mutableListOf() }.add(comp)
@@ -224,25 +229,35 @@ object MetaCatalogSyncHelper {
                 emptyList()
             }
 
+            val cleanChampName = formatChampionDisplayName(champ.name).ifBlank { champ.name }
+            val resolvedAbility = TftAssetIconResolver.resolveChampionAbility(cleanChampName, targetEnv)
+            val resolvedAbilityName = champ.abilityName.trim().ifBlank { resolvedAbility?.first.orEmpty() }
+            val resolvedAbilityDesc = sanitizeTftDescription(champ.abilityDescription)
+                .ifBlank { resolvedAbility?.second.orEmpty() }
             byNormName[norm] = champ.copy(
+                name = cleanChampName,
                 tier = updatedTier,
                 avgPlacement = updatedAvg,
                 top4Rate = updatedTop4,
-                bestItems = topItems,
-                synergyComps = resolvedSynergies
+                traits = champ.traits.map { formatRiotAssetLabel(it) }.filter { it.isNotBlank() },
+                bestItems = topItems.map { formatRiotAssetLabel(it) }.filter { it.isNotBlank() }.distinct(),
+                synergyComps = resolvedSynergies,
+                abilityName = resolvedAbilityName,
+                abilityDescription = resolvedAbilityDesc
             )
         }
 
         // Ensure every champion referenced in tft.ninja comps or champion recommendations exists in catalog
         val envPrefix = if (targetEnv == TftEnvironment.PBE) "pbe" else "live"
-        displayNameByUnit.forEach { (norm, displayName) ->
+        displayNameByUnit.forEach { (norm, rawDisplayName) ->
             if (byNormName.containsKey(norm)) return@forEach
+            val displayName = formatChampionDisplayName(rawDisplayName).ifBlank { rawDisplayName }
             val matchedComps = compsByUnit[norm].orEmpty()
             val ninjaRec = normalizedNinjaRecs[norm]
             val cost = costByUnit[norm]
                 ?: TftAssetIconResolver.getChampionCost(displayName, targetEnv)
                 ?: 3
-            val traits = TftAssetIconResolver.getChampionTraits(displayName, targetEnv)
+            val traits = TftAssetIconResolver.getChampionTraits(displayName, targetEnv).map { formatRiotAssetLabel(it) }
             val isCarry = matchedComps.any { normKey(it.carryName) == norm }
             val tier = ninjaRec?.tier ?: when {
                 isCarry -> TierRank.S
@@ -256,6 +271,7 @@ object MetaCatalogSyncHelper {
                 if (cost >= 4) 3.92 else 4.22
             }
             val top4 = ninjaRec?.top4Rate ?: avgToTop4(avg)
+            val resolvedAbility = TftAssetIconResolver.resolveChampionAbility(displayName, targetEnv)
             byNormName[norm] = ChampionTierEntry(
                 id = "${envPrefix}_$norm",
                 name = displayName,
@@ -267,7 +283,9 @@ object MetaCatalogSyncHelper {
                 avgPlacement = avg,
                 top4Rate = top4,
                 bestItems = resolveNinjaItemsFor(norm, fallback = emptyList()),
-                synergyComps = resolveNinjaCompTitlesFor(norm)
+                synergyComps = resolveNinjaCompTitlesFor(norm),
+                abilityName = resolvedAbility?.first.orEmpty(),
+                abilityDescription = resolvedAbility?.second.orEmpty()
             )
         }
 
@@ -285,13 +303,15 @@ object MetaCatalogSyncHelper {
                     if (!id.startsWith(setToken, ignoreCase = true) && !fullImg.contains("TFT_Set$liveSetNumber", ignoreCase = true)) {
                         continue
                     }
-                    val name = obj.optString("name").trim()
+                    val rawName = obj.optString("name").trim()
+                    val name = formatChampionDisplayName(rawName)
                     if (name.isBlank() || name.contains("null", ignoreCase = true)) continue
                     val norm = normKey(name)
                     if (byNormName.containsKey(norm)) continue
                     val cost = obj.optInt("tier", obj.optInt("cost", 3)).coerceIn(1, 5)
-                    val traits = TftAssetIconResolver.getChampionTraits(name, TftEnvironment.LIVE)
+                    val traits = TftAssetIconResolver.getChampionTraits(name, TftEnvironment.LIVE).map { formatRiotAssetLabel(it) }
                     val matchedComps = compsByUnit[norm].orEmpty()
+                    val resolvedAbility = TftAssetIconResolver.resolveChampionAbility(name, TftEnvironment.LIVE)
                     byNormName[norm] = ChampionTierEntry(
                         id = "live_$norm",
                         name = name,
@@ -303,7 +323,9 @@ object MetaCatalogSyncHelper {
                         avgPlacement = if (cost >= 4) 3.92 else 4.22,
                         top4Rate = if (cost >= 4) 56.4 else 51.0,
                         bestItems = resolveNinjaItemsFor(norm, fallback = emptyList()),
-                        synergyComps = resolveNinjaCompTitlesFor(norm)
+                        synergyComps = resolveNinjaCompTitlesFor(norm),
+                        abilityName = resolvedAbility?.first.orEmpty(),
+                        abilityDescription = resolvedAbility?.second.orEmpty()
                     )
                 }
             }
@@ -328,26 +350,43 @@ object MetaCatalogSyncHelper {
         val holdersByItem = LinkedHashMap<String, MutableList<String>>()
         liveComps.forEach { comp ->
             comp.hexPlacements.forEach { p ->
+                val cleanHolder = formatChampionDisplayName(p.unitName).ifBlank { p.unitName }
                 p.items.forEach { rawItem ->
                     val label = formatRiotAssetLabel(rawItem)
-                    holdersByItem.getOrPut(normKey(rawItem)) { mutableListOf() }.add(p.unitName)
-                    holdersByItem.getOrPut(normKey(label)) { mutableListOf() }.add(p.unitName)
+                    holdersByItem.getOrPut(normKey(rawItem)) { mutableListOf() }.add(cleanHolder)
+                    holdersByItem.getOrPut(normKey(label)) { mutableListOf() }.add(cleanHolder)
                 }
             }
         }
 
         val byNormName = LinkedHashMap<String, ItemTierEntry>()
         existing.forEach { item ->
-            val norm = normKey(item.name)
+            val cleanName = formatRiotAssetLabel(item.name).ifBlank { item.name }
+            val norm = normKey(cleanName)
             val apiTier = academyTiers?.itemTiersByKey?.get(norm)
             val newTier = apiTier ?: item.tier
             val newAvg = if (apiTier != null) tierToAvg(apiTier) else item.avgPlacement
             val newTop4 = if (apiTier != null) avgToTop4(newAvg) else item.top4Rate
-            val holders = holdersByItem[norm]?.distinct()?.take(4).orEmpty().ifEmpty { item.bestHolders }
+            val holders = holdersByItem[norm]?.distinct()?.take(4).orEmpty()
+                .ifEmpty { item.bestHolders.map { formatChampionDisplayName(it) }.filter { it.isNotBlank() } }
+            val cleanedSummary = sanitizeTftDescription(item.statsSummary)
+            val resolvedSummary = if (cleanedSummary.isBlank() || isGenericFallbackDescription(cleanedSummary)) {
+                TftAssetIconResolver.resolveItemDescription(cleanName, targetEnv)
+                    ?: buildDescriptiveItemFallback(cleanName, item.category)
+            } else {
+                cleanedSummary
+            }
+            val resolvedComponents = item.components
+                .map { formatRiotAssetLabel(it) }
+                .filter { it.isNotBlank() }
+                .ifEmpty { TftAssetIconResolver.resolveItemComponents(cleanName, targetEnv) }
             byNormName[norm] = item.copy(
+                name = cleanName,
                 tier = newTier,
                 avgPlacement = newAvg,
                 top4Rate = newTop4,
+                components = resolvedComponents,
+                statsSummary = resolvedSummary,
                 bestHolders = holders
             )
         }
@@ -369,7 +408,8 @@ object MetaCatalogSyncHelper {
                         continue
                     }
                     val obj = data.optJSONObject(key) ?: continue
-                    val name = obj.optString("name").trim()
+                    val rawName = obj.optString("name").trim()
+                    val name = formatRiotAssetLabel(rawName)
                     if (name.isBlank() || name.contains("null", true)) continue
                     val norm = normKey(name)
                     if (byNormName.containsKey(norm)) continue
@@ -384,14 +424,21 @@ object MetaCatalogSyncHelper {
 
                     val tier = academyTiers?.itemTiersByKey?.get(norm) ?: TierRank.B
                     val avg = tierToAvg(tier)
+                    val ddDesc = sanitizeTftDescription(
+                        obj.optString("desc").ifBlank { obj.optString("description") }
+                    )
+                    val category = classifyItemCategory(name, ddDesc)
+                    val resolvedSummary = ddDesc.takeIf { it.isNotBlank() && !isGenericFallbackDescription(it) }
+                        ?: TftAssetIconResolver.resolveItemDescription(name, TftEnvironment.LIVE)
+                        ?: buildDescriptiveItemFallback(name, category)
                     byNormName[norm] = ItemTierEntry(
                         id = "live_item_$norm",
                         name = name,
                         tier = tier,
                         environment = TftEnvironment.LIVE,
-                        category = classifyItemCategory(name),
-                        components = emptyList(),
-                        statsSummary = "$name — Set $liveSetNumber item.",
+                        category = category,
+                        components = TftAssetIconResolver.resolveItemComponents(name, TftEnvironment.LIVE),
+                        statsSummary = resolvedSummary,
                         avgPlacement = avg,
                         top4Rate = avgToTop4(avg),
                         bestHolders = holdersByItem[norm]?.distinct()?.take(4).orEmpty()
@@ -402,21 +449,22 @@ object MetaCatalogSyncHelper {
 
         // Guarantee any item listed in TFTAcademy item tierlist is represented
         val itemPrefix = if (targetEnv == TftEnvironment.PBE) "pbe_item" else "live_item"
-        val envDesc = if (targetEnv == TftEnvironment.PBE) "PBE item" else "live item"
         academyTiers?.itemTiersByKey?.forEach { (rawOrNorm, rank) ->
             val label = formatRiotAssetLabel(rawOrNorm)
             val norm = normKey(label)
             if (norm.isBlank() || byNormName.containsKey(norm)) return@forEach
             if (rawOrNorm == norm) return@forEach // skip duplicate normalized keys; only iterate raw IDs
             val avg = tierToAvg(rank)
+            val resolvedDesc = TftAssetIconResolver.resolveItemDescription(label, targetEnv)
+            val category = classifyItemCategory(label, resolvedDesc.orEmpty())
             byNormName[norm] = ItemTierEntry(
                 id = "${itemPrefix}_$norm",
                 name = label,
                 tier = rank,
                 environment = targetEnv,
-                category = classifyItemCategory(label),
-                components = emptyList(),
-                statsSummary = "$label — Set $liveSetNumber $envDesc.",
+                category = category,
+                components = TftAssetIconResolver.resolveItemComponents(label, targetEnv),
+                statsSummary = resolvedDesc ?: buildDescriptiveItemFallback(label, category),
                 avgPlacement = avg,
                 top4Rate = avgToTop4(avg),
                 bestHolders = holdersByItem[norm]?.distinct()?.take(4).orEmpty()
@@ -448,7 +496,8 @@ object MetaCatalogSyncHelper {
 
         val byNormName = LinkedHashMap<String, AugmentTierEntry>()
         existing.forEach { aug ->
-            val norm = normKey(aug.name)
+            val cleanName = formatRiotAssetLabel(aug.name).ifBlank { aug.name }
+            val norm = normKey(cleanName)
             val apiTier = academyTiers?.augmentTiersByKey?.get(norm)
             val apiRank = academyTiers?.augmentRanksByKey?.get(norm)
             val newTier = apiTier ?: aug.tier
@@ -459,11 +508,20 @@ object MetaCatalogSyncHelper {
             } else {
                 emptyList()
             }
+            val resolverDesc = TftAssetIconResolver.resolveAugmentDescription(cleanName, targetEnv)
+            val cleanedExistingDesc = sanitizeTftDescription(aug.description)
+            val finalDesc = when {
+                !resolverDesc.isNullOrBlank() && !isGenericFallbackDescription(resolverDesc) -> resolverDesc
+                cleanedExistingDesc.isNotBlank() && !isGenericFallbackDescription(cleanedExistingDesc) -> cleanedExistingDesc
+                else -> buildDescriptiveAugmentFallback(cleanName)
+            }
             byNormName[norm] = aug.copy(
+                name = cleanName,
                 tier = newTier,
                 augmentTier = apiRank ?: aug.augmentTier,
                 avgPlacement = newAvg,
                 top4Rate = newTop4,
+                description = finalDesc,
                 synergyComps = matchedComps
             )
         }
@@ -480,7 +538,8 @@ object MetaCatalogSyncHelper {
                     val obj = data.optJSONObject(key) ?: continue
                     val fullImg = obj.optJSONObject("image")?.optString("full").orEmpty()
                     if (fullImg.startsWith("Missing-", ignoreCase = true)) continue
-                    val name = obj.optString("name").trim()
+                    val rawName = obj.optString("name").trim()
+                    val name = formatRiotAssetLabel(rawName)
                     if (name.isBlank() || name.contains("null", true)) continue
                     val norm = normKey(name)
                     if (byNormName.containsKey(norm)) continue
@@ -497,6 +556,12 @@ object MetaCatalogSyncHelper {
                         else -> AugmentTier.GOLD
                     }
                     val avg = tierToAvg(tier)
+                    val ddDesc = sanitizeTftDescription(
+                        obj.optString("desc").ifBlank { obj.optString("description") }
+                    )
+                    val resolvedDesc = TftAssetIconResolver.resolveAugmentDescription(name, TftEnvironment.LIVE)
+                        ?: ddDesc.takeIf { it.isNotBlank() && !isGenericFallbackDescription(it) }
+                        ?: buildDescriptiveAugmentFallback(name)
                     byNormName[norm] = AugmentTierEntry(
                         id = "live_aug_$norm",
                         name = name,
@@ -510,7 +575,7 @@ object MetaCatalogSyncHelper {
                         },
                         avgPlacement = avg,
                         top4Rate = avgToTop4(avg),
-                        description = "$name — Set $liveSetNumber augment.",
+                        description = resolvedDesc,
                         synergyComps = compsByAugment[norm]?.distinct()?.take(3).orEmpty()
                     )
                 }
@@ -519,7 +584,6 @@ object MetaCatalogSyncHelper {
 
         // Guarantee any augment in TFTAcademy augment tierlist is represented
         val augPrefix = if (targetEnv == TftEnvironment.PBE) "pbe_aug" else "live_aug"
-        val envAugDesc = if (targetEnv == TftEnvironment.PBE) "PBE augment" else "live augment"
         academyTiers?.augmentTiersByKey?.forEach { (rawOrNorm, rank) ->
             val label = formatRiotAssetLabel(rawOrNorm)
             val norm = normKey(label)
@@ -527,6 +591,8 @@ object MetaCatalogSyncHelper {
             if (rawOrNorm == norm) return@forEach
             val avg = tierToAvg(rank)
             val augTier = academyTiers.augmentRanksByKey[rawOrNorm] ?: AugmentTier.GOLD
+            val resolvedDesc = TftAssetIconResolver.resolveAugmentDescription(label, targetEnv)
+                ?: buildDescriptiveAugmentFallback(label)
             byNormName[norm] = AugmentTierEntry(
                 id = "${augPrefix}_$norm",
                 name = label,
@@ -540,7 +606,7 @@ object MetaCatalogSyncHelper {
                 },
                 avgPlacement = avg,
                 top4Rate = avgToTop4(avg),
-                description = "$label — Set $liveSetNumber $envAugDesc.",
+                description = resolvedDesc,
                 synergyComps = compsByAugment[norm]?.distinct()?.take(3).orEmpty()
             )
         }
@@ -596,6 +662,45 @@ object MetaCatalogSyncHelper {
 
     private fun avgToTop4(avg: Double): Double =
         ((100.0 - (avg - 1.5) * 18.0).coerceIn(44.0, 74.0) * 10.0).roundToInt() / 10.0
+
+    private fun isGenericFallbackDescription(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) return true
+        return REGEX_GENERIC_DESC.containsMatchIn(trimmed)
+    }
+
+    private fun buildDescriptiveItemFallback(name: String, category: ItemCategory): String {
+        if (name.endsWith(" Emblem", ignoreCase = true)) {
+            val trait = name.removeSuffix(" Emblem").removeSuffix(" emblem").trim()
+            if (trait.isNotBlank()) return "Wearer gains the $trait trait."
+        }
+        return when (category) {
+            ItemCategory.AD -> "Boosts Attack Damage and physical carry scaling."
+            ItemCategory.AP -> "Boosts Ability Power and spell-casting damage."
+            ItemCategory.ATTACK_SPEED -> "Increases Attack Speed for faster attacks and mana generation."
+            ItemCategory.TANK -> "Increases frontline durability with defensive stats."
+            ItemCategory.FIGHTER -> "Grants hybrid offensive and survivability stats for frontline fighters."
+        }
+    }
+
+    private fun buildDescriptiveAugmentFallback(name: String): String {
+        return when {
+            name.endsWith(" Crown", ignoreCase = true) -> {
+                val trait = name.removeSuffix(" Crown").removeSuffix(" crown").trim()
+                "Gain a $trait Emblem, a high-synergy item, and a $trait champion."
+            }
+            name.endsWith(" Crest", ignoreCase = true) -> {
+                val trait = name.removeSuffix(" Crest").removeSuffix(" crest").trim()
+                "Gain a $trait Emblem and a $trait champion."
+            }
+            else -> "Grants a team-wide tactical combat or economy bonus."
+        }
+    }
+
+    private val REGEX_GENERIC_DESC = Regex(
+        """—\s*(?:Set\s*\d+\s*)?(?:live\s+|PBE\s+)?(?:item|augment)\.$""",
+        RegexOption.IGNORE_CASE
+    )
 
     private fun normKey(raw: String): String =
         raw.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")

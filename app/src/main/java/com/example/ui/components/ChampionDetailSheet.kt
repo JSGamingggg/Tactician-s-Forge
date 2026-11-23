@@ -93,7 +93,7 @@ data class ChampionDetailProfile(
 )
 
 internal fun normalizeChampionLookupKey(raw: String): String {
-    val formatted = formatRiotAssetLabel(raw)
+    val formatted = formatChampionDisplayName(raw)
     return formatted.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")
 }
 
@@ -114,7 +114,7 @@ fun resolveChampionDetailProfile(
     items: List<ItemTierEntry>,
     fallbackCost: Int? = null
 ): ChampionDetailProfile {
-    val cleanName = formatRiotAssetLabel(championName).ifBlank { championName.trim() }
+    val cleanName = formatChampionDisplayName(championName).ifBlank { championName.trim() }
     val targetKey = normalizeChampionLookupKey(cleanName)
 
     val matchedChamp = champions.firstOrNull {
@@ -286,17 +286,25 @@ fun resolveChampionDetailProfile(
         ?.distinct()
         .orEmpty()
 
+    val resolvedName = formatChampionDisplayName(matchedChamp?.name ?: cleanName).ifBlank { cleanName }
+    val resolvedEnv = matchedChamp?.environment ?: environment
+    val catalogAbility = TftAssetIconResolver.resolveChampionAbility(resolvedName, resolvedEnv)
+    val resolvedAbilityName = matchedChamp?.abilityName.orEmpty().trim()
+        .ifBlank { catalogAbility?.first.orEmpty() }
+    val resolvedAbilityDescription = sanitizeTftDescription(matchedChamp?.abilityDescription.orEmpty())
+        .ifBlank { catalogAbility?.second.orEmpty() }
+
     return ChampionDetailProfile(
-        name = matchedChamp?.name ?: cleanName,
+        name = resolvedName,
         cost = resolvedCost,
         tier = resolvedTier,
-        environment = matchedChamp?.environment ?: environment,
+        environment = resolvedEnv,
         traits = resolvedTraits,
         role = resolvedRole,
         avgPlacement = resolvedAvgPlacement,
         top4Rate = resolvedTop4,
-        abilityName = matchedChamp?.abilityName.orEmpty().trim(),
-        abilityDescription = sanitizeTftDescription(matchedChamp?.abilityDescription.orEmpty()),
+        abilityName = resolvedAbilityName,
+        abilityDescription = resolvedAbilityDescription,
         patchDelta = matchedChamp?.patchDelta,
         patchNote = sanitizeExternalSourceMentions(matchedChamp?.patchNote.orEmpty()),
         optimalItems = resolvedOptimalItems,
@@ -708,33 +716,35 @@ fun ChampionDetailSheetContent(
                                         }
                                     }
 
-                                    if (itemMeta != null) {
-                                        if (itemMeta.statsSummary.isNotBlank()) {
+                                    val resolvedItemSummary = itemMeta?.statsSummary?.takeIf { it.isNotBlank() }
+                                        ?: TftAssetIconResolver.resolveItemDescription(usage.itemName, profile.environment).orEmpty()
+                                    val resolvedItemComponents = itemMeta?.components?.takeIf { it.isNotEmpty() }
+                                        ?: TftAssetIconResolver.resolveItemComponents(usage.itemName, profile.environment)
+                                    if (resolvedItemSummary.isNotBlank()) {
+                                        Text(
+                                            text = resolvedItemSummary,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (resolvedItemComponents.isNotEmpty()) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
                                             Text(
-                                                text = itemMeta.statsSummary,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
+                                                text = "Recipe:",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
-                                        }
-                                        if (itemMeta.components.isNotEmpty()) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Recipe:",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            resolvedItemComponents.forEach { compName ->
+                                                TftItemIcon(
+                                                    itemName = compName,
+                                                    size = 15.dp,
+                                                    environment = profile.environment
                                                 )
-                                                itemMeta.components.forEach { compName ->
-                                                    TftItemIcon(
-                                                        itemName = compName,
-                                                        size = 15.dp,
-                                                        environment = profile.environment
-                                                    )
-                                                }
                                             }
                                         }
                                     }

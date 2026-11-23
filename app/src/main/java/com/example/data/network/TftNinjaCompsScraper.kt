@@ -7,6 +7,7 @@ import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.data.teamplanner.TftTeamPlannerCodeEncoder
 import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
 import org.json.JSONArray
 import org.json.JSONObject
@@ -199,12 +200,7 @@ class TftNinjaCompsScraper(
             }
         }
 
-        val sortedComps = enrichedList.sortedWith(
-            compareBy<MetaComp> { it.tier.sortOrder }
-                .thenBy { it.avgPlacement }
-                .thenByDescending { it.top4Rate }
-                .thenBy { it.title }
-        )
+        val sortedComps = sortCompsTierSDown(enrichedList)
 
         val finalChampRecs = buildAggregatedChampionRecommendations(
             comps = sortedComps,
@@ -2137,6 +2133,8 @@ class TftNinjaCompsScraper(
 
     private fun parseTierValue(raw: String): TierRank? {
         val clean = raw.trim().uppercase(Locale.US)
+            .removePrefix("TIER")
+            .trim(' ', '-', '_', ':')
         return when {
             clean.startsWith("S") -> TierRank.S
             clean.startsWith("A") -> TierRank.A
@@ -2151,7 +2149,7 @@ class TftNinjaCompsScraper(
         val stripped = raw.trim()
             .replace(Regex("""^TFT\d+_(?:Unit|Champ(?:ion)?)?_?""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""^TFT_""", RegexOption.IGNORE_CASE), "")
-        return formatRiotAssetLabel(stripped).ifBlank { stripped }
+        return formatChampionDisplayName(stripped).ifBlank { stripped }
     }
 
     private fun cleanItemLabel(raw: String): String {
@@ -2329,6 +2327,18 @@ class TftNinjaCompsScraper(
         )
 
         /**
+         * Orders compositions strictly from Tier S down (S -> A -> B -> C -> X),
+         * then by avg placement ascending, top-4 rate descending, and title.
+         */
+        fun sortCompsTierSDown(comps: List<MetaComp>): List<MetaComp> =
+            comps.sortedWith(
+                compareBy<MetaComp> { it.tier.sortOrder }
+                    .thenBy { it.avgPlacement }
+                    .thenByDescending { it.top4Rate }
+                    .thenBy { it.title }
+            )
+
+        /**
          * Stable fingerprint across LIVE + PBE comps to detect meta composition updates.
          */
         fun computeCompsSignature(liveComps: List<MetaComp>, pbeComps: List<MetaComp>): String {
@@ -2352,6 +2362,7 @@ class TftNinjaCompsScraper(
                     connectTimeout = 10_000
                     readTimeout = 12_000
                     instanceFollowRedirects = true
+                    useCaches = false
                     requestMethod = "GET"
                     setRequestProperty(
                         "User-Agent",
@@ -2359,6 +2370,8 @@ class TftNinjaCompsScraper(
                     )
                     setRequestProperty("Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8")
                     setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+                    setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0")
+                    setRequestProperty("Pragma", "no-cache")
                     setRequestProperty("Referer", TFTNINJA_LIVE_COMPS_URL)
                     if (rscHeaders) {
                         setRequestProperty("RSC", "1")

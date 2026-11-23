@@ -71,7 +71,7 @@ class MainViewModel(
     private val metaRepository: MetaRepository,
     private val localStore: LocalPreferencesStore,
     private val firestoreRepo: FirestoreUserRepository,
-    autoSyncOnInit: Boolean = false,
+    autoSyncOnInit: Boolean = true,
     private val autoCheckAppUpdateOnInit: Boolean = true,
     private val appContext: Context? = null
 ) : ViewModel() {
@@ -294,20 +294,23 @@ class MainViewModel(
                 )
             }
         }
+        observeBackgroundCacheUpdates()
         viewModelScope.launch {
             val loaded = metaRepository.loadOfflineBundleAsync()
-            _metaBundle.value = loaded
-            _liveVersionInfo.value = loaded.liveVersionInfo
-            refreshActiveEnvSnapshot()
+            if (_metaBundle.value === initialBundle) {
+                _metaBundle.value = loaded
+                _liveVersionInfo.value = loaded.liveVersionInfo
+                refreshActiveEnvSnapshot()
+            }
             appContext?.let { AppUpdateCoordinator.refreshSettingsSnapshot(it) }
-        }
-        observeBackgroundCacheUpdates()
-        if (autoSyncOnInit) {
-            refreshPatchVersions(
-                notifyIfUpdated = true,
-                onlyNotifyOnChanges = true,
-                triggerPushAlerts = false
-            )
+            if (autoSyncOnInit) {
+                refreshPatchVersions(
+                    notifyIfUpdated = true,
+                    onlyNotifyOnChanges = true,
+                    triggerPushAlerts = false,
+                    forceReplaceComps = true
+                )
+            }
         }
         if (autoCheckAppUpdateOnInit && appContext != null) {
             checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
@@ -324,8 +327,8 @@ class MainViewModel(
                 AppUpdateCoordinator.onResumeHandlePendingInstall(ctx)
             }
         }
-        // Auto-check for App Updates when opening/returning to the app (throttled in coordinator),
-        // while keeping Comp Updates strictly manual via user button press.
+        // Auto-check for App Updates when opening/returning to the app (throttled in coordinator);
+        // Comp Updates auto-check on app load and can also be re-checked anytime via button press.
         if (autoCheckAppUpdateOnInit && ctx != null) {
             checkForAppUpdate(userInitiated = false, dispatchOsNotification = false)
         }
@@ -473,15 +476,17 @@ class MainViewModel(
             MetaCacheUpdates.lastCacheWriteMillis.collect { ts ->
                 if (ts > 0L) {
                     val fresh = metaRepository.peekOfflineBundle()
-                    if (fresh !== _metaBundle.value && fresh.liveComps.isNotEmpty()) {
+                    if (fresh !== _metaBundle.value && (fresh.liveComps.isNotEmpty() || fresh.pbeComps.isNotEmpty())) {
                         _metaBundle.value = fresh
                         _liveVersionInfo.value = fresh.liveVersionInfo
                         _isOfflineFallback.value = false
-                    } else if (fresh.liveComps.isEmpty()) {
+                        refreshActiveEnvSnapshot()
+                    } else if (fresh.liveComps.isEmpty() && fresh.pbeComps.isEmpty()) {
                         val loaded = metaRepository.loadOfflineBundleAsync()
                         _metaBundle.value = loaded
                         _liveVersionInfo.value = loaded.liveVersionInfo
                         _isOfflineFallback.value = false
+                        refreshActiveEnvSnapshot()
                     }
                 }
             }
@@ -504,17 +509,19 @@ class MainViewModel(
     fun refreshPatchVersions(
         notifyIfUpdated: Boolean = false,
         onlyNotifyOnChanges: Boolean = false,
-        triggerPushAlerts: Boolean = false
+        triggerPushAlerts: Boolean = false,
+        forceReplaceComps: Boolean = notifyIfUpdated && !onlyNotifyOnChanges
     ) {
         if (activeSyncJob?.isActive == true) return
         activeSyncJob = viewModelScope.launch {
             try {
                 _isRefreshingVersions.value = true
-                val sync = metaRepository.refreshAndPersistMeta()
+                val sync = metaRepository.refreshAndPersistMeta(forceReplaceComps = forceReplaceComps)
                 val freshBundle = metaRepository.loadOfflineBundleAsync()
                 _metaBundle.value = freshBundle
                 _liveVersionInfo.value = sync.versionInfo
                 _isOfflineFallback.value = sync.cacheStatus.isOfflineFallback
+                refreshActiveEnvSnapshot()
 
                 if (triggerPushAlerts && appContext != null) {
                     MetaUpdateNotifier.dispatchNotifications(
@@ -558,7 +565,7 @@ class MainViewModel(
                         _snackbarMessage.value = "Updated LIVE & PBE meta: ${updates.joinToString(", ")}"
                     } else if (!onlyNotifyOnChanges) {
                         _snackbarMessage.value = if (sync.syncedFromNetwork) {
-                            "Synced latest LIVE & PBE patches and compositions."
+                            "Replaced LIVE (${freshBundle.liveComps.size}) & PBE (${freshBundle.pbeComps.size}) comps from Tier S down."
                         } else {
                             "Offline mode — using persistent device cache."
                         }

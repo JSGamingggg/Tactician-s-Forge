@@ -14,6 +14,7 @@ import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
 import com.example.data.network.TftNinjaCompsScraper
 import com.example.ui.components.TftAssetIconResolver
+import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
 import com.example.ui.components.sanitizeTftDescription
 import com.squareup.moshi.Moshi
@@ -93,7 +94,7 @@ data class OfflineMetaBundle(
     }
 
     companion object {
-        const val CURRENT_CACHE_VERSION = 26
+        const val CURRENT_CACHE_VERSION = 27
     }
 }
 
@@ -119,7 +120,11 @@ class OfflineMetaCacheStore(context: Context) {
         val itemIcons: Map<String, String>,
         val augmentIcons: Map<String, String>,
         val championCosts: Map<String, Int>,
-        val championTraits: Map<String, List<String>>
+        val championTraits: Map<String, List<String>>,
+        val championAbilities: Map<String, Pair<String, String>> = emptyMap(),
+        val itemDescriptions: Map<String, String> = emptyMap(),
+        val itemComponents: Map<String, List<String>> = emptyMap(),
+        val augmentDescriptions: Map<String, String> = emptyMap()
     )
 
     fun peekInMemoryOrSeed(): OfflineMetaBundle = sharedBundlesByPath[cacheKey] ?: OfflineMetaBundle()
@@ -182,8 +187,12 @@ class OfflineMetaCacheStore(context: Context) {
                     parsed.liveItems.isNotEmpty() &&
                     parsed.liveAugments.isNotEmpty()
                 ) {
-                    val cleanLive = parsed.liveComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
-                    val cleanPbe = parsed.pbeComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
+                    val cleanLive = TftNinjaCompsScraper.sortCompsTierSDown(
+                        parsed.liveComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
+                    )
+                    val cleanPbe = TftNinjaCompsScraper.sortCompsTierSDown(
+                        parsed.pbeComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
+                    )
                     val cleanLivePatches = parsed.livePatches
                         .filter { it.id.startsWith("tftips_") || it.sourceUrl.contains("tftips.app", ignoreCase = true) }
                         .distinctBy { it.id.trim().lowercase().ifBlank { "${it.environment.name}_${it.version.lowercase()}" } }
@@ -233,6 +242,30 @@ class OfflineMetaCacheStore(context: Context) {
         val preloadedPbeItems = preloadedPbeCatalog?.items.orEmpty()
         val preloadedPbeAugments = preloadedPbeCatalog?.augments.orEmpty()
 
+        // Cross-enrich Set 18 LIVE catalog with exact numeric descriptions & abilities after both Set 18 & Set 19 PBE catalogs are loaded
+        val enrichedLiveChamps = (preloadedCatalog?.champions?.takeIf { it.isNotEmpty() }
+            ?: baseSeed.liveChampions.map { it.copy(synergyComps = emptyList()) }).map { champ ->
+            val resolvedAbility = TftAssetIconResolver.resolveChampionAbility(champ.name, TftEnvironment.LIVE)
+            val abilityName = champ.abilityName.ifBlank { resolvedAbility?.first.orEmpty() }
+            val abilityDesc = sanitizeTftDescription(champ.abilityDescription)
+                .ifBlank { resolvedAbility?.second.orEmpty() }
+            if (abilityName == champ.abilityName && abilityDesc == champ.abilityDescription) champ
+            else champ.copy(abilityName = abilityName, abilityDescription = abilityDesc)
+        }
+        val enrichedLiveItems = (preloadedCatalog?.items?.takeIf { it.isNotEmpty() } ?: baseSeed.liveItems).map { item ->
+            val desc = sanitizeTftDescription(item.statsSummary)
+                .ifBlank { TftAssetIconResolver.resolveItemDescription(item.name, TftEnvironment.LIVE).orEmpty() }
+            val comps = item.components.ifEmpty { TftAssetIconResolver.resolveItemComponents(item.name, TftEnvironment.LIVE) }
+            if (desc == item.statsSummary && comps == item.components) item
+            else item.copy(statsSummary = desc, components = comps)
+        }
+        val enrichedLiveAugments = (preloadedCatalog?.augments?.takeIf { it.isNotEmpty() }
+            ?: baseSeed.liveAugments.map { it.copy(synergyComps = emptyList()) }).map { aug ->
+            val resolvedDesc = TftAssetIconResolver.resolveAugmentDescription(aug.name, TftEnvironment.LIVE)
+            val cleanDesc = resolvedDesc?.takeIf { it.isNotBlank() } ?: sanitizeTftDescription(aug.description)
+            if (cleanDesc == aug.description) aug else aug.copy(description = cleanDesc)
+        }
+
         val seeded = baseSeed.copy(
             liveVersionInfo = baseSeed.liveVersionInfo.copy(
                 pbeSetName = preloadedPbeCatalog?.detectedPbeSet ?: baseSeed.liveVersionInfo.pbeSetName
@@ -241,15 +274,13 @@ class OfflineMetaCacheStore(context: Context) {
             liveComps = preloadedLive,
             pbeComps = preloadedPbeComps,
             compsSignature = TftNinjaCompsScraper.computeCompsSignature(preloadedLive, preloadedPbeComps),
-            liveChampions = preloadedCatalog?.champions?.takeIf { it.isNotEmpty() }
-                ?: baseSeed.liveChampions.map { it.copy(synergyComps = emptyList()) },
+            liveChampions = enrichedLiveChamps,
             pbeChampions = preloadedPbeChamps.ifEmpty {
                 baseSeed.pbeChampions.map { it.copy(synergyComps = emptyList()) }
             },
-            liveItems = preloadedCatalog?.items?.takeIf { it.isNotEmpty() } ?: baseSeed.liveItems,
+            liveItems = enrichedLiveItems,
             pbeItems = preloadedPbeItems.ifEmpty { baseSeed.pbeItems },
-            liveAugments = preloadedCatalog?.augments?.takeIf { it.isNotEmpty() }
-                ?: baseSeed.liveAugments.map { it.copy(synergyComps = emptyList()) },
+            liveAugments = enrichedLiveAugments,
             pbeAugments = preloadedPbeAugments.ifEmpty {
                 baseSeed.pbeAugments.map { it.copy(synergyComps = emptyList()) }
             },
@@ -280,13 +311,33 @@ class OfflineMetaCacheStore(context: Context) {
             bundle.pbeItemIcons.isNotEmpty() ||
             bundle.pbeAugmentIcons.isNotEmpty()
         ) {
+            val champAbilities = LinkedHashMap<String, Pair<String, String>>(bundle.pbeChampions.size)
+            bundle.pbeChampions.forEach { c ->
+                if (c.abilityName.isNotBlank() || c.abilityDescription.isNotBlank()) {
+                    champAbilities[c.name] = c.abilityName to sanitizeTftDescription(c.abilityDescription)
+                }
+            }
+            val itemDescs = LinkedHashMap<String, String>(bundle.pbeItems.size)
+            val itemComps = LinkedHashMap<String, List<String>>(bundle.pbeItems.size)
+            bundle.pbeItems.forEach { item ->
+                if (item.statsSummary.isNotBlank()) itemDescs[item.name] = sanitizeTftDescription(item.statsSummary)
+                if (item.components.isNotEmpty()) itemComps[item.name] = item.components
+            }
+            val augDescs = LinkedHashMap<String, String>(bundle.pbeAugments.size)
+            bundle.pbeAugments.forEach { aug ->
+                if (aug.description.isNotBlank()) augDescs[aug.name] = sanitizeTftDescription(aug.description)
+            }
             TftAssetIconResolver.updatePbeSetCatalog(
                 championIcons = bundle.pbeChampionIcons,
                 championCosts = bundle.pbeChampionCosts,
                 championTraits = bundle.pbeChampionTraits,
                 traitIcons = bundle.pbeTraitIcons,
                 itemIcons = bundle.pbeItemIcons,
-                augmentIcons = bundle.pbeAugmentIcons
+                augmentIcons = bundle.pbeAugmentIcons,
+                championAbilities = champAbilities,
+                itemDescriptions = itemDescs,
+                itemComponents = itemComps,
+                augmentDescriptions = augDescs
             )
         }
     }
@@ -310,7 +361,11 @@ class OfflineMetaCacheStore(context: Context) {
                     championTraits = parsedPbe.championTraits,
                     traitIcons = parsedPbe.traitIcons,
                     itemIcons = parsedPbe.itemIcons,
-                    augmentIcons = parsedPbe.augmentIcons
+                    augmentIcons = parsedPbe.augmentIcons,
+                    championAbilities = parsedPbe.championAbilities,
+                    itemDescriptions = parsedPbe.itemDescriptions,
+                    itemComponents = parsedPbe.itemComponents,
+                    augmentDescriptions = parsedPbe.augmentDescriptions
                 )
             }
         }
@@ -333,19 +388,21 @@ class OfflineMetaCacheStore(context: Context) {
             val champs = if (champsArr != null) {
                 (0 until champsArr.length()).mapNotNull { i ->
                     val o = champsArr.optJSONObject(i) ?: return@mapNotNull null
+                    val formattedChampName = formatChampionDisplayName(o.optString("name"))
+                    if (formattedChampName.isBlank()) return@mapNotNull null
                     ChampionTierEntry(
                         id = o.optString("id"),
-                        name = o.optString("name"),
+                        name = formattedChampName,
                         cost = o.optInt("cost", 1).coerceIn(1, 5),
                         tier = TierRank.fromRaw(o.optString("tier")),
                         environment = TftEnvironment.LIVE,
-                        traits = parseStrings(o.optJSONArray("traits")),
+                        traits = parseStrings(o.optJSONArray("traits")).map { formatRiotAssetLabel(it) },
                         role = o.optString("role"),
                         avgPlacement = o.optDouble("avgPlacement", 4.0),
                         top4Rate = o.optDouble("top4Rate", 52.0),
-                        bestItems = parseStrings(o.optJSONArray("bestItems")),
+                        bestItems = parseStrings(o.optJSONArray("bestItems")).map { formatRiotAssetLabel(it) },
                         synergyComps = emptyList(),
-                        abilityName = o.optString("abilityName"),
+                        abilityName = o.optString("abilityName").trim(),
                         abilityDescription = sanitizeTftDescription(o.optString("abilityDescription"))
                     )
                 }
@@ -368,7 +425,7 @@ class OfflineMetaCacheStore(context: Context) {
                         statsSummary = sanitizeTftDescription(o.optString("statsSummary")),
                         avgPlacement = o.optDouble("avgPlacement", 4.0),
                         top4Rate = o.optDouble("top4Rate", 54.0),
-                        bestHolders = parseStrings(o.optJSONArray("bestHolders"))
+                        bestHolders = parseStrings(o.optJSONArray("bestHolders")).map { formatChampionDisplayName(it) }
                     )
                 }
             } else emptyList()
@@ -409,10 +466,15 @@ class OfflineMetaCacheStore(context: Context) {
     }
 
     private fun sanitizeCompUnits(comp: MetaComp): MetaComp {
-        val cleanCore = comp.coreUnits.filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
+        val cleanCore = comp.coreUnits
+            .filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
+            .map { formatChampionDisplayName(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
         val cleanPlacements = comp.hexPlacements
             .filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it.unitName, comp.environment) }
             .map { placement ->
+                val formattedUnit = formatChampionDisplayName(placement.unitName).ifBlank { placement.unitName }
                 val formattedItems = placement.items
                     .map { formatRiotAssetLabel(it) }
                     .filter { it.isNotBlank() }
@@ -421,10 +483,17 @@ class OfflineMetaCacheStore(context: Context) {
                     .map { formatRiotAssetLabel(it) }
                     .filter { it.isNotBlank() && formattedItems.none { eq -> eq.equals(it, ignoreCase = true) } }
                     .distinct()
-                if (formattedItems == placement.items && formattedOtherItems == placement.otherItems) {
+                if (formattedUnit == placement.unitName &&
+                    formattedItems == placement.items &&
+                    formattedOtherItems == placement.otherItems
+                ) {
                     placement
                 } else {
-                    placement.copy(items = formattedItems, otherItems = formattedOtherItems)
+                    placement.copy(
+                        unitName = formattedUnit,
+                        items = formattedItems,
+                        otherItems = formattedOtherItems
+                    )
                 }
             }
         val cleanAugments = comp.augmentPriorities
@@ -432,15 +501,18 @@ class OfflineMetaCacheStore(context: Context) {
             .filter { it.isNotBlank() }
             .distinct()
         val cleanStages = comp.levelGuideStages.map { stage ->
-            val filteredUnits = stage.units.filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
-            if (filteredUnits.size == stage.units.size) stage else stage.copy(units = filteredUnits)
+            val filteredUnits = stage.units
+                .filterNot { TftAssetIconResolver.isKnownNonChampionAsset(it, comp.environment) }
+                .map { formatChampionDisplayName(it) }
+                .filter { it.isNotBlank() }
+            if (filteredUnits == stage.units) stage else stage.copy(units = filteredUnits)
         }
         val cleanCarry = if (TftAssetIconResolver.isKnownNonChampionAsset(comp.carryName, comp.environment)) {
             cleanPlacements.firstOrNull { it.isCarry }?.unitName
                 ?: cleanCore.firstOrNull()
-                ?: comp.carryName
+                ?: formatChampionDisplayName(comp.carryName)
         } else {
-            comp.carryName
+            formatChampionDisplayName(comp.carryName).ifBlank { comp.carryName }
         }
         return if (cleanCore == comp.coreUnits &&
             cleanPlacements == comp.hexPlacements &&
@@ -515,19 +587,28 @@ class OfflineMetaCacheStore(context: Context) {
             }
 
             val detailsObj = root.optJSONObject("championDetails")
+            val pbeChampAbilities = LinkedHashMap<String, Pair<String, String>>()
             val champEntries = LinkedHashSet<String>().apply {
                 addAll(champCosts.keys)
                 addAll(champIcons.keys)
             }.mapNotNull { name ->
-                val cleanName = name.trim()
+                val rawName = name.trim()
+                val cleanName = formatChampionDisplayName(rawName)
                 if (cleanName.isBlank()) return@mapNotNull null
-                val cost = (champCosts[cleanName] ?: 3).coerceIn(1, 5)
-                val traits = champTraits[cleanName].orEmpty()
-                val detail = detailsObj?.optJSONObject(cleanName)
+                val cost = (champCosts[rawName] ?: champCosts[cleanName] ?: 3).coerceIn(1, 5)
+                val traits = (champTraits[rawName] ?: champTraits[cleanName]).orEmpty().map { formatRiotAssetLabel(it) }
+                val detail = detailsObj?.optJSONObject(rawName) ?: detailsObj?.optJSONObject(cleanName)
                 val tierNum = detail?.optInt("tier", 3) ?: 3
-                val bestItems = extractStringValues(detail?.opt("items")).take(3)
+                val bestItems = extractStringValues(detail?.opt("items"))
+                    .map { formatRiotAssetLabel(it) }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .take(3)
                 val abilityName = detail?.optString("abilityName").orEmpty().trim()
-                val abilityDesc = detail?.optString("abilityDescription").orEmpty().trim()
+                val abilityDesc = sanitizeTftDescription(detail?.optString("abilityDescription").orEmpty().trim())
+                if (abilityName.isNotBlank() || abilityDesc.isNotBlank()) {
+                    pbeChampAbilities[cleanName] = abilityName to abilityDesc
+                }
                 val tier = when {
                     tierNum <= 1 -> TierRank.S
                     tierNum == 2 || cost >= 5 -> TierRank.A
@@ -569,6 +650,8 @@ class OfflineMetaCacheStore(context: Context) {
 
             val itemEntries = mutableListOf<ItemTierEntry>()
             val seenItemNames = LinkedHashSet<String>()
+            val pbeItemDescriptions = LinkedHashMap<String, String>()
+            val pbeItemComponents = LinkedHashMap<String, List<String>>()
             val itemsArr = root.optJSONArray("items")
             if (itemsArr != null) {
                 for (i in 0 until itemsArr.length()) {
@@ -588,7 +671,8 @@ class OfflineMetaCacheStore(context: Context) {
                     if (name.isBlank() || !seenItemNames.add(name.lowercase(Locale.US))) continue
                     val combine = extractStringValues(obj.opt("combine")).map { formatRiotAssetLabel(it) }
                     val bonusLines = extractStringValues(obj.opt("bonus"))
-                        .filterNot { it == "-" || it == "—" }
+                        .map { sanitizeTftDescription(it) }
+                        .filter { it.isNotBlank() && it != "-" && it != "—" }
                     val statsArr = obj.optJSONArray("stats")
                     val statTokens = if (statsArr != null) {
                         (0 until statsArr.length()).mapNotNull { sIdx ->
@@ -613,7 +697,12 @@ class OfflineMetaCacheStore(context: Context) {
                     val statsSummary = buildList {
                         if (statTokens.isNotEmpty()) add(statTokens.joinToString(", "))
                         bonusLines.forEach { add(it) }
-                    }.joinToString(" • ").ifBlank { "$name — Set $setNum PBE item." }
+                    }.joinToString(" • ").ifBlank {
+                        TftAssetIconResolver.resolveItemDescription(name, TftEnvironment.PBE)
+                            ?: "Grants bonus combat stats and passive utility."
+                    }
+                    pbeItemDescriptions[name] = statsSummary
+                    if (combine.isNotEmpty()) pbeItemComponents[name] = combine
                     val tierNum = obj.optInt("tier", 3)
                     val tier = when {
                         tierNum <= 1 -> TierRank.S
@@ -650,6 +739,7 @@ class OfflineMetaCacheStore(context: Context) {
 
             val augEntries = mutableListOf<AugmentTierEntry>()
             val seenAugNames = LinkedHashSet<String>()
+            val pbeAugDescriptions = LinkedHashMap<String, String>()
             val augsArr = root.optJSONArray("augments")
             if (augsArr != null) {
                 for (i in 0 until augsArr.length()) {
@@ -657,7 +747,11 @@ class OfflineMetaCacheStore(context: Context) {
                     val name = formatRiotAssetLabel(obj.optString("name").trim())
                     if (name.isBlank() || !seenAugNames.add(name.lowercase(Locale.US))) continue
                     val augTier = AugmentTier.fromRaw(obj.optString("tier"))
-                    val desc = sanitizeTftDescription(obj.optString("bonus").trim()).ifBlank { "$name — PBE augment." }
+                    val desc = sanitizeTftDescription(obj.optString("bonus").trim()).ifBlank {
+                        TftAssetIconResolver.resolveAugmentDescription(name, TftEnvironment.PBE)
+                            ?: "Grants a special combat or economy bonus for your team."
+                    }
+                    pbeAugDescriptions[name] = desc
                     val tierListNum = obj.optInt("tierlist", 3)
                     val tier = when {
                         tierListNum <= 1 -> TierRank.S
@@ -706,7 +800,11 @@ class OfflineMetaCacheStore(context: Context) {
                 championTraits = champTraits,
                 traitIcons = traitIcons,
                 itemIcons = itemIcons,
-                augmentIcons = augmentIcons
+                augmentIcons = augmentIcons,
+                championAbilities = pbeChampAbilities,
+                itemDescriptions = pbeItemDescriptions,
+                itemComponents = pbeItemComponents,
+                augmentDescriptions = pbeAugDescriptions
             )
 
             PreloadedSet19PbeCatalogData(
@@ -719,14 +817,22 @@ class OfflineMetaCacheStore(context: Context) {
                 itemIcons = itemIcons,
                 augmentIcons = augmentIcons,
                 championCosts = champCosts,
-                championTraits = champTraits
+                championTraits = champTraits,
+                championAbilities = pbeChampAbilities,
+                itemDescriptions = pbeItemDescriptions,
+                itemComponents = pbeItemComponents,
+                augmentDescriptions = pbeAugDescriptions
             )
         }.getOrNull()
     }
 
     fun writeBundle(bundle: OfflineMetaBundle): Boolean = synchronized(cacheIoLock) {
-        val cleanLive = bundle.liveComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
-        val cleanPbe = bundle.pbeComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
+        val cleanLive = TftNinjaCompsScraper.sortCompsTierSDown(
+            bundle.liveComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
+        )
+        val cleanPbe = TftNinjaCompsScraper.sortCompsTierSDown(
+            bundle.pbeComps.filter { isTftNinjaOrCustomComp(it) }.map { sanitizeCompUnits(it) }
+        )
         val cleanLivePatches = bundle.livePatches
             .distinctBy { it.id.trim().lowercase().ifBlank { "${it.environment.name}_${it.version.lowercase()}" } }
         val cleanPbePatches = bundle.pbePatches

@@ -3508,21 +3508,40 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `auto app update runs on open while comp updates stay manual and app complies with google play policies`() = runBlocking {
+    fun `auto comp update and app update run on open and app complies with google play policies`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         com.example.update.AppUpdateCoordinator.resetAutoCheckThrottleForTests()
 
-        // 1. MainViewModel defaults: App update auto-checks on open, Comp sync requires manual press
+        // 1. MainViewModel defaults: Both Comp Updates and App Updates auto-check on app load
+        val offlineClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { throw java.io.IOException("offline test") }
+            .build()
+        val offlineDdragon = retrofit2.Retrofit.Builder()
+            .baseUrl("https://ddragon.leagueoflegends.com/")
+            .client(offlineClient)
+            .build()
+            .create(com.example.data.network.DDragonApi::class.java)
+        val offlineRepo = MetaRepository(
+            cacheStore = OfflineMetaCacheStore(context),
+            tftipsScraper = com.example.data.network.TftipsPatchScraper(client = offlineClient),
+            tftAcademyScraper = com.example.data.network.TftAcademyCompsScraper(client = offlineClient),
+            tftNinjaScraper = com.example.data.network.TftNinjaCompsScraper(
+                urlFetcher = { null },
+                rscFetcher = { null }
+            ),
+            ddragonApi = offlineDdragon,
+            publicClient = offlineClient,
+            appContext = null
+        )
         val viewModel = MainViewModel(
             currentUserId = null,
-            metaRepository = MetaRepository(context),
+            metaRepository = offlineRepo,
             localStore = LocalPreferencesStore(context),
             firestoreRepo = FirestoreUserRepository(context),
             appContext = null
         )
-        assertFalse(viewModel.autoSyncCompsOnInitEnabled)
+        assertTrue(viewModel.autoSyncCompsOnInitEnabled)
         assertTrue(viewModel.autoCheckAppUpdateOnInitEnabled)
-        assertFalse(viewModel.isRefreshingVersions.value)
 
         // 2. AndroidManifest declares REQUEST_INSTALL_PACKAGES for requested in-app GitHub APK updates
         //    while never requesting broad external storage permissions
@@ -4922,6 +4941,282 @@ class ExampleRobolectricTest {
         assertTrue("Primary board Graves (495) must stay in the 10 planner slots", overflowSlots.contains("495"))
         assertFalse("11th flex unit Mordekaiser (480) must NOT bump core Graves out", overflowSlots.contains("480"))
     }
+
+    @Test
+    fun `check for comp updates auto runs on app load and instantly replaces LIVE and PBE comps ordered Tier S down`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheStore = OfflineMetaCacheStore(context)
+        val baseBundle = cacheStore.readOrSeedBundle()
+
+        // Seed stale cached LIVE & PBE website comps plus a custom user comp that must survive replacement
+        val staleLive = MetaComp(
+            id = "tftninja_live_stale_old_comp",
+            environment = TftEnvironment.LIVE,
+            title = "Stale Old Live Comp",
+            tier = TierRank.S,
+            playstyle = "Fast 8",
+            avgPlacement = 3.5,
+            top4Rate = 65.0,
+            winRate = 18.0,
+            pickRate = 5.0,
+            trendDelta = "",
+            isTrending = false,
+            patchTag = "18.6",
+            carryName = "Ahri",
+            traits = listOf("Arcanist"),
+            coreUnits = listOf("Ahri", "Ornn"),
+            hexPlacements = emptyList(),
+            augmentPriorities = emptyList(),
+            levelingGuide = "",
+            notes = "",
+            sourceUrl = "https://tft.ninja/comps/stale-old-live"
+        )
+        val customLive = staleLive.copy(
+            id = "custom_live_my_board",
+            title = "My Custom Live Board",
+            tier = TierRank.B,
+            avgPlacement = 4.10,
+            sourceUrl = ""
+        )
+        val stalePbe = staleLive.copy(
+            id = "tftninja_pbe_stale_old_comp",
+            environment = TftEnvironment.PBE,
+            title = "Stale Old PBE Comp",
+            patchTag = "19.0-PBE",
+            sourceUrl = "https://tft.ninja/comps/stale-old-pbe?e=pbe"
+        )
+        cacheStore.writeBundle(
+            baseBundle.copy(
+                liveComps = listOf(staleLive, customLive),
+                pbeComps = listOf(stalePbe)
+            )
+        )
+
+        var wave = 1
+        val wave1LiveJson = """
+            {
+              "set": 18,
+              "comps": [
+                {"name": "C-Tier Flex", "tier": "C", "avgPlace": 4.60, "top4": 48.0, "units": ["Ahri", "Ornn", "Lillia"]},
+                {"name": "A-Tier Tempo", "tier": "A", "avgPlace": 3.95, "top4": 58.0, "units": ["Syndra", "Ornn", "Neeko"]},
+                {"name": "X-Tier Gamble", "tier": "X", "avgPlace": 4.40, "top4": 50.0, "units": ["Zoe", "Lux", "Poppy"]},
+                {"name": "S-Tier Best", "tier": "S", "avgPlace": 3.62, "top4": 66.0, "units": ["Ahri", "Azir", "Ornn"]},
+                {"name": "B-Tier Reroll", "tier": "B", "avgPlace": 4.25, "top4": 53.0, "units": ["Lux", "Neeko", "Poppy"]},
+                {"name": "S-Tier Runner Up", "tier": "S", "avgPlace": 3.78, "top4": 63.0, "units": ["Syndra", "Lissandra", "Ornn"]}
+              ]
+            }
+        """.trimIndent()
+        val wave1PbeJson = """
+            {
+              "set": 19,
+              "comps": [
+                {"name": "PBE B-Tier Board", "tier": "B", "avgPlace": 4.30, "top4": 52.0, "units": ["Graves", "Taric", "Zoe"]},
+                {"name": "PBE S-Tier Hyper", "tier": "S", "avgPlace": 3.55, "top4": 68.0, "units": ["Ziggs", "Kobuko", "Lulu"]},
+                {"name": "PBE C-Tier Niche", "tier": "C", "avgPlace": 4.65, "top4": 46.0, "units": ["Ashe", "Renekton", "Syndra"]},
+                {"name": "PBE A-Tier Fast 9", "tier": "A", "avgPlace": 3.92, "top4": 60.0, "units": ["Taliyah", "Kai'Sa", "Zac"]}
+              ]
+            }
+        """.trimIndent()
+        val wave2LiveJson = """
+            {
+              "set": 18,
+              "comps": [
+                {"name": "Wave 2 A-Tier", "tier": "A", "avgPlace": 3.90, "top4": 59.0, "units": ["Syndra", "Ornn", "Lillia"]},
+                {"name": "Wave 2 S-Tier Crown", "tier": "S", "avgPlace": 3.45, "top4": 70.0, "units": ["Ahri", "Azir", "Ornn"]}
+              ]
+            }
+        """.trimIndent()
+        val wave2PbeJson = """
+            {
+              "set": 19,
+              "comps": [
+                {"name": "Wave 2 PBE B-Tier", "tier": "B", "avgPlace": 4.20, "top4": 54.0, "units": ["Graves", "Taric", "Ashe"]},
+                {"name": "Wave 2 PBE S-Tier", "tier": "S", "avgPlace": 3.50, "top4": 69.0, "units": ["Ziggs", "Taliyah", "Zac"]}
+              ]
+            }
+        """.trimIndent()
+
+        val scraper = com.example.data.network.TftNinjaCompsScraper(
+            urlFetcher = { url ->
+                when {
+                    url == "https://tft.ninja/comps" && wave == 1 -> wave1LiveJson
+                    url == "https://tft.ninja/comps?e=pbe" && wave == 1 -> wave1PbeJson
+                    url == "https://tft.ninja/comps" && wave == 2 -> wave2LiveJson
+                    url == "https://tft.ninja/comps?e=pbe" && wave == 2 -> wave2PbeJson
+                    else -> null
+                }
+            },
+            rscFetcher = { null }
+        )
+        val offlineClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { throw java.io.IOException("offline test") }
+            .build()
+        val offlineDdragon = retrofit2.Retrofit.Builder()
+            .baseUrl("https://ddragon.leagueoflegends.com/")
+            .client(offlineClient)
+            .build()
+            .create(com.example.data.network.DDragonApi::class.java)
+        val repo = MetaRepository(
+            cacheStore = cacheStore,
+            tftipsScraper = com.example.data.network.TftipsPatchScraper(client = offlineClient),
+            tftAcademyScraper = com.example.data.network.TftAcademyCompsScraper(client = offlineClient),
+            tftNinjaScraper = scraper,
+            ddragonApi = offlineDdragon,
+            publicClient = offlineClient,
+            appContext = null
+        )
+
+        val prevWriteTs = com.example.data.repository.MetaCacheUpdates.lastCacheWriteMillis.value
+        // Instantiating MainViewModel with default autoSyncOnInit = true must automatically check & replace comps!
+        val viewModel = MainViewModel(
+            currentUserId = null,
+            metaRepository = repo,
+            localStore = LocalPreferencesStore(context),
+            firestoreRepo = FirestoreUserRepository(context),
+            autoCheckAppUpdateOnInit = false,
+            appContext = null
+        )
+        assertTrue("autoSyncOnInit should default to true", viewModel.autoSyncCompsOnInitEnabled)
+
+        // Wait for automatic startup comp check to finish
+        val deadline = System.currentTimeMillis() + 8_000L
+        while (System.currentTimeMillis() < deadline) {
+            val currentLive = viewModel.activeEnvSnapshot.value.comps
+            if (currentLive.any { it.title == "S-Tier Best" } && !viewModel.isRefreshingVersions.value) {
+                break
+            }
+            kotlinx.coroutines.delay(50L)
+        }
+
+        val afterAutoSyncTs = com.example.data.repository.MetaCacheUpdates.lastCacheWriteMillis.value
+        assertTrue("MetaCacheUpdates timestamp must advance monotonically", afterAutoSyncTs > prevWriteTs)
+
+        // Verify LIVE comps were completely replaced (stale website comp gone, custom comp kept, strict Tier S down order)
+        val liveComps = viewModel.activeEnvSnapshot.value.comps
+        assertTrue("Stale LIVE comp must be replaced", liveComps.none { it.title == "Stale Old Live Comp" })
+        assertTrue("User custom LIVE comp must be preserved", liveComps.any { it.id == "custom_live_my_board" })
+        assertEquals(
+            listOf(TierRank.S, TierRank.S, TierRank.A, TierRank.B, TierRank.B, TierRank.C, TierRank.X),
+            liveComps.map { it.tier }
+        )
+        assertEquals("S-Tier Best", liveComps[0].title)
+        assertEquals("S-Tier Runner Up", liveComps[1].title)
+
+        // Verify PBE comps were ALSO completely replaced and ordered Tier S down
+        viewModel.setEnvironment(TftEnvironment.PBE)
+        val pbeComps = viewModel.activeEnvSnapshot.value.comps
+        assertTrue("Stale PBE comp must be replaced", pbeComps.none { it.title == "Stale Old PBE Comp" })
+        assertEquals(
+            listOf(TierRank.S, TierRank.A, TierRank.B, TierRank.C),
+            pbeComps.map { it.tier }
+        )
+        assertEquals("PBE S-Tier Hyper", pbeComps[0].title)
+
+        // Trigger a manual Check for Comp Updates on Wave 2 and verify instant replacement for BOTH LIVE and PBE
+        wave = 2
+        viewModel.refreshPatchVersions(notifyIfUpdated = true)
+        val wave2Deadline = System.currentTimeMillis() + 8_000L
+        while (System.currentTimeMillis() < wave2Deadline) {
+            val currentPbe = viewModel.activeEnvSnapshot.value.comps
+            if (currentPbe.any { it.title == "Wave 2 PBE S-Tier" } && !viewModel.isRefreshingVersions.value) {
+                break
+            }
+            kotlinx.coroutines.delay(50L)
+        }
+
+        val wave2Pbe = viewModel.activeEnvSnapshot.value.comps
+        assertEquals(listOf("Wave 2 PBE S-Tier", "Wave 2 PBE B-Tier"), wave2Pbe.map { it.title })
+        assertEquals(listOf(TierRank.S, TierRank.B), wave2Pbe.map { it.tier })
+
+        viewModel.setEnvironment(TftEnvironment.LIVE)
+        val wave2Live = viewModel.activeEnvSnapshot.value.comps
+        assertTrue(wave2Live.none { it.title == "S-Tier Best" })
+        assertEquals(listOf("Wave 2 S-Tier Crown", "Wave 2 A-Tier", "My Custom Live Board"), wave2Live.map { it.title })
+        assertEquals(listOf(TierRank.S, TierRank.A, TierRank.B), wave2Live.map { it.tier })
+    }
+
+    @Test
+    fun `all LIVE and PBE champions items and augments have clean names valid non-placeholder icons and clean descriptions`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        // Delete existing cache file so seeding runs cleanly from preloaded assets
+        java.io.File(context.filesDir, "tft_offline_meta_cache_v2.json").delete()
+        val cacheStore = OfflineMetaCacheStore(context)
+        val bundle = cacheStore.readOrSeedBundle()
+
+        val rawIdRegex = Regex("""^(?:TFT\d*_|DA_\d*_|TFT_Item_)""", RegexOption.IGNORE_CASE)
+        val rawMacroRegex = Regex("""\{[A-Za-z0-9_.]+\}|%i:[^%]+%|@[A-Za-z0-9_.]+@""")
+        val genericDescRegex = Regex("""—\s*(?:Set\s*\d+\s*)?(?:live\s+|PBE\s+)?(?:item|augment)\.$""", RegexOption.IGNORE_CASE)
+
+        // 1. LIVE & PBE Champions: clean names, non-placeholder icon URLs, clean ability descriptions
+        (bundle.liveChampions + bundle.pbeChampions).forEach { champ ->
+            assertTrue("Champion name should be non-blank", champ.name.isNotBlank())
+            assertFalse("Champion name must not be raw Riot ID: ${champ.name}", rawIdRegex.containsMatchIn(champ.name))
+            val iconUrl = com.example.ui.components.TftAssetIconResolver.resolveChampionIconUrl(champ.name, champ.environment)
+            assertFalse(
+                "Champion ${champ.name} (${champ.environment}) must not resolve placeholder icon: $iconUrl",
+                com.example.ui.components.TftAssetIconResolver.isPlaceholderIconUrl(iconUrl)
+            )
+            assertFalse(
+                "Champion ${champ.name} ability must not contain raw Riot macros: ${champ.abilityDescription}",
+                rawMacroRegex.containsMatchIn(champ.abilityDescription)
+            )
+        }
+
+        // 2. LIVE & PBE Items: clean names, non-placeholder icon URLs, clean non-generic descriptions
+        (bundle.liveItems + bundle.pbeItems).forEach { item ->
+            assertTrue("Item name should be non-blank", item.name.isNotBlank())
+            assertFalse("Item name must not be raw Riot ID: ${item.name}", rawIdRegex.containsMatchIn(item.name))
+            val iconUrl = com.example.ui.components.TftAssetIconResolver.resolveItemIconUrl(item.name, item.environment)
+            assertFalse(
+                "Item ${item.name} (${item.environment}) must not resolve placeholder icon: $iconUrl",
+                com.example.ui.components.TftAssetIconResolver.isPlaceholderIconUrl(iconUrl)
+            )
+            assertTrue("Item ${item.name} must have a description", item.statsSummary.isNotBlank())
+            assertFalse(
+                "Item ${item.name} must not have generic fallback description: ${item.statsSummary}",
+                genericDescRegex.containsMatchIn(item.statsSummary)
+            )
+            assertFalse(
+                "Item ${item.name} must not contain raw Riot macros: ${item.statsSummary}",
+                rawMacroRegex.containsMatchIn(item.statsSummary)
+            )
+        }
+
+        // 3. LIVE & PBE Augments: clean names, ZERO missing-t*.png placeholder icon URLs, ZERO raw macros or generic fallbacks
+        (bundle.liveAugments + bundle.pbeAugments).forEach { aug ->
+            assertTrue("Augment name should be non-blank", aug.name.isNotBlank())
+            assertFalse("Augment name must not be raw Riot ID: ${aug.name}", rawIdRegex.containsMatchIn(aug.name))
+            val iconUrl = com.example.ui.components.TftAssetIconResolver.resolveAugmentIconUrl(aug.name, aug.environment)
+            assertFalse(
+                "Augment ${aug.name} (${aug.environment}) must NEVER resolve missing-t*.png placeholder: $iconUrl",
+                com.example.ui.components.TftAssetIconResolver.isPlaceholderIconUrl(iconUrl)
+            )
+            assertTrue("Augment ${aug.name} must have a description", aug.description.isNotBlank())
+            assertFalse(
+                "Augment ${aug.name} must not have generic fallback description: ${aug.description}",
+                genericDescRegex.containsMatchIn(aug.description)
+            )
+            assertFalse(
+                "Augment ${aug.name} must not contain raw Riot macros: ${aug.description}",
+                rawMacroRegex.containsMatchIn(aug.description)
+            )
+        }
+
+        // 4. Shared Set 18 LIVE augments cross-enriched with Set 19 PBE exact numeric descriptions
+        val liveBandOfThieves = bundle.liveAugments.firstOrNull { it.name.equals("Band of Thieves", ignoreCase = true) }
+        assertNotNull("Band of Thieves should exist in LIVE augments", liveBandOfThieves)
+        assertTrue(
+            "Band of Thieves should have exact numeric description instead of X placeholder (got: ${liveBandOfThieves?.description})",
+            liveBandOfThieves!!.description.contains("1 Thief's Gloves", ignoreCase = true)
+        )
+
+        // 5. sanitizeTftDescription strips {Augment.Variant...} brace tokens cleanly
+        val cleanedMacro = com.example.ui.components.sanitizeTftDescription(
+            "Gain a champion. {Augment.Variant.RivalsAugment.AbilityTooltip}"
+        )
+        assertEquals("Gain a champion.", cleanedMacro)
+    }
 }
+
 
 

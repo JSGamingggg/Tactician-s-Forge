@@ -84,6 +84,7 @@ import com.example.ui.components.TierBadge
 import com.example.ui.components.augmentTierColor
 import com.example.ui.components.championCostColor
 import com.example.ui.components.environmentSlideTransitionSpec
+import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.itemCategoryColor
 import java.util.Locale
 
@@ -1096,7 +1097,8 @@ private fun ItemTierCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterVertically)
                     )
-                    item.bestHolders.forEach { holder ->
+                    item.bestHolders.forEach { rawHolder ->
+                        val holder = formatChampionDisplayName(rawHolder).ifBlank { rawHolder }
                         val holderCost = remember(holder, item.environment, TftAssetIconResolver.catalogRevision) {
                             TftAssetIconResolver.getChampionCost(holder, item.environment) ?: 4
                         }

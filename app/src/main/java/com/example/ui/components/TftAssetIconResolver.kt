@@ -50,6 +50,14 @@ object TftAssetIconResolver {
     private var pbeChampionTraits: Map<String, List<String>> = emptyMap()
     private var liveCatalogChampions: List<CatalogChampionInfo> = emptyList()
     private var pbeCatalogChampions: List<CatalogChampionInfo> = emptyList()
+    private var liveChampionAbilities: Map<String, Pair<String, String>> = emptyMap()
+    private var pbeChampionAbilities: Map<String, Pair<String, String>> = emptyMap()
+    private var liveItemDescriptions: Map<String, String> = emptyMap()
+    private var pbeItemDescriptions: Map<String, String> = emptyMap()
+    private var liveItemComponents: Map<String, List<String>> = emptyMap()
+    private var pbeItemComponents: Map<String, List<String>> = emptyMap()
+    private var liveAugmentDescriptions: Map<String, String> = emptyMap()
+    private var pbeAugmentDescriptions: Map<String, String> = emptyMap()
 
     private val scrapedItemImages = ConcurrentHashMap<String, String>()
 
@@ -84,7 +92,11 @@ object TftAssetIconResolver {
         val championTraits: Map<String, List<String>>,
         val championCosts: Map<String, Int>,
         val traitDescriptions: Map<String, String>,
-        val catalogChampions: List<CatalogChampionInfo> = emptyList()
+        val catalogChampions: List<CatalogChampionInfo> = emptyList(),
+        val championAbilities: Map<String, Pair<String, String>> = emptyMap(),
+        val itemDescriptions: Map<String, String> = emptyMap(),
+        val itemComponents: Map<String, List<String>> = emptyMap(),
+        val augmentDescriptions: Map<String, String> = emptyMap()
     )
 
     fun isPreloadedCatalogApplied(): Boolean = preloadedCatalogLoaded
@@ -104,30 +116,46 @@ object TftAssetIconResolver {
         return true
     }
 
+    fun isPlaceholderIconUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return true
+        val lower = url.lowercase()
+        return lower.contains("/missing-") ||
+            lower.contains("missing-t1") ||
+            lower.contains("missing-t2") ||
+            lower.contains("missing-t3") ||
+            lower.contains("missing_") ||
+            lower.contains("placeholder") ||
+            lower.endsWith("/empty.png")
+    }
+
     fun updatePbeSetCatalog(
         championIcons: Map<String, String>,
         championCosts: Map<String, Int>,
         championTraits: Map<String, List<String>>,
         traitIcons: Map<String, String>,
         itemIcons: Map<String, String> = emptyMap(),
-        augmentIcons: Map<String, String> = emptyMap()
+        augmentIcons: Map<String, String> = emptyMap(),
+        championAbilities: Map<String, Pair<String, String>> = emptyMap(),
+        itemDescriptions: Map<String, String> = emptyMap(),
+        itemComponents: Map<String, List<String>> = emptyMap(),
+        augmentDescriptions: Map<String, String> = emptyMap()
     ) {
         if (championIcons.isEmpty() && traitIcons.isEmpty() && itemIcons.isEmpty() && augmentIcons.isEmpty()) return
         val normChamps = HashMap<String, String>(championIcons.size * 2)
         championIcons.forEach { (k, v) ->
-            if (v.isNotBlank()) normChamps[normalizeLookupKey(k)] = v
+            if (v.isNotBlank() && !isPlaceholderIconUrl(v)) normChamps[normalizeLookupKey(k)] = v
         }
         val normTraits = HashMap<String, String>(traitIcons.size * 2)
         traitIcons.forEach { (k, v) ->
-            if (v.isNotBlank()) normTraits[normalizeLookupKey(k)] = v
+            if (v.isNotBlank() && !isPlaceholderIconUrl(v)) normTraits[normalizeLookupKey(k)] = v
         }
         val normItems = HashMap<String, String>(itemIcons.size * 2)
         itemIcons.forEach { (k, v) ->
-            if (v.isNotBlank()) normItems[normalizeLookupKey(k)] = v
+            if (v.isNotBlank() && !isPlaceholderIconUrl(v)) normItems[normalizeLookupKey(k)] = v
         }
         val normAugments = HashMap<String, String>(augmentIcons.size * 2)
         augmentIcons.forEach { (k, v) ->
-            if (v.isNotBlank()) normAugments[normalizeLookupKey(k)] = v
+            if (v.isNotBlank() && !isPlaceholderIconUrl(v)) normAugments[normalizeLookupKey(k)] = v
         }
         val normCosts = HashMap<String, Int>(championCosts.size * 2)
         championCosts.forEach { (k, v) ->
@@ -136,6 +164,22 @@ object TftAssetIconResolver {
         val normChampTraits = HashMap<String, List<String>>(championTraits.size * 2)
         championTraits.forEach { (k, v) ->
             if (v.isNotEmpty()) normChampTraits[normalizeLookupKey(k)] = v
+        }
+        val normChampAbilities = HashMap<String, Pair<String, String>>(championAbilities.size * 2)
+        championAbilities.forEach { (k, v) ->
+            if (v.first.isNotBlank() || v.second.isNotBlank()) normChampAbilities[normalizeLookupKey(k)] = v
+        }
+        val normItemDescs = HashMap<String, String>(itemDescriptions.size * 2)
+        itemDescriptions.forEach { (k, v) ->
+            if (v.isNotBlank()) normItemDescs[normalizeLookupKey(k)] = v
+        }
+        val normItemComps = HashMap<String, List<String>>(itemComponents.size * 2)
+        itemComponents.forEach { (k, v) ->
+            if (v.isNotEmpty()) normItemComps[normalizeLookupKey(k)] = v
+        }
+        val normAugDescs = HashMap<String, String>(augmentDescriptions.size * 2)
+        augmentDescriptions.forEach { (k, v) ->
+            if (v.isNotBlank()) normAugDescs[normalizeLookupKey(k)] = v
         }
         var changed = !pbeCatalogLoaded
         if (normChamps.isNotEmpty() && normChamps != pbeChampionImages) {
@@ -160,6 +204,22 @@ object TftAssetIconResolver {
         }
         if (normChampTraits.isNotEmpty() && normChampTraits != pbeChampionTraits) {
             pbeChampionTraits = normChampTraits
+            changed = true
+        }
+        if (normChampAbilities.isNotEmpty() && normChampAbilities != pbeChampionAbilities) {
+            pbeChampionAbilities = normChampAbilities
+            changed = true
+        }
+        if (normItemDescs.isNotEmpty() && normItemDescs != pbeItemDescriptions) {
+            pbeItemDescriptions = normItemDescs
+            changed = true
+        }
+        if (normItemComps.isNotEmpty() && normItemComps != pbeItemComponents) {
+            pbeItemComponents = normItemComps
+            changed = true
+        }
+        if (normAugDescs.isNotEmpty() && normAugDescs != pbeAugmentDescriptions) {
+            pbeAugmentDescriptions = normAugDescs
             changed = true
         }
         val builtPbeCatalog = LinkedHashMap<String, CatalogChampionInfo>()
@@ -203,14 +263,14 @@ object TftAssetIconResolver {
             val root = JSONObject(rawJson)
             val version = root.optString("ddragonVersion").takeIf { it.isNotBlank() }
 
-            fun readStringMap(obj: JSONObject?): Map<String, String> {
+            fun readStringMap(obj: JSONObject?, filterPlaceholders: Boolean = false): Map<String, String> {
                 if (obj == null) return emptyMap()
                 val out = HashMap<String, String>(obj.length() * 2)
                 val keys = obj.keys()
                 while (keys.hasNext()) {
                     val k = keys.next()
                     val v = obj.optString(k)
-                    if (v.isNotBlank()) {
+                    if (v.isNotBlank() && (!filterPlaceholders || !isPlaceholderIconUrl(v))) {
                         out[normalizeLookupKey(k)] = v
                     }
                 }
@@ -315,11 +375,18 @@ object TftAssetIconResolver {
             crossIndexDisplayNamesFromIconObject(root.optJSONObject("itemIcons"))
 
             val parsedCatalogChamps = LinkedHashMap<String, CatalogChampionInfo>()
+            val parsedChampAbilities = HashMap<String, Pair<String, String>>()
             root.optJSONArray("champions")?.let { arr ->
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
                     val name = obj.optString("name").trim()
                     val cost = obj.optInt("cost", 0)
+                    val normKey = normalizeLookupKey(name)
+                    val abName = obj.optString("abilityName").trim()
+                    val abDesc = sanitizeTftDescription(obj.optString("abilityDescription").trim())
+                    if (normKey.isNotEmpty() && (abName.isNotBlank() || abDesc.isNotBlank())) {
+                        parsedChampAbilities[normKey] = abName to abDesc
+                    }
                     if (name.length < 2 || cost !in 1..7 || name.contains("(")) continue
                     val traitsArr = obj.optJSONArray("traits")
                     val traits = if (traitsArr != null) {
@@ -329,7 +396,6 @@ object TftAssetIconResolver {
                     } else {
                         emptyList()
                     }
-                    val normKey = normalizeLookupKey(name)
                     if (normKey.isNotEmpty() && traits.isNotEmpty() && !parsedCatalogChamps.containsKey(normKey)) {
                         parsedCatalogChamps[normKey] = CatalogChampionInfo(
                             name = name,
@@ -340,17 +406,53 @@ object TftAssetIconResolver {
                 }
             }
 
+            val parsedItemDescs = HashMap<String, String>()
+            val parsedItemComps = HashMap<String, List<String>>()
+            root.optJSONArray("items")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val name = obj.optString("name").trim()
+                    val normKey = normalizeLookupKey(name)
+                    if (normKey.isEmpty()) continue
+                    val summary = sanitizeTftDescription(obj.optString("statsSummary").trim())
+                    if (summary.isNotBlank()) parsedItemDescs[normKey] = summary
+                    val compArr = obj.optJSONArray("components")
+                    if (compArr != null && compArr.length() > 0) {
+                        val list = (0 until compArr.length()).mapNotNull { cIdx ->
+                            compArr.optString(cIdx).trim().takeIf { it.isNotEmpty() }
+                        }
+                        if (list.isNotEmpty()) parsedItemComps[normKey] = list
+                    }
+                }
+            }
+
+            val parsedAugDescs = HashMap<String, String>()
+            root.optJSONArray("augments")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val name = obj.optString("name").trim()
+                    val normKey = normalizeLookupKey(name)
+                    if (normKey.isEmpty()) continue
+                    val desc = sanitizeTftDescription(obj.optString("description").trim())
+                    if (desc.isNotBlank()) parsedAugDescs[normKey] = desc
+                }
+            }
+
             ParsedPreloadedSetCatalog(
                 version = version,
-                championImages = readStringMap(root.optJSONObject("championIcons")),
-                itemImages = readStringMap(root.optJSONObject("itemIcons")),
-                augmentImages = readStringMap(root.optJSONObject("augmentIcons")),
-                traitImages = readStringMap(root.optJSONObject("traitIcons")),
+                championImages = readStringMap(root.optJSONObject("championIcons"), filterPlaceholders = true),
+                itemImages = readStringMap(root.optJSONObject("itemIcons"), filterPlaceholders = true),
+                augmentImages = readStringMap(root.optJSONObject("augmentIcons"), filterPlaceholders = true),
+                traitImages = readStringMap(root.optJSONObject("traitIcons"), filterPlaceholders = true),
                 apiDisplayNames = apiNamesMap,
                 championTraits = traitsMap,
                 championCosts = costsMap,
                 traitDescriptions = traitDescMap,
-                catalogChampions = parsedCatalogChamps.values.toList()
+                catalogChampions = parsedCatalogChamps.values.toList(),
+                championAbilities = parsedChampAbilities,
+                itemDescriptions = parsedItemDescs,
+                itemComponents = parsedItemComps,
+                augmentDescriptions = parsedAugDescs
             )
         }.getOrNull()
     }
@@ -369,6 +471,18 @@ object TftAssetIconResolver {
         traitDescriptionCatalog = parsed.traitDescriptions
         if (parsed.catalogChampions.isNotEmpty()) {
             liveCatalogChampions = parsed.catalogChampions
+        }
+        if (parsed.championAbilities.isNotEmpty()) {
+            liveChampionAbilities = parsed.championAbilities
+        }
+        if (parsed.itemDescriptions.isNotEmpty()) {
+            liveItemDescriptions = parsed.itemDescriptions
+        }
+        if (parsed.itemComponents.isNotEmpty()) {
+            liveItemComponents = parsed.itemComponents
+        }
+        if (parsed.augmentDescriptions.isNotEmpty()) {
+            liveAugmentDescriptions = parsed.augmentDescriptions
         }
         preloadedCatalogLoaded = true
         catalogRevision += 1
@@ -673,6 +787,96 @@ object TftAssetIconResolver {
         return raw?.let { sanitizeTftDescription(it) }?.takeIf { it.isNotBlank() }
     }
 
+    fun resolveChampionAbility(nameOrId: String, environment: TftEnvironment? = null): Pair<String, String>? {
+        val norm = normalizeLookupKey(nameOrId)
+        val cleanNorm = normalizeLookupKey(formatChampionDisplayName(nameOrId))
+        val keys = listOf(cleanNorm, norm).filter { it.isNotEmpty() }
+        if (environment == TftEnvironment.PBE) {
+            keys.firstNotNullOfOrNull { pbeChampionAbilities[it] }?.let { return it }
+            keys.firstNotNullOfOrNull { liveChampionAbilities[it] }?.let { return it }
+        } else {
+            keys.firstNotNullOfOrNull { liveChampionAbilities[it] }?.let { return it }
+            keys.firstNotNullOfOrNull { pbeChampionAbilities[it] }?.let { return it }
+        }
+        return null
+    }
+
+    fun resolveItemDescription(nameOrId: String, environment: TftEnvironment? = null): String? {
+        val cleanName = formatRiotAssetLabel(nameOrId)
+        val cleanNorm = normalizeLookupKey(cleanName)
+        val rawNorm = normalizeLookupKey(nameOrId)
+        val keys = listOf(cleanNorm, rawNorm).filter { it.isNotEmpty() }
+        val primary = if (environment == TftEnvironment.PBE) pbeItemDescriptions else liveItemDescriptions
+        val secondary = if (environment == TftEnvironment.PBE) liveItemDescriptions else pbeItemDescriptions
+        keys.firstNotNullOfOrNull { primary[it] }?.takeIf { it.isNotBlank() }?.let { return it }
+        keys.firstNotNullOfOrNull { secondary[it] }?.takeIf { it.isNotBlank() }?.let { return it }
+        if (cleanName.endsWith(" Emblem", ignoreCase = true)) {
+            val trait = cleanName.removeSuffix(" Emblem").removeSuffix(" emblem").trim()
+            if (trait.isNotBlank()) {
+                return "Wearer gains the $trait trait."
+            }
+        }
+        if (cleanName.startsWith("Radiant ", ignoreCase = true)) {
+            val baseName = cleanName.removePrefix("Radiant ").trim()
+            val baseDesc = resolveItemDescription(baseName, environment)
+            if (!baseDesc.isNullOrBlank()) {
+                return "Radiant upgrade of $baseName: $baseDesc"
+            }
+        }
+        return null
+    }
+
+    fun resolveItemComponents(nameOrId: String, environment: TftEnvironment? = null): List<String> {
+        val cleanNorm = normalizeLookupKey(formatRiotAssetLabel(nameOrId))
+        val rawNorm = normalizeLookupKey(nameOrId)
+        val keys = listOf(cleanNorm, rawNorm).filter { it.isNotEmpty() }
+        val primary = if (environment == TftEnvironment.PBE) pbeItemComponents else liveItemComponents
+        val secondary = if (environment == TftEnvironment.PBE) liveItemComponents else pbeItemComponents
+        return keys.firstNotNullOfOrNull { primary[it] }
+            ?: keys.firstNotNullOfOrNull { secondary[it] }
+            ?: emptyList()
+    }
+
+    fun resolveAugmentDescription(nameOrId: String, environment: TftEnvironment? = null): String? {
+        val cleanName = formatRiotAssetLabel(nameOrId)
+        val cleanNorm = normalizeLookupKey(cleanName)
+        val rawNorm = normalizeLookupKey(nameOrId)
+        val strippedNorm = normalizeLookupKey(
+            cleanName.replace("+", "").replace(REGEX_AUGMENT_TIER_SUFFIX, "")
+        )
+        val keys = listOf(cleanNorm, rawNorm, strippedNorm).filter { it.isNotEmpty() }
+        // Prefer PBE's exact numeric descriptions when LIVE only has placeholder text, or match requested env first
+        val primary = if (environment == TftEnvironment.PBE) pbeAugmentDescriptions else liveAugmentDescriptions
+        val secondary = if (environment == TftEnvironment.PBE) liveAugmentDescriptions else pbeAugmentDescriptions
+        val primaryMatch = keys.firstNotNullOfOrNull { primary[it] }?.takeIf { it.isNotBlank() }
+        val secondaryMatch = keys.firstNotNullOfOrNull { secondary[it] }?.takeIf { it.isNotBlank() }
+        if (primaryMatch != null && !containsUnresolvedPlaceholderX(primaryMatch)) {
+            return primaryMatch
+        }
+        if (secondaryMatch != null && !containsUnresolvedPlaceholderX(secondaryMatch)) {
+            return secondaryMatch
+        }
+        if (primaryMatch != null) return sanitizeTftDescription(primaryMatch)
+        if (secondaryMatch != null) return sanitizeTftDescription(secondaryMatch)
+        if (cleanName.endsWith(" Crest", ignoreCase = true) || cleanName.endsWith(" Crown", ignoreCase = true)) {
+            val trait = cleanName
+                .removeSuffix(" Crest").removeSuffix(" crest")
+                .removeSuffix(" Crown").removeSuffix(" crown")
+                .trim()
+            if (trait.isNotBlank()) {
+                return if (cleanName.endsWith(" Crown", ignoreCase = true)) {
+                    "Gain a $trait Emblem, a core item, and a $trait champion."
+                } else {
+                    "Gain a $trait Emblem and a $trait champion."
+                }
+            }
+        }
+        return null
+    }
+
+    private fun containsUnresolvedPlaceholderX(text: String): Boolean =
+        Regex("""(?:^|[\s(+-])X(?=$|[\s%.,;:)/+-])""").containsMatchIn(text)
+
     fun resolveTraitIconUrl(traitNameOrId: String, environment: TftEnvironment? = null): String? {
         val clean = traitNameOrId.replace(REGEX_LEADING_COUNT, "").trim()
         if (clean.isEmpty()) return null
@@ -785,6 +989,58 @@ object TftAssetIconResolver {
         return resolveChampionIconUrl(nameOrId, environment)
     }
 
+    /**
+     * Ordered, deduplicated HTTPS portrait candidates for a champion so [TftChampionAvatar]
+     * can seamlessly step through square portraits, Data Dragon, and preloaded fallbacks.
+     */
+    fun resolveChampionIconFallbackUrls(nameOrId: String, environment: TftEnvironment? = null): List<String> {
+        val raw = nameOrId.trim()
+        if (raw.isEmpty()) return emptyList()
+        val norm = normalizeLookupKey(raw)
+        val cleanName = formatChampionDisplayName(raw)
+        val cleanNorm = normalizeLookupKey(cleanName)
+        val baseCleanNorm = if (cleanName.contains("(")) {
+            normalizeLookupKey(cleanName.substringBefore("(").trim())
+        } else {
+            cleanNorm
+        }
+
+        val urls = LinkedHashSet<String>(6)
+        fun addUrl(url: String?) {
+            if (!url.isNullOrBlank() && url.startsWith("https://", ignoreCase = true) && !isPlaceholderIconUrl(url)) {
+                urls.add(url)
+            }
+        }
+
+        addUrl(resolveSquareChampionPortraitUrl(raw, environment))
+        addUrl(resolveChampionIconUrl(raw, environment))
+
+        if (environment == TftEnvironment.PBE) {
+            addUrl(pbeChampionImages[norm])
+            addUrl(pbeChampionImages[cleanNorm])
+            addUrl(pbeChampionImages[baseCleanNorm])
+        }
+        dynamicChampionImages[norm]?.let { addUrl(toDdragonImgUrl(it)) }
+        dynamicChampionImages[cleanNorm]?.let { addUrl(toDdragonImgUrl(it)) }
+        addUrl(preloadedChampionImages[norm])
+        addUrl(preloadedChampionImages[cleanNorm])
+        addUrl(preloadedChampionImages[baseCleanNorm])
+
+        if (!NON_LOL_CHAMPION_KEYS.contains(cleanNorm) && !NON_LOL_CHAMPION_KEYS.contains(norm)) {
+            val key = SPECIAL_CHAMPION_KEYS[cleanNorm]
+                ?: SPECIAL_CHAMPION_KEYS[norm]
+                ?: toChampionKey(cleanName)
+            if (key.isNotBlank()) {
+                addUrl("https://ddragon.leagueoflegends.com/cdn/$ddragonVersion/img/champion/$key.png")
+            }
+        }
+        if (environment != TftEnvironment.LIVE) {
+            addUrl(pbeChampionImages[norm])
+            addUrl(pbeChampionImages[cleanNorm])
+        }
+        return urls.toList()
+    }
+
     fun resolveItemIconUrl(nameOrId: String, environment: TftEnvironment? = null): String? =
         resolveItemIconFallbackUrls(nameOrId, environment).firstOrNull()
 
@@ -825,7 +1081,7 @@ object TftAssetIconResolver {
 
         val urls = LinkedHashSet<String>(6)
         fun addUrl(url: String?) {
-            if (!url.isNullOrBlank() && url.startsWith("https://", ignoreCase = true)) {
+            if (!url.isNullOrBlank() && url.startsWith("https://", ignoreCase = true) && !isPlaceholderIconUrl(url)) {
                 urls.add(url)
             }
         }
@@ -932,9 +1188,9 @@ object TftAssetIconResolver {
             }
         }
 
-        val urls = LinkedHashSet<String>(6)
+        val urls = LinkedHashSet<String>(8)
         fun addUrl(url: String?) {
-            if (!url.isNullOrBlank() && url.startsWith("https://", ignoreCase = true)) {
+            if (!url.isNullOrBlank() && url.startsWith("https://", ignoreCase = true) && !isPlaceholderIconUrl(url)) {
                 urls.add(url)
             }
         }
@@ -980,6 +1236,7 @@ object TftAssetIconResolver {
         if (pascal.isNotBlank()) {
             addUrl("https://sunderarmor.com/augments/$pascal.png")
             addUrl("https://sunderarmor.com/augments/${pascal}2.png")
+            addUrl("https://sunderarmor.com/augments/${pascal}3.png")
         }
 
         return urls.toList()
@@ -1633,7 +1890,38 @@ object TftAssetIconResolver {
         "prismaticticket" to "TFT_Augment_PrismaticTicket.png",
         "builtdifferent" to "TFT_Augment_BuiltDifferent2.png",
         "balancedbudget" to "TFT_Augment_BalancedBudget2.png",
-        "starrynight" to "TFT_Augment_StarryNight.png"
+        "starrynight" to "TFT_Augment_StarryNight.png",
+        "pandorasitems" to "PandorasItems_I.png",
+        "pandorasitemsii" to "PandorasItems_II.png",
+        "pandorasitemsiii" to "PandorasItems_III.png",
+        "portableforge" to "PortableForge2.png",
+        "radiantrelics" to "RadiantRelic-III.png",
+        "salvagebin" to "Salvage2.png",
+        "itemgrabbag" to "ItemGrabBag_I.png",
+        "smallgrabbag" to "SmallGrabBag_I.png",
+        "rollingfordays" to "Rolling-For-Days-I.png",
+        "silverspoon" to "Silver-Spoon-I.png",
+        "branchingout" to "BranchingOut_I.png",
+        "bandofthieves" to "BandOfThieves_I.png",
+        "recombobulator" to "Recombobulator-I.png",
+        "shoppingSpree" to "Silver-ticket-III.png",
+        "shoppingspree" to "Silver-ticket-III.png",
+        "silverdestiny" to "SilverDestiny_I.png",
+        "prismaticdestiny" to "PrismaticDestiny_III.png",
+        "tonsofstats" to "Tons-of-Stats-II.png",
+        "timeskip" to "TimeSkip_II.png",
+        "thegoldenegg" to "The-Golden-Egg-III.png",
+        "thetraittree" to "TheTraitTree_III.png",
+        "spreadingroots" to "SpreadingRoots_II.png",
+        "swordoverflow" to "BladeOverflow_III.png",
+        "wandoverflow" to "WandOverflow_III.png",
+        "swordsmith" to "Swordsmith_II.png",
+        "staffsmith" to "Rodsmith_II.png",
+        "standunited" to "StandUnited1.png",
+        "slammin" to "Slammin_II.png",
+        "warpath" to "Warpath_II.png",
+        "worththewait" to "WorthTheWait_II.png",
+        "youngandwildandfree" to "Young-and-wild-and-free-I.png"
     )
 
     private val KNOWN_ITEM_NAME_KEYWORDS: List<String> = listOf(

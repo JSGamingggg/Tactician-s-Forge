@@ -290,8 +290,27 @@ private fun normalizeInGamePrepositions(label: String): String {
  */
 fun formatChampionDisplayName(rawId: String): String {
     val label = formatRiotAssetLabel(rawId)
-    return when (label.lowercase()) {
-        "indie", "seraphine indie", "seraphine rising star", "seraphine superstar" -> "Seraphine"
+    return when (label.lowercase().replace("'", "").replace(".", "").replace(" ", "")) {
+        "indie", "seraphineindie", "seraphinerisingstar", "seraphinesuperstar" -> "Seraphine"
+        "kaisa" -> "Kai'Sa"
+        "khazix" -> "Kha'Zix"
+        "velkoz" -> "Vel'Koz"
+        "chogath" -> "Cho'Gath"
+        "kogmaw" -> "Kog'Maw"
+        "reksai" -> "Rek'Sai"
+        "belveth" -> "Bel'Veth"
+        "ksante" -> "K'Sante"
+        "drmundo" -> "Dr. Mundo"
+        "leesin" -> "Lee Sin"
+        "missfortune" -> "Miss Fortune"
+        "twistedfate" -> "Twisted Fate"
+        "masteryi" -> "Master Yi"
+        "xinzhao" -> "Xin Zhao"
+        "tahmkench" -> "Tahm Kench"
+        "aurelionsol" -> "Aurelion Sol"
+        "jarvaniv" -> "Jarvan IV"
+        "renataglasc" -> "Renata Glasc"
+        "baronnashor" -> "Baron Nashor"
         else -> label
     }
 }
@@ -407,18 +426,11 @@ fun TftChampionAvatar(
     val context = LocalContext.current
     val rev = TftAssetIconResolver.catalogRevision
     val cleanName = remember(name, rev) { formatChampionDisplayName(name) }
-    val primaryUrl = remember(cleanName, environment, TftAssetIconResolver.ddragonVersion, rev) {
-        TftAssetIconResolver.resolveSquareChampionPortraitUrl(cleanName, environment)
+    val fallbackUrls = remember(cleanName, environment, TftAssetIconResolver.ddragonVersion, rev) {
+        TftAssetIconResolver.resolveChampionIconFallbackUrls(cleanName, environment)
     }
-    val fallbackUrl = remember(cleanName, environment, TftAssetIconResolver.ddragonVersion, rev) {
-        TftAssetIconResolver.resolveChampionIconUrl(cleanName, environment)
-    }
-    var useFallbackUrl by remember(primaryUrl, fallbackUrl) { mutableStateOf(false) }
-    val activeUrl = if (useFallbackUrl && !fallbackUrl.isNullOrBlank() && fallbackUrl != primaryUrl) {
-        fallbackUrl
-    } else {
-        primaryUrl ?: fallbackUrl
-    }
+    var attemptIndex by remember(fallbackUrls) { mutableIntStateOf(0) }
+    val activeUrl = fallbackUrls.getOrNull(attemptIndex)
     val targetPx = with(LocalDensity.current) { maxOf(size, height).roundToPx().coerceAtLeast(64) }
     val color = championCostColor(cost)
     val borderColor = if (isCarry) MaterialTheme.colorScheme.primary else color
@@ -480,8 +492,8 @@ fun TftChampionAvatar(
                     contentScale = ContentScale.Crop,
                     alignment = Alignment.Center,
                     onError = {
-                        if (!useFallbackUrl && !fallbackUrl.isNullOrBlank() && fallbackUrl != primaryUrl) {
-                            useFallbackUrl = true
+                        if (attemptIndex + 1 < fallbackUrls.size) {
+                            attemptIndex += 1
                         }
                     },
                     modifier = Modifier
@@ -566,7 +578,8 @@ fun TftChampionTile(
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val cleanName = remember(name) { formatChampionDisplayName(name) }
+    val rev = TftAssetIconResolver.catalogRevision
+    val cleanName = remember(name, rev) { formatChampionDisplayName(name) }
     val shownItems = remember(equippedItems) { equippedItems.filter { it.isNotBlank() }.take(3) }
     val itemRowMinWidth = if (shownItems.isNotEmpty()) {
         (itemIconSize * shownItems.size) + (2.dp * (shownItems.size - 1)) + 8.dp
@@ -1015,20 +1028,34 @@ private val REGEX_RIOT_SCALE_BLOCK = Regex("(?:%i:[^%]+%)+")
 private val REGEX_RIOT_SCALE_SINGLE = Regex("%i:([^%]+)%")
 private val REGEX_HTML_BR = Regex("<br\\s*/?>", RegexOption.IGNORE_CASE)
 private val REGEX_HTML_TAG = Regex("<[^>]+>")
-private val REGEX_AT_PLACEHOLDER = Regex("@[A-Za-z0-9_]+@")
+private val REGEX_AT_PLACEHOLDER = Regex("@[A-Za-z0-9_.*]+@")
+private val REGEX_BRACE_MACRO = Regex("\\{[A-Za-z0-9_.-]+\\}")
+private val REGEX_FORGE_POWER_X = Regex("\\(Forge Power:\\s*X\\s*/\\s*X\\s*\\)", RegexOption.IGNORE_CASE)
+private val REGEX_X_FOR_SECONDS = Regex("\\bfor\\s+X\\s+seconds?\\b", RegexOption.IGNORE_CASE)
+private val REGEX_X_EVERY_SECONDS = Regex("\\bevery\\s+X\\s+seconds?\\b", RegexOption.IGNORE_CASE)
+private val REGEX_X_AFTER_SECONDS = Regex("\\bafter\\s+X\\s+seconds?\\b", RegexOption.IGNORE_CASE)
+private val REGEX_X_WITHIN_HEXES = Regex("\\bwithin\\s+X\\s+hex(?:es)?\\b", RegexOption.IGNORE_CASE)
+private val REGEX_X_NEXT_ATTACKS = Regex("\\bnext\\s+X\\s+attacks\\b", RegexOption.IGNORE_CASE)
+private val REGEX_X_NEAREST_ENEMIES = Regex("\\bthe\\s+X\\s+nearest\\s+enemies\\b", RegexOption.IGNORE_CASE)
+private val REGEX_X_RANGE_PCT = Regex("\\bX\\s*[-–]\\s*X%")
+private val REGEX_X_PCT = Regex("\\bX%")
+private val REGEX_X_BEFORE_SCALE = Regex("\\bX\\s+(?=\\((?:AD|AP|Health|Armor|Magic Resist|Attack Speed|AD/AP|AP/Health|AD/Health|Damage Amp|Durability|Omnivamp|Crit Chance|Mana|Range)\\))")
+private val REGEX_X_STANDALONE_STAT = Regex("(?<=\\s|^|\\+|\\()X(?=\\s+(?:max\\s+)?(?:Health|Armor|Magic Resist|Attack Damage|Ability Power|Attack Speed|Mana|Mana Regen|Durability|Damage Amp|Omnivamp|Critical Strike Chance|gold|XP|free\\s+Shop|random|Thief's|soldiers|missing))", RegexOption.IGNORE_CASE)
+private val REGEX_X_TRAILING_BY = Regex("\\b(by|for|to|of|at|up to|minimum|Max:|Level|to \\+)\\s+X\\b")
 private val REGEX_MULTI_SPACE = Regex("[ \\t]{2,}")
 private val REGEX_PUNCT_SPACE = Regex("\\s+([.,;:])")
 
 /**
- * Strips any raw Riot Data Dragon inline macros (%i:scaleAP%, @Gold@, HTML tags)
- * so champion abilities, item tooltips, trait tooltips, and augment descriptions
- * always render cleanly in the UI.
+ * Strips any raw Riot Data Dragon inline macros (%i:scaleAP%, @Gold@, {Augment...}, HTML tags)
+ * and cleans unresolved static tooltip X placeholders so champion abilities, item tooltips,
+ * trait tooltips, and augment descriptions always render cleanly in the UI.
  */
 fun sanitizeTftDescription(raw: String): String {
     if (raw.isBlank()) return ""
     var out = raw
         .replace(REGEX_HTML_BR, "\n")
         .replace(REGEX_HTML_TAG, "")
+        .replace(REGEX_BRACE_MACRO, "")
     out = REGEX_RIOT_SCALE_BLOCK.replace(out) { match ->
         val labels = REGEX_RIOT_SCALE_SINGLE.findAll(match.value).map { m ->
             when (m.groupValues[1].lowercase()) {
@@ -1052,6 +1079,26 @@ fun sanitizeTftDescription(raw: String): String {
     }
     out = out
         .replace(REGEX_AT_PLACEHOLDER, "")
+        .replace(REGEX_FORGE_POWER_X, "(tracks Forge Power)")
+        .replace(REGEX_X_FOR_SECONDS, "for a duration")
+        .replace(REGEX_X_EVERY_SECONDS, "periodically")
+        .replace(REGEX_X_AFTER_SECONDS, "after a brief delay")
+        .replace(REGEX_X_WITHIN_HEXES, "within range")
+        .replace(REGEX_X_NEXT_ATTACKS, "next several attacks")
+        .replace(REGEX_X_NEAREST_ENEMIES, "nearest enemies")
+        .replace(REGEX_X_RANGE_PCT, "scaling")
+        .replace(REGEX_X_PCT, "bonus")
+        .replace(REGEX_X_BEFORE_SCALE, "")
+        .replace(REGEX_X_STANDALONE_STAT, "bonus")
+        .replace(REGEX_X_TRAILING_BY) { m ->
+            when (m.groupValues[1].lowercase()) {
+                "level" -> "high Level"
+                "max:" -> "capped"
+                "minimum" -> "minimum scaling"
+                "to +" -> "to a bonus streak"
+                else -> "${m.groupValues[1]} a scaling amount"
+            }
+        }
         .replace("((", "(")
         .replace("))", ")")
         .replace(" \\n \\n ", "\n")

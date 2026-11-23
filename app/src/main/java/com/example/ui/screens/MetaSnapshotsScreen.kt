@@ -71,6 +71,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -114,6 +115,7 @@ import com.example.ui.components.TftItemChip
 import com.example.ui.components.TftTraitChip
 import com.example.ui.components.TierBadge
 import com.example.ui.components.environmentSlideTransitionSpec
+import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.resolveCompUnitCost
 import com.example.ui.components.sanitizeExternalSourceMentions
 import com.example.ui.components.sortCompUnitsByCostAscending
@@ -128,7 +130,11 @@ internal fun groupCompsByTier(comps: List<MetaComp>): List<Pair<TierRank, List<M
         .mapNotNull { tier ->
             val tierComps = comps
                 .filter { it.tier == tier }
-                .sortedWith(compareBy<MetaComp> { it.avgPlacement }.thenBy { it.title })
+                .sortedWith(
+                    compareBy<MetaComp> { it.avgPlacement }
+                        .thenByDescending { it.top4Rate }
+                        .thenBy { it.title }
+                )
             if (tierComps.isEmpty()) null else tier to tierComps
         }
 }
@@ -169,6 +175,15 @@ fun MetaSnapshotsScreen(
     var showCreateDialog by remember { mutableStateOf(false) }
     // All tier sub-headers start closed until explicitly opened by the user
     var expandedTierNames by rememberSaveable { mutableStateOf(emptyList<String>()) }
+
+    LaunchedEffect(comps) {
+        val active = inspectedComp ?: return@LaunchedEffect
+        if (!active.id.startsWith("custom_")) {
+            val updated = comps.firstOrNull { it.id == active.id }
+                ?: comps.firstOrNull { it.title.equals(active.title, ignoreCase = true) && it.environment == active.environment }
+            inspectedComp = updated
+        }
+    }
 
     val favorites = (favoritesState as? UiState.Success)?.data.orEmpty()
     val favoriteIds = remember(favorites) { favorites.map { it.compId.ifBlank { it.id } }.toSet() }
@@ -325,6 +340,7 @@ fun MetaSnapshotsScreen(
                                                         cost = 4,
                                                         isCarry = true,
                                                         size = 18.dp,
+                                                        environment = TftEnvironment.fromRaw(fav.environment),
                                                         onClick = { inspectedChampion = fav.carryName to null }
                                                     )
                                                 }
@@ -863,7 +879,7 @@ private fun MetaCompCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "${comp.playstyle} • Carry: ${comp.carryName}",
+                    text = "${comp.playstyle} • Carry: ${formatChampionDisplayName(comp.carryName)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold

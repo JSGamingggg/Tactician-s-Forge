@@ -362,7 +362,7 @@ private fun AuthenticatedOrGuestWorkspace(
     }
 
 
-    // Automatically check for App Updates when opening/returning to the app while keeping Comp Updates manual,
+    // Automatically check for Comp Updates on app load (in MainViewModel init) and App Updates on open/resume,
     // and ensure background monitoring is scheduled whenever the app moves to the background.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, mainViewModel) {

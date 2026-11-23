@@ -163,6 +163,7 @@ import com.example.data.model.ItemTierEntry
 import com.example.data.model.MetaComp
 import com.example.data.model.TftEnvironment
 import com.example.data.model.TierRank
+import com.example.data.network.TftNinjaCompsScraper
 import com.example.data.repository.FirestoreUserRepository
 import com.example.data.repository.LocalPreferencesStore
 import com.example.data.repository.MetaCacheUpdates
@@ -786,8 +787,8 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
     private fun reloadCompsFromCache() {
         serviceScope.launch {
             val bundle = metaRepository.loadOfflineBundleAsync()
-            allCompsState.value = (bundle.liveComps + bundle.pbeComps)
-                .sortedWith(compareBy<MetaComp> { it.environment.ordinal }.thenBy { it.tier.sortOrder }.thenBy { it.avgPlacement })
+            allCompsState.value = TftNinjaCompsScraper.sortCompsTierSDown(bundle.liveComps) +
+                TftNinjaCompsScraper.sortCompsTierSDown(bundle.pbeComps)
             allChampionsState.value = bundle.liveChampions + bundle.pbeChampions
             allItemsState.value = bundle.liveItems + bundle.pbeItems
         }
@@ -797,18 +798,18 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
         serviceScope.launch {
             while (isActive) {
                 delay(ACTIVE_OVERLAY_SYNC_INTERVAL_MS)
-                syncOverlayMetaFromNetwork()
+                syncOverlayMetaFromNetwork(forceReplaceComps = false)
             }
         }
     }
 
-    private fun syncOverlayMetaFromNetwork() {
+    private fun syncOverlayMetaFromNetwork(forceReplaceComps: Boolean = false) {
         if (activeOverlaySyncJob?.isActive == true) return
         activeOverlaySyncJob = serviceScope.launch {
-            val sync = metaRepository.refreshAndPersistMeta()
+            val sync = metaRepository.refreshAndPersistMeta(forceReplaceComps = forceReplaceComps)
             val bundle = metaRepository.loadOfflineBundleAsync()
-            allCompsState.value = (bundle.liveComps + bundle.pbeComps)
-                .sortedWith(compareBy<MetaComp> { it.environment.ordinal }.thenBy { it.tier.sortOrder }.thenBy { it.avgPlacement })
+            allCompsState.value = TftNinjaCompsScraper.sortCompsTierSDown(bundle.liveComps) +
+                TftNinjaCompsScraper.sortCompsTierSDown(bundle.pbeComps)
             allChampionsState.value = bundle.liveChampions + bundle.pbeChampions
             allItemsState.value = bundle.liveItems + bundle.pbeItems
             MetaUpdateNotifier.dispatchNotifications(
@@ -1322,7 +1323,7 @@ class OverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStat
                         onRefresh = {
                             reloadCompsFromCache()
                             observeCacheAndFavorites()
-                            syncOverlayMetaFromNetwork()
+                            syncOverlayMetaFromNetwork(forceReplaceComps = true)
                         },
                         onToggleFavorite = ::toggleFavoriteInOverlay,
                         onCopyCompCode = ::copyCompTeamCode,

@@ -49,23 +49,30 @@ data class FavoriteCompDoc(
     fun toMetaComp(): MetaComp = MetaComp(
         id = compId.ifBlank { id },
         environment = TftEnvironment.fromRaw(environment),
-        title = title,
+        title = com.example.ui.components.decodeHtmlEntities(title),
         tier = TierRank.fromRaw(tier),
         playstyle = playstyle,
-        avgPlacement = 3.8,
+        avgPlacement = 3.85,
         top4Rate = 61.5,
         winRate = 15.2,
         pickRate = 4.5,
         trendDelta = if (pinnedToOverlay) "PINNED" else "SAVED",
         isTrending = false,
-        patchTag = if (environment == "PBE") "18.7 PBE" else "18.6",
-        carryName = carryName,
+        patchTag = if (environment.equals("PBE", ignoreCase = true)) "19.1-PBE" else "18.7",
+        carryName = com.example.ui.components.formatChampionDisplayName(carryName).ifBlank { carryName },
         traits = emptyList(),
-        coreUnits = coreUnits,
-        hexPlacements = hexPositions.mapNotNull { HexUnitPlacement.decode(it) },
+        coreUnits = coreUnits.map { com.example.ui.components.formatChampionDisplayName(it).ifBlank { it } },
+        hexPlacements = hexPositions.mapNotNull { HexUnitPlacement.decode(it) }.map { p ->
+            p.copy(
+                unitName = com.example.ui.components.formatChampionDisplayName(p.unitName).ifBlank { p.unitName },
+                items = p.items.map { com.example.ui.components.formatRiotAssetLabel(it).ifBlank { it } },
+                otherItems = p.otherItems.map { com.example.ui.components.formatRiotAssetLabel(it).ifBlank { it } }
+            )
+        },
         augmentPriorities = emptyList(),
-        levelingGuide = notes?.takeIf { it.isNotBlank() } ?: "Custom saved favorite composition",
-        notes = notes.orEmpty()
+        levelingGuide = notes?.takeIf { it.isNotBlank() }?.let { com.example.ui.components.decodeHtmlEntities(it) }
+            ?: "Custom saved favorite composition",
+        notes = com.example.ui.components.decodeHtmlEntities(notes.orEmpty())
     )
 }
 
@@ -81,8 +88,8 @@ data class UserPreferencesDoc(
     val pbeAlertsEnabled: Boolean = true,
     val balanceAlertsEnabled: Boolean = true,
     val trendingAlertsEnabled: Boolean = true,
-    val lastSeenLivePatch: String = "18.6",
-    val lastSeenPbePatch: String = "18.7-PBE",
+    val lastSeenLivePatch: String = "18.7",
+    val lastSeenPbePatch: String = "19.1-PBE",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {

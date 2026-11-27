@@ -2,6 +2,8 @@ package com.example.data.network
 
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import retrofit2.Response
 import retrofit2.Retrofit
@@ -42,10 +44,35 @@ object RiotApiClientFactory {
             .build()
     }
 
+    /**
+     * High-concurrency shared OkHttpClient with HTTP/2 multiplexing, warm connection pooling,
+     * and elevated per-host concurrency (24 vs OkHttp's default 5) so parallel comp scrapes,
+     * Data Dragon JSON syncs, and Coil icon prefetches finish dramatically faster.
+     */
     val publicOkHttp: OkHttpClient by lazy {
+        val fastDispatcher = Dispatcher().apply {
+            maxRequests = 96
+            maxRequestsPerHost = 24
+        }
         OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            .dispatcher(fastDispatcher)
+            .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
+    /**
+     * Dedicated streaming download client sharing the same connection pool & dispatcher,
+     * tuned with extended read/write timeouts for fast multi-megabyte GitHub APK downloads.
+     */
+    val downloadOkHttp: OkHttpClient by lazy {
+        publicOkHttp.newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .build()
     }
 

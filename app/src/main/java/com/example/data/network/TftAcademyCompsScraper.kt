@@ -238,8 +238,13 @@ class TftAcademyCompsScraper(
      * - https://tftacademy.com/api/tierlist/augments?set=<setNumber>
      */
     fun fetchLiveItemsAndAugmentsTierlist(setNumber: Int = 18): TftAcademyCatalogTiers {
-        val itemsJson = fetchUrl("$TFTACADEMY_ORIGIN/api/tierlist/items?set=$setNumber")
-        val augmentsJson = fetchUrl("$TFTACADEMY_ORIGIN/api/tierlist/augments?set=$setNumber")
+        val itemsFuture = CATALOG_IO_POOL.submit<String?> {
+            runCatching { fetchUrl("$TFTACADEMY_ORIGIN/api/tierlist/items?set=$setNumber") }.getOrNull()
+        }
+        val augmentsJson = runCatching {
+            fetchUrl("$TFTACADEMY_ORIGIN/api/tierlist/augments?set=$setNumber")
+        }.getOrNull()
+        val itemsJson = runCatching { itemsFuture.get() }.getOrNull()
         if (itemsJson.isNullOrBlank() && augmentsJson.isNullOrBlank()) {
             return TftAcademyCatalogTiers(
                 itemTiersByKey = emptyMap(),
@@ -1668,6 +1673,9 @@ class TftAcademyCompsScraper(
     }
 
     companion object {
+        private val CATALOG_IO_POOL = java.util.concurrent.Executors.newFixedThreadPool(4) { runnable ->
+            Thread(runnable, "tftacademy-io").apply { isDaemon = true }
+        }
         const val TFTACADEMY_ORIGIN = "https://tftacademy.com"
         const val TFTACADEMY_COMPS_URL = "https://tftacademy.com/tierlist/comps"
         const val TFTACADEMY_PBE_COMPS_URL = "https://tftacademy.com/tierlist/comps/set19"

@@ -230,26 +230,38 @@ class MetaRepository(
                         syncedFromNetwork = true
                         val versionChanged = latestDdragon != ddragonVersion
                         ddragonVersion = latestDdragon
-                        if (versionChanged || ddragonChampJson.isNullOrBlank()) {
-                            ddragonChampJson = runCatching {
-                                ddragonApi.getTftChampionsJson(latestDdragon).body()?.string()
-                            }.getOrNull() ?: ddragonChampJson
-                        }
-                        if (versionChanged || ddragonItemJson.isNullOrBlank()) {
-                            ddragonItemJson = runCatching {
-                                ddragonApi.getTftItemsJson(latestDdragon).body()?.string()
-                            }.getOrNull() ?: ddragonItemJson
-                        }
-                        if (versionChanged || ddragonAugmentJson.isNullOrBlank()) {
-                            ddragonAugmentJson = runCatching {
-                                ddragonApi.getTftAugmentsJson(latestDdragon).body()?.string()
-                            }.getOrNull() ?: ddragonAugmentJson
-                        }
-                        if (versionChanged || ddragonTraitJson.isNullOrBlank()) {
-                            ddragonTraitJson = runCatching {
-                                ddragonApi.getTftTraitsJson(latestDdragon).body()?.string()
-                            }.getOrNull() ?: ddragonTraitJson
-                        }
+                        val ddChampDeferred = if (versionChanged || ddragonChampJson.isNullOrBlank()) {
+                            async {
+                                runCatching {
+                                    ddragonApi.getTftChampionsJson(latestDdragon).body()?.string()
+                                }.getOrNull()
+                            }
+                        } else null
+                        val ddItemDeferred = if (versionChanged || ddragonItemJson.isNullOrBlank()) {
+                            async {
+                                runCatching {
+                                    ddragonApi.getTftItemsJson(latestDdragon).body()?.string()
+                                }.getOrNull()
+                            }
+                        } else null
+                        val ddAugDeferred = if (versionChanged || ddragonAugmentJson.isNullOrBlank()) {
+                            async {
+                                runCatching {
+                                    ddragonApi.getTftAugmentsJson(latestDdragon).body()?.string()
+                                }.getOrNull()
+                            }
+                        } else null
+                        val ddTraitDeferred = if (versionChanged || ddragonTraitJson.isNullOrBlank()) {
+                            async {
+                                runCatching {
+                                    ddragonApi.getTftTraitsJson(latestDdragon).body()?.string()
+                                }.getOrNull()
+                            }
+                        } else null
+                        ddChampDeferred?.await()?.let { ddragonChampJson = it }
+                        ddItemDeferred?.await()?.let { ddragonItemJson = it }
+                        ddAugDeferred?.await()?.let { ddragonAugmentJson = it }
+                        ddTraitDeferred?.await()?.let { ddragonTraitJson = it }
                         val parsedCatalog = TftAssetIconResolver.parseDdragonCatalogInBackground(
                             version = ddragonVersion,
                             championJson = ddragonChampJson,
@@ -306,59 +318,68 @@ class MetaRepository(
                     comp
                 }
             }
-            // Automatically attach verified v02 Riot Team Planner copy codes to all added/updated comps
-            val resolvedLiveComps = TftNinjaCompsScraper.sortCompsTierSDown(
-                appContext?.let { ctx ->
-                    runCatching {
-                        TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
-                            context = ctx,
-                            comps = rawLiveComps,
-                            environment = TftEnvironment.LIVE,
-                            client = publicClient
-                        )
-                    }.getOrNull()
-                } ?: rawLiveComps
-            )
-            val resolvedPbeComps = TftNinjaCompsScraper.sortCompsTierSDown(
-                appContext?.let { ctx ->
-                    runCatching {
-                        TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
-                            context = ctx,
-                            comps = rawPbeComps,
-                            environment = TftEnvironment.PBE,
-                            client = publicClient
-                        )
-                    }.getOrNull()
-                } ?: rawPbeComps
-            )
-            val resolvedLiveCatalog = if (syncedFromNetwork) {
-                MetaCatalogSyncHelper.refreshLiveCatalog(
-                    existingChampions = currentBundle.liveChampions,
-                    existingItems = currentBundle.liveItems,
-                    existingAugments = currentBundle.liveAugments,
-                    liveComps = resolvedLiveComps,
-                    liveSetNumber = tftNinjaLiveResult?.detectedSet ?: liveSetHint,
-                    ddragonChampJson = ddragonChampJson,
-                    ddragonItemJson = ddragonItemJson,
-                    ddragonAugmentJson = ddragonAugmentJson,
-                    academyTiers = tftAcademyCatalog,
-                    ninjaChampRecommendations = tftNinjaLiveResult?.championRecommendations.orEmpty()
+            // Automatically attach verified v02 Riot Team Planner copy codes to LIVE & PBE in parallel
+            val resolvedLiveCompsDeferred = async {
+                TftNinjaCompsScraper.sortCompsTierSDown(
+                    appContext?.let { ctx ->
+                        runCatching {
+                            TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                                context = ctx,
+                                comps = rawLiveComps,
+                                environment = TftEnvironment.LIVE,
+                                client = publicClient
+                            )
+                        }.getOrNull()
+                    } ?: rawLiveComps
                 )
-            } else {
-                null
             }
-            val resolvedPbeCatalog = if (syncedFromNetwork) {
-                MetaCatalogSyncHelper.refreshPbeCatalog(
-                    existingChampions = currentBundle.pbeChampions,
-                    existingItems = currentBundle.pbeItems,
-                    existingAugments = currentBundle.pbeAugments,
-                    pbeComps = resolvedPbeComps,
-                    academyTiers = tftAcademyPbeCatalog,
-                    ninjaChampRecommendations = tftNinjaPbeResult?.championRecommendations.orEmpty()
+            val resolvedPbeCompsDeferred = async {
+                TftNinjaCompsScraper.sortCompsTierSDown(
+                    appContext?.let { ctx ->
+                        runCatching {
+                            TftTeamPlannerCodeEncoder.enrichCompsWithTeamCodes(
+                                context = ctx,
+                                comps = rawPbeComps,
+                                environment = TftEnvironment.PBE,
+                                client = publicClient
+                            )
+                        }.getOrNull()
+                    } ?: rawPbeComps
                 )
-            } else {
-                null
             }
+            val resolvedLiveComps = resolvedLiveCompsDeferred.await()
+            val resolvedPbeComps = resolvedPbeCompsDeferred.await()
+
+            val resolvedLiveCatalogDeferred = if (syncedFromNetwork) {
+                async {
+                    MetaCatalogSyncHelper.refreshLiveCatalog(
+                        existingChampions = currentBundle.liveChampions,
+                        existingItems = currentBundle.liveItems,
+                        existingAugments = currentBundle.liveAugments,
+                        liveComps = resolvedLiveComps,
+                        liveSetNumber = tftNinjaLiveResult?.detectedSet ?: liveSetHint,
+                        ddragonChampJson = ddragonChampJson,
+                        ddragonItemJson = ddragonItemJson,
+                        ddragonAugmentJson = ddragonAugmentJson,
+                        academyTiers = tftAcademyCatalog,
+                        ninjaChampRecommendations = tftNinjaLiveResult?.championRecommendations.orEmpty()
+                    )
+                }
+            } else null
+            val resolvedPbeCatalogDeferred = if (syncedFromNetwork) {
+                async {
+                    MetaCatalogSyncHelper.refreshPbeCatalog(
+                        existingChampions = currentBundle.pbeChampions,
+                        existingItems = currentBundle.pbeItems,
+                        existingAugments = currentBundle.pbeAugments,
+                        pbeComps = resolvedPbeComps,
+                        academyTiers = tftAcademyPbeCatalog,
+                        ninjaChampRecommendations = tftNinjaPbeResult?.championRecommendations.orEmpty()
+                    )
+                }
+            } else null
+            val resolvedLiveCatalog = resolvedLiveCatalogDeferred?.await()
+            val resolvedPbeCatalog = resolvedPbeCatalogDeferred?.await()
             val resolvedPbeChampions = resolvedPbeCatalog?.champions ?: currentBundle.pbeChampions
             val resolvedPbeItems = resolvedPbeCatalog?.items ?: currentBundle.pbeItems
             val resolvedPbeAugments = resolvedPbeCatalog?.augments ?: currentBundle.pbeAugments

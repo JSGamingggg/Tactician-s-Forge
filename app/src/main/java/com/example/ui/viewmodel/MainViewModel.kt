@@ -582,12 +582,12 @@ class MainViewModel(
         if (_selectedEnvironment.value == env) return
         _selectedEnvironment.value = env
         refreshActiveEnvSnapshot()
-        val shouldPrefetch = appContext != null && prefetchedEnvsInSession.add(env)
+        val prefetchContext = appContext?.takeIf { prefetchedEnvsInSession.add(env) }
         envPersistJob?.cancel()
         envPersistJob = viewModelScope.launch(Dispatchers.IO) {
-            if (shouldPrefetch && appContext != null) {
+            if (prefetchContext != null) {
                 MetaPrefetchScheduler.enqueuePrefetch(
-                    context = appContext,
+                    context = prefetchContext,
                     scope = if (env == TftEnvironment.PBE) PrefetchScope.PBE else PrefetchScope.LIVE,
                     refreshSnapshot = false,
                     warmMemoryCount = 24,

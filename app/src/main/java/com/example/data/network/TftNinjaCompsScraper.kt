@@ -10,14 +10,15 @@ import com.example.ui.components.TftAssetIconResolver
 import com.example.ui.components.decodeHtmlEntities
 import com.example.ui.components.formatChampionDisplayName
 import com.example.ui.components.formatRiotAssetLabel
+import okhttp3.CacheControl
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLDecoder
 import java.util.Locale
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import kotlin.math.roundToInt
 
 /**
@@ -177,7 +178,28 @@ class TftNinjaCompsScraper(
             }
         }
 
-        // Enrich any comp with a dedicated tft.ninja detail page URL when missing full build details
+        // Run comp detail enrichment AND tft.ninja champion recommendations fetch in parallel
+        val champRecsFuture: Future<Map<String, TftNinjaChampionRecommendation>>? = if (fetchedAny) {
+            val champUrls = if (isPbe) TFTNINJA_PBE_CHAMPIONS_URLS else TFTNINJA_LIVE_CHAMPIONS_URLS
+            SCRAPER_IO_POOL.submit(Callable {
+                val found = LinkedHashMap<String, TftNinjaChampionRecommendation>()
+                for (champUrl in champUrls) {
+                    val body = runCatching { urlFetcher(champUrl) }.getOrNull()
+                    if (!body.isNullOrBlank()) {
+                        val extracted = extractChampionRecommendationsFromDocument(body)
+                        if (extracted.isNotEmpty()) {
+                            mergeChampRecs(found, extracted)
+                            break
+                        }
+                    }
+                }
+                found
+            })
+        } else {
+            null
+        }
+
+        // Enrich any comp with a dedicated tft.ninja detail page URL concurrently
         val enrichedList = enrichCompsIfNeeded(
             comps = collected.values.toList(),
             targetEnv = targetEnv,
@@ -186,18 +208,9 @@ class TftNinjaCompsScraper(
             defaultSourceUrl = pageUrl
         )
 
-        // Optionally fetch tft.ninja champion/unit recommendations page for richer BIS items per champion
-        if (fetchedAny) {
-            val champUrls = if (isPbe) TFTNINJA_PBE_CHAMPIONS_URLS else TFTNINJA_LIVE_CHAMPIONS_URLS
-            for (champUrl in champUrls) {
-                val body = urlFetcher(champUrl)
-                if (!body.isNullOrBlank()) {
-                    val extracted = extractChampionRecommendationsFromDocument(body)
-                    if (extracted.isNotEmpty()) {
-                        mergeChampRecs(pageChampRecs, extracted)
-                        break
-                    }
-                }
+        champRecsFuture?.let { fut ->
+            runCatching { fut.get() }.getOrNull()?.let { extracted ->
+                mergeChampRecs(pageChampRecs, extracted)
             }
         }
 
@@ -446,16 +459,23 @@ class TftNinjaCompsScraper(
     ): List<MetaComp> {
         if (comps.isEmpty()) return emptyList()
         var enrichBudget = 12
-        return comps.map { comp ->
+        val candidates = ArrayList<Pair<Int, MetaComp>>(12)
+        comps.forEachIndexed { idx, comp ->
             val hasDetailUrl = comp.sourceUrl.contains("tft.ninja/comps/", ignoreCase = true) &&
                 !comp.sourceUrl.equals(defaultSourceUrl, ignoreCase = true)
             val missingDetails = comp.hexPlacements.none { it.items.isNotEmpty() } ||
                 comp.augmentPriorities.isEmpty() ||
                 comp.levelingGuide.length < 24
-            if (!hasDetailUrl || !missingDetails || enrichBudget <= 0) {
-                comp
-            } else {
+            if (hasDetailUrl && missingDetails && enrichBudget > 0) {
                 enrichBudget--
+                candidates.add(idx to comp)
+            }
+        }
+        if (candidates.isEmpty()) return comps
+
+        val enrichedByIndex = HashMap<Int, MetaComp>(candidates.size)
+        val futures = candidates.map { (idx, comp) ->
+            idx to SCRAPER_IO_POOL.submit(Callable {
                 val detailBody = runCatching { urlFetcher(comp.sourceUrl) }.getOrNull()
                 if (detailBody.isNullOrBlank()) {
                     comp
@@ -471,8 +491,12 @@ class TftNinjaCompsScraper(
                     }
                     if (detailParsed != null) mergeCompDetail(comp, detailParsed) else comp
                 }
-            }
+            })
         }
+        futures.forEach { (idx, fut) ->
+            runCatching { fut.get() }.getOrNull()?.let { enrichedByIndex[idx] = it }
+        }
+        return comps.mapIndexed { idx, comp -> enrichedByIndex[idx] ?: comp }
     }
 
     private fun mergeCompDetail(base: MetaComp, detail: MetaComp): MetaComp {
@@ -2367,42 +2391,38 @@ class TftNinjaCompsScraper(
                 .toString()
         }
 
+        private val SCRAPER_IO_POOL = Executors.newFixedThreadPool(8) { runnable ->
+            Thread(runnable, "tft-ninja-io").apply { isDaemon = true }
+        }
+
         private fun defaultFetchUrl(urlString: String, rscHeaders: Boolean = false): String? {
-            var connection: HttpURLConnection? = null
             return try {
-                val url = URL(urlString)
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 10_000
-                    readTimeout = 12_000
-                    instanceFollowRedirects = true
-                    useCaches = false
-                    requestMethod = "GET"
-                    setRequestProperty(
+                val reqBuilder = Request.Builder()
+                    .url(urlString)
+                    .cacheControl(CacheControl.FORCE_NETWORK)
+                    .header(
                         "User-Agent",
                         "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
                     )
-                    setRequestProperty("Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8")
-                    setRequestProperty("Accept-Language", "en-US,en;q=0.9")
-                    setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0")
-                    setRequestProperty("Pragma", "no-cache")
-                    setRequestProperty("Referer", TFTNINJA_LIVE_COMPS_URL)
-                    if (rscHeaders) {
-                        setRequestProperty("RSC", "1")
-                        setRequestProperty(
+                    .header("Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("Cache-Control", "no-cache, no-store, max-age=0")
+                    .header("Pragma", "no-cache")
+                    .header("Referer", TFTNINJA_LIVE_COMPS_URL)
+                if (rscHeaders) {
+                    reqBuilder
+                        .header("RSC", "1")
+                        .header(
                             "Next-Router-State-Tree",
                             "%5B%22%22%2C%7B%22children%22%3A%5B%22comps%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%5D%7D%5D%7D%2Cnull%2Cnull%2Ctrue%5D"
                         )
-                    }
                 }
-                val code = connection.responseCode
-                if (code !in 200..299) return null
-                BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
-                    reader.readText()
+                RiotApiClientFactory.publicOkHttp.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) return null
+                    resp.body?.string()?.takeIf { it.isNotBlank() }
                 }
             } catch (_: Exception) {
                 null
-            } finally {
-                connection?.disconnect()
             }
         }
     }

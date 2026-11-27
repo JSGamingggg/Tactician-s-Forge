@@ -1165,7 +1165,7 @@ object AppUpdateCoordinator {
     suspend fun downloadAndInstallRelease(
         context: Context,
         release: GitHubReleaseInfo,
-        httpClient: OkHttpClient = RiotApiClientFactory.publicOkHttp
+        httpClient: OkHttpClient = RiotApiClientFactory.downloadOkHttp
     ): Boolean = downloadMutex.withLock {
         val appContext = context.applicationContext
         val prefsStore = LocalPreferencesStore(appContext)
@@ -1259,8 +1259,8 @@ object AppUpdateCoordinator {
                     }
 
                     body.byteStream().use { input ->
-                        FileOutputStream(tempFile).use { output ->
-                            val buffer = ByteArray(16 * 1024)
+                        java.io.BufferedOutputStream(FileOutputStream(tempFile), 256 * 1024).use { output ->
+                            val buffer = ByteArray(128 * 1024)
                             var totalRead = 0L
                             var lastUiUpdateMs = 0L
                             while (true) {
@@ -1272,7 +1272,7 @@ object AppUpdateCoordinator {
                                 }
                                 output.write(buffer, 0, read)
                                 val now = System.currentTimeMillis()
-                                if (now - lastUiUpdateMs >= 100L || (contentLength > 0L && totalRead >= contentLength)) {
+                                if (now - lastUiUpdateMs >= 120L || (contentLength > 0L && totalRead >= contentLength)) {
                                     lastUiUpdateMs = now
                                     val progress = if (contentLength > 0L) {
                                         (totalRead.toFloat() / contentLength.toFloat()).coerceIn(0f, 1f)

@@ -1,8 +1,6 @@
 package com.example.notifications
 
 import android.util.Log
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import com.example.data.model.BalanceChangeEntry
 import com.example.data.model.DeltaType
 import com.example.data.model.HexUnitPlacement
@@ -16,6 +14,7 @@ import com.google.firebase.messaging.RemoteMessage
 
 class TftMessagingService : FirebaseMessagingService() {
 
+    @Suppress("DEPRECATION")
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         Log.d(TAG, "FCM registration token refreshed")

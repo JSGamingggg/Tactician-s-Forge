@@ -8,6 +8,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 
 data class TftipsFetchResult(
     val livePatchVersion: String?,
@@ -38,17 +40,18 @@ class TftipsPatchScraper(
         val parsedFromJson = parseNextDataPatches(mainHtml)
         val parsedCards = parseHtmlPatchCards(mainHtml)
 
-        val enrichedRecords = parsedCards.mapIndexed { index, cardRecord ->
+        val detailFutures = parsedCards.mapIndexed { index, cardRecord ->
             if (index < 4 && cardRecord.sourceUrl.isNotBlank() && cardRecord.sourceUrl != TFTIPS_PATCHES_URL) {
-                val detailHtml = fetchUrl(cardRecord.sourceUrl)
-                if (detailHtml != null) {
-                    enrichPatchWithDetailHtml(cardRecord, detailHtml)
-                } else {
-                    cardRecord
-                }
+                PATCH_DETAIL_POOL.submit(Callable {
+                    val detailHtml = runCatching { fetchUrl(cardRecord.sourceUrl) }.getOrNull()
+                    if (detailHtml != null) enrichPatchWithDetailHtml(cardRecord, detailHtml) else cardRecord
+                })
             } else {
-                cardRecord
+                null
             }
+        }
+        val enrichedRecords = parsedCards.mapIndexed { index, cardRecord ->
+            detailFutures[index]?.let { fut -> runCatching { fut.get() }.getOrNull() } ?: cardRecord
         }
 
         val seenIds = HashSet<String>()
@@ -807,5 +810,8 @@ class TftipsPatchScraper(
         )
         private val HTML_TAG_REGEX = Regex("""<[^>]+>""")
         private val WHITESPACE_REGEX = Regex("""\s+""")
+        private val PATCH_DETAIL_POOL = Executors.newFixedThreadPool(4) { runnable ->
+            Thread(runnable, "tftips-patch-io").apply { isDaemon = true }
+        }
     }
 }

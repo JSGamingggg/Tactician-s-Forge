@@ -44,7 +44,7 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("tft_image_cache"))
-                    .maxSizeBytes(96L * 1024L * 1024L)
+                    .maxSizeBytes(128L * 1024L * 1024L)
                     .build()
             }
             .crossfade(false)
@@ -79,14 +79,14 @@ class TacticiansForgeApp : Application(), Configuration.Provider, ImageLoaderFac
             val repo = MetaRepository(applicationContext)
             runCatching { repo.loadOfflineBundleAsync() }
 
-            // Warm local image cache from existing offline bundle without triggering an immediate update check
+            // Warm local image cache immediately from existing offline bundle
             MetaPrefetchScheduler.enqueuePrefetch(
                 context = applicationContext,
                 scope = PrefetchScope.WARM_LAUNCH,
                 refreshSnapshot = false,
-                warmMemoryCount = 36,
+                warmMemoryCount = 48,
                 replaceExisting = false,
-                initialDelaySeconds = 1L
+                initialDelaySeconds = 0L
             )
         }
     }

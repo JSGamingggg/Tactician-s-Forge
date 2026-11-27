@@ -320,8 +320,12 @@ fun MetaSnapshotsScreen(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     items(favorites, key = { it.compId.ifBlank { it.id } }) { fav ->
+                                        val favLookupId = fav.compId.ifBlank { fav.id }
+                                        val resolvedFavComp = comps.firstOrNull {
+                                            it.id == favLookupId || it.title.equals(fav.title, ignoreCase = true)
+                                        } ?: fav.toMetaComp()
                                         Surface(
-                                            onClick = { inspectedComp = fav.toMetaComp() },
+                                            onClick = { inspectedComp = resolvedFavComp },
                                             shape = RoundedCornerShape(10.dp),
                                             color = MaterialTheme.colorScheme.surfaceVariant,
                                             border = BorderStroke(

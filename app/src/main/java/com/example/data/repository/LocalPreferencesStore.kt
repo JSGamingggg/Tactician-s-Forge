@@ -85,8 +85,8 @@ class LocalPreferencesStore(context: Context) {
             pbeAlertsEnabled = prefs[Keys.PBE_ALERTS] ?: true,
             balanceAlertsEnabled = prefs[Keys.BALANCE_ALERTS] ?: true,
             trendingAlertsEnabled = prefs[Keys.TRENDING_ALERTS] ?: true,
-            lastSeenLivePatch = prefs[Keys.LAST_LIVE_PATCH] ?: "18.6",
-            lastSeenPbePatch = prefs[Keys.LAST_PBE_PATCH] ?: "18.7-PBE"
+            lastSeenLivePatch = prefs[Keys.LAST_LIVE_PATCH] ?: "18.7",
+            lastSeenPbePatch = prefs[Keys.LAST_PBE_PATCH] ?: "19.1-PBE"
         )
     }
 

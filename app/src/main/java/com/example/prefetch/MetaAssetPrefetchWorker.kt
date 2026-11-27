@@ -46,7 +46,7 @@ data class AssetPrefetchExecutionSummary(
  * triggering memory pressure.
  */
 object AssetPrefetchExecutor {
-    private const val DEFAULT_MAX_CONCURRENCY = 6
+    private const val DEFAULT_MAX_CONCURRENCY = 16
 
     suspend fun prefetchTargets(
         targets: List<PrefetchAssetTarget>,
